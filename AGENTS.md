@@ -47,6 +47,10 @@ Agents can reference the plan file in their prompts for context alignment.
 - Database migrations
 - Anything requiring cross-file coordination
 
+**NEVER do yourself (always delegate to agents):**
+
+- Writing documentation — walkthroughs, `docs/` files, README updates, API docs, or any other documentation. Agents generate all documentation; you only review and approve.
+
 ## 4. Parallel Dispatch Pattern
 
 Fire off support agents in parallel with `&`, then continue your own coding work. Review their output when notifications arrive.
