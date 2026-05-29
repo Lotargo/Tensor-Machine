@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use tokio::sync::mpsc;
 
 /// An incoming request from an LLM Agent using the Model Context Protocol.
 #[derive(Debug, Deserialize, Serialize)]
@@ -8,6 +9,7 @@ pub struct McpRequest {
     pub tool: String,
     pub args: JsonValue,
     pub session_id: String,
+    pub sequence_number: u64,
 }
 
 /// A response back to the LLM Agent.
@@ -15,16 +17,35 @@ pub struct McpRequest {
 pub struct McpResponse {
     pub status: u32,
     pub body: Vec<u8>,
+    pub sequence_number: u64,
 }
 
 /// A trait for handling specific tool calls from the MCP.
 pub trait ToolHandler: Send + Sync {
-    fn handle(&self, args: JsonValue) -> Result<McpResponse, String>;
+    fn handle(&self, args: JsonValue) -> Result<Vec<u8>, String>;
+}
+
+/// Represents an active MCP session with guaranteed message ordering
+pub struct McpSession {
+    pub session_id: String,
+    pub expected_sequence: u64,
+    pub tx: mpsc::Sender<McpRequest>,
+}
+
+impl McpSession {
+    pub fn new(session_id: String, tx: mpsc::Sender<McpRequest>) -> Self {
+        Self {
+            session_id,
+            expected_sequence: 1, // Start expecting seq #1
+            tx,
+        }
+    }
 }
 
 /// The core MCP server that maintains connections and routes tool calls.
 pub struct McpServer {
     tools: HashMap<String, Box<dyn ToolHandler>>,
+    sessions: HashMap<String, McpSession>,
 }
 
 impl Default for McpServer {
@@ -37,6 +58,7 @@ impl McpServer {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            sessions: HashMap::new(),
         }
     }
 
@@ -45,12 +67,47 @@ impl McpServer {
         self.tools.insert(name.to_string(), handler);
     }
 
+    /// Create and register a new session
+    pub fn create_session(&mut self, session_id: String) -> mpsc::Receiver<McpRequest> {
+        let (tx, rx) = mpsc::channel(100);
+        let session = McpSession::new(session_id.clone(), tx);
+        self.sessions.insert(session_id, session);
+        rx
+    }
+
     /// Dispatch an incoming request to the appropriate tool handler.
-    pub fn handle_request(&self, request: McpRequest) -> Result<McpResponse, String> {
-        if let Some(handler) = self.tools.get(&request.tool) {
-            handler.handle(request.args)
+    pub async fn handle_request(&mut self, request: McpRequest) -> Result<McpResponse, String> {
+        // Validate session and sequence number for message ordering
+        let seq_num = request.sequence_number;
+        let tool = request.tool.clone();
+        let args = request.args.clone();
+
+        if let Some(session) = self.sessions.get_mut(&request.session_id) {
+            if request.sequence_number != session.expected_sequence {
+                return Err(format!(
+                    "Out of order message. Expected sequence: {}, but got: {}",
+                    session.expected_sequence, request.sequence_number
+                ));
+            }
+            session.expected_sequence += 1;
+
+            // Forward request to session channel for any background workers listening
+            let _ = session.tx.send(request).await;
         } else {
-            Err(format!("Tool not found: {}", request.tool))
+            return Err(format!("Session not found: {}", request.session_id));
+        }
+
+        if let Some(handler) = self.tools.get(&tool) {
+            match handler.handle(args) {
+                Ok(body) => Ok(McpResponse {
+                    status: 200,
+                    body,
+                    sequence_number: seq_num,
+                }),
+                Err(err) => Err(err),
+            }
+        } else {
+            Err(format!("Tool not found: {}", tool))
         }
     }
 }
