@@ -71,11 +71,11 @@
   - [x] 3.1.2 Определить схему `RecordBatch`: колонки `id`, `vector:FixSizeList<Float32>`, `bm25_score`, `text`
   - [x] 3.1.3 Написать конвертер из Qdrant в `RecordBatch`
   - [x] 3.1.4 Написать конвертер PostgreSQL‑результата в `RecordBatch`
-- [ ] **3.2 Переход VM на Arrow**
-  - [ ] 3.2.1 Переделать приём данных VM: вход — `Arc<RecordBatch>` вместо плоского массива
-  - [ ] 3.2.2 Реализовать извлечение колонок из `RecordBatch` как тензоров (`arrow2::array → ndarray`)
-  - [ ] 3.2.3 Переписать инструкции `topk`, `add`, `mul`, `fusion` на работу с Arrow‑памятью
-  - [ ] 3.2.4 Вычислять `semantic_scores` напрямую над Arrow‑колонкой `vector` (dot product)
+- [x] **3.2 Переход VM на Arrow**
+  - [x] 3.2.1 Переделать приём данных VM: вход — `Arc<RecordBatch>` вместо плоского массива
+  - [x] 3.2.2 Реализовать извлечение колонок из `RecordBatch` как тензоров (`arrow2::array → ndarray`)
+  - [x] 3.2.3 Переписать инструкции `topk`, `add`, `mul`, `fusion` на работу с Arrow‑памятью
+  - [x] 3.2.4 Вычислять `semantic_scores` напрямую над Arrow‑колонкой `vector` (dot product)
 - [ ] **3.3 FlatBuffer для результата**
   - [ ] 3.3.1 Подключить крейт `flatbuffers` для сериализации результата
   - [ ] 3.3.2 Определить FlatBuffer‑схему: `top_indices: [int]`, `top_scores: [float]`
