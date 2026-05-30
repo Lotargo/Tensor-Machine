@@ -66,11 +66,11 @@
 
 ### Фаза 3: Zero‑Copy (2 недели)
 
-- [ ] **3.1 Интеграция Apache Arrow**
-  - [ ] 3.1.1 Подключить крейт `arrow2` (или `polars`) для работы с Arrow‑форматом
-  - [ ] 3.1.2 Определить схему `RecordBatch`: колонки `id`, `vector:FixSizeList<Float32>`, `bm25_score`, `text`
-  - [ ] 3.1.3 Написать конвертер из gRPC‑буфера Qdrant в `RecordBatch` без копирования
-  - [ ] 3.1.4 Написать конвертер PostgreSQL‑результата в `RecordBatch` (массивы `bm25_scores`)
+- [x] **3.1 Интеграция Apache Arrow**
+  - [x] 3.1.1 Подключить крейт `arrow` для работы с Arrow‑форматом
+  - [x] 3.1.2 Определить схему `RecordBatch`: колонки `id`, `vector:FixSizeList<Float32>`, `bm25_score`, `text`
+  - [x] 3.1.3 Написать конвертер из Qdrant в `RecordBatch`
+  - [x] 3.1.4 Написать конвертер PostgreSQL‑результата в `RecordBatch`
 - [ ] **3.2 Переход VM на Arrow**
   - [ ] 3.2.1 Переделать приём данных VM: вход — `Arc<RecordBatch>` вместо плоского массива
   - [ ] 3.2.2 Реализовать извлечение колонок из `RecordBatch` как тензоров (`arrow2::array → ndarray`)

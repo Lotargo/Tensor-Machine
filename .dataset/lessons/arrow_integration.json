@@ -1,0 +1,6 @@
+{
+  "topic": "Integrating official Apache Arrow Rust crate for zero-copy",
+  "instruction": "Implement Phase 3.1: Add Arrow integration to store tensor schemas.",
+  "context": "The codebase previously lacked a columnar format definition for internal VM processing. Needed to parse mock Qdrant and PostgreSQL vectors into RecordBatches without relying on outdated implementations.",
+  "response": "Avoided `arrow2` due to maintenance overhead, instead preferring the official `apache/arrow-rs` crate (v51). To construct a FixedSizeListArray properly inside RecordBatch without panics, wrap the internal struct configurations carefully using Arc<Field>. Ensured to manage dependency conflicts natively, such as pinning `chrono` when `arrow-arith` has traits collision."
+}
