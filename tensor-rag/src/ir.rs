@@ -82,6 +82,16 @@ pub enum OpCode {
     IfConfidence(f32, Program, Program),
     /// Return the result
     Emit,
+    /// Element-wise division of two tensors
+    Div,
+    /// Thresholding: zero out values below threshold
+    Threshold(f32),
+    /// Sort tensor values descending
+    Sort,
+    /// Slice tensor values
+    Slice(usize, usize),
+    /// Matrix multiplication (dot product for 1D)
+    Matmul,
 }
 
 #[derive(Debug, Clone, PartialEq)]
