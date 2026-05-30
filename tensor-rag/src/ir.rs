@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct QueryRequest {
     pub query: String,
     pub filters: Option<Vec<Filter>>,
@@ -15,7 +15,7 @@ pub struct Filter {
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(tag = "type")]
 pub enum RerankStrategy {
     #[serde(rename = "semantic")]
@@ -26,6 +26,33 @@ pub enum RerankStrategy {
     Hybrid {
         semantic_weight: f32,
         bm25_weight: f32,
+    },
+    #[serde(rename = "mmr")]
+    Mmr {
+        diversity: f32,
+    },
+    #[serde(rename = "rrf")]
+    Rrf {
+        k: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AstNode {
+    Search(QueryRequest),
+    MultiHop {
+        query: String,
+        hops: usize,
+    },
+    SelfRag {
+        query: String,
+        threshold: f32,
+        low_plan: Box<AstNode>,
+        high_plan: Box<AstNode>,
+    },
+    CorrectiveRag {
+        query: String,
+        fallback_query: String,
     },
 }
 
@@ -47,18 +74,24 @@ pub enum OpCode {
     Fusion,
     /// Select the top K elements with their indices
     TopK(usize),
+    /// Maximum Marginal Relevance for diversity
+    Mmr(f32),
+    /// Reciprocal Rank Fusion
+    Rrf(usize),
+    /// Branch execution based on max score threshold
+    IfConfidence(f32, Program, Program),
     /// Return the result
     Emit,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Instruction {
     pub op: OpCode,
     // Add operands or register indices here in the future if needed for a register VM.
     // For now, assuming a stack-based VM for simplicity of representation.
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub instructions: Vec<Instruction>,
 }
@@ -78,50 +111,84 @@ impl Program {
 pub struct Planner;
 
 impl Planner {
-    pub fn compile(request: QueryRequest) -> Program {
+    pub fn compile(ast: AstNode) -> Program {
         let mut program = Program::new();
 
-        // 1. Retrieve candidates from Qdrant
-        // We typically retrieve more candidates initially before reranking. Let's assume a default multiplier.
-        let initial_k = request.final_top_k * 10;
-        program.push(OpCode::RetrieveQdrant {
-            query: request.query.clone(),
-            filters: request.filters.clone(),
-            top_k: initial_k,
-        });
+        match ast {
+            AstNode::Search(request) => {
+                let initial_k = request.final_top_k * 10;
+                program.push(OpCode::RetrieveQdrant {
+                    query: request.query.clone(),
+                    filters: request.filters.clone(),
+                    top_k: initial_k,
+                });
 
-        // Compute semantic scores based on the retrieved vectors
-        program.push(OpCode::ComputeSemantic);
+                program.push(OpCode::ComputeSemantic);
 
-        match request.rerank_strategy {
-            RerankStrategy::SemanticOnly => {
-                // No extra scores needed, just sort the semantic scores
-                program.push(OpCode::TopK(request.final_top_k));
+                match request.rerank_strategy {
+                    RerankStrategy::SemanticOnly => {
+                        program.push(OpCode::TopK(request.final_top_k));
+                        program.push(OpCode::Emit);
+                    }
+                    RerankStrategy::Bm25Only => {
+                        program.push(OpCode::RetrievePostgres);
+                        program.push(OpCode::TopK(request.final_top_k));
+                        program.push(OpCode::Emit);
+                    }
+                    RerankStrategy::Hybrid { semantic_weight, bm25_weight } => {
+                        program.push(OpCode::RetrievePostgres);
+                        program.push(OpCode::LoadConst(semantic_weight));
+                        program.push(OpCode::LoadConst(bm25_weight));
+                        program.push(OpCode::Fusion);
+                        program.push(OpCode::TopK(request.final_top_k));
+                        program.push(OpCode::Emit);
+                    }
+                    RerankStrategy::Mmr { diversity } => {
+                        program.push(OpCode::Mmr(diversity));
+                        program.push(OpCode::TopK(request.final_top_k));
+                        program.push(OpCode::Emit);
+                    }
+                    RerankStrategy::Rrf { k } => {
+                        program.push(OpCode::RetrievePostgres);
+                        program.push(OpCode::Rrf(k));
+                        program.push(OpCode::TopK(request.final_top_k));
+                        program.push(OpCode::Emit);
+                    }
+                }
+            }
+            AstNode::MultiHop { query, hops } => {
+                for _ in 0..hops {
+                    program.push(OpCode::RetrieveQdrant {
+                        query: query.clone(),
+                        filters: None,
+                        top_k: 10, // Mock fixed top_k
+                    });
+                }
+                program.push(OpCode::ComputeSemantic);
+                program.push(OpCode::TopK(10));
                 program.push(OpCode::Emit);
             }
-            RerankStrategy::Bm25Only => {
-                // Need to fetch BM25 scores from Postgres
-                program.push(OpCode::RetrievePostgres);
-                // In a real VM, we would swap or drop the semantic scores,
-                // but for now we assume RetrievePostgres puts BM25 scores on top of the stack.
-                program.push(OpCode::TopK(request.final_top_k));
-                program.push(OpCode::Emit);
+            AstNode::SelfRag { query, threshold, low_plan, high_plan } => {
+                program.push(OpCode::RetrieveQdrant {
+                    query: query.clone(),
+                    filters: None,
+                    top_k: 10,
+                });
+                program.push(OpCode::ComputeSemantic);
+
+                let low_prog = Planner::compile(*low_plan);
+                let high_prog = Planner::compile(*high_plan);
+                program.push(OpCode::IfConfidence(threshold, low_prog, high_prog));
             }
-            RerankStrategy::Hybrid { semantic_weight, bm25_weight } => {
-                // Need both scores
-                program.push(OpCode::RetrievePostgres);
-
-                // Assuming stack state: [..., SemanticScores, Bm25Scores]
-                // We need to multiply SemanticScores by semantic_weight,
-                // multiply Bm25Scores by bm25_weight, and then Add.
-                // In a stack VM, this would require some stack manipulation.
-                // For simplicity, we can use the Fusion instruction which does weighted blending.
-                // Let's emit LoadConsts for weights and then Fusion.
-                program.push(OpCode::LoadConst(semantic_weight));
-                program.push(OpCode::LoadConst(bm25_weight));
-                program.push(OpCode::Fusion);
-
-                program.push(OpCode::TopK(request.final_top_k));
+            AstNode::CorrectiveRag { query: _, fallback_query } => {
+                // Corrective Rag mocks fallback
+                program.push(OpCode::RetrieveQdrant {
+                    query: fallback_query.clone(),
+                    filters: None,
+                    top_k: 10,
+                });
+                program.push(OpCode::ComputeSemantic);
+                program.push(OpCode::TopK(10));
                 program.push(OpCode::Emit);
             }
         }
@@ -148,7 +215,8 @@ mod tests {
         }"#;
 
         let request: QueryRequest = serde_json::from_str(request_json).unwrap();
-        let program = Planner::compile(request);
+        let ast = AstNode::Search(request);
+        let program = Planner::compile(ast);
 
         assert_eq!(program.instructions.len(), 8);
         assert!(matches!(program.instructions[0].op, OpCode::RetrieveQdrant { .. }));

@@ -1,0 +1,6 @@
+{
+  "topic": "Phase 2 DSL macros for complex retrieval strategies",
+  "instruction": "Finish Week 5 and Week 6 tasks from the implementation plan by adding macros for complex retrieval strategies without requiring recompilation of the Rust core.",
+  "context": "The lexpr parser in dsl.rs previously only parsed basic '(search)' and returned a flat 'QueryRequest'. The IR OpCode in ir.rs only supported basic operations. The VM in vm.rs only supported 'TopK', 'Add', 'Mul', 'Fusion'.",
+  "response": "Created an 'AstNode' enum in 'ir.rs' (Search, MultiHop, SelfRag, CorrectiveRag). Extended 'OpCode' with 'Mmr', 'Rrf', and 'IfConfidence'. Updated 'dsl.rs' to return 'Result<AstNode, String>' and added parsing logic for 'multi-hop', 'self-rag', 'corrective-rag', 'mmr', and 'rrf'. Added mock implementations in 'vm.rs' for the new OpCodes. Updated 'Planner::compile' to compile an 'AstNode' into a sequence of 'OpCode's. Updated 'mcp.rs' to wrap JSON requests into 'AstNode::Search'. Added unit tests in 'dsl.rs'."
+}

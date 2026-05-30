@@ -46,14 +46,16 @@ pub struct SearchTool;
 
 impl ToolHandler for SearchTool {
     fn handle(&self, args: JsonValue) -> Result<Vec<u8>, String> {
-        let request = if let Some(dsl_string) = args.get("dsl").and_then(|v| v.as_str()) {
+        let ast = if let Some(dsl_string) = args.get("dsl").and_then(|v| v.as_str()) {
             crate::dsl::parse_dsl(dsl_string)?
         } else {
-            serde_json::from_value(args)
-                .map_err(|e| format!("Failed to parse QueryRequest JSON: {}", e))?
+            // For JSON fallback, wrap QueryRequest inside AstNode::Search
+            let req: crate::ir::QueryRequest = serde_json::from_value(args)
+                .map_err(|e| format!("Failed to parse QueryRequest JSON: {}", e))?;
+            crate::ir::AstNode::Search(req)
         };
 
-        let program = crate::ir::Planner::compile(request);
+        let program = crate::ir::Planner::compile(ast);
         let mut vm = crate::vm::VM::new();
 
         let result = vm.run(program)

@@ -45,7 +45,7 @@ mod tests {
         let mut latencies: Vec<u128> = Vec::with_capacity(100);
 
         for _ in 0..100 {
-            let program = ir::Planner::compile(benchmark_request.clone());
+            let program = ir::Planner::compile(ir::AstNode::Search(benchmark_request.clone()));
             let mut vm = vm::VM::new();
 
             let start = std::time::Instant::now();
