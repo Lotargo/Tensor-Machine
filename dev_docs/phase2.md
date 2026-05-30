@@ -1,7 +1,3 @@
-Now I have all the context needed. Here is the documentation:
-
----
-
 # Phase 2 DSL: S-Expression Query Language for tensor-rag
 
 ## Overview
@@ -42,14 +38,14 @@ Nested S-expressions for branch plans (Self-RAG) are handled by `parse_inner_nod
 
 `:rerank` dispatches on the strategy name:
 
-| Form | `RerankStrategy` variant | IR produced |
-|---|---|---|
-| `(semantic)` | `SemanticOnly` | RetrieveQdrant, ComputeSemantic, TopK, Emit |
-| `(bm25)` | `Bm25Only` | +RetrievePostgres before TopK |
-| `(hybrid :weights (sem <f> bm25 <f>))` | `Hybrid { sem, bm25 }` | +LoadConst(sem), LoadConst(bm25), Fusion |
-| `(mmr :diversity <f>)` | `Mmr { diversity }` | Mmr(diversity), TopK, Emit |
-| `(rrf :k <int>)` | `Rrf { k }` | +RetrievePostgres, Rrf(k), TopK, Emit |
-| `(any-other :key val)` | `Dynamic { name, args }` | CallDynamic(name, args), TopK, Emit |
+| Form                                   | `RerankStrategy` variant | IR produced                                 |
+| -------------------------------------- | ------------------------ | ------------------------------------------- |
+| `(semantic)`                           | `SemanticOnly`           | RetrieveQdrant, ComputeSemantic, TopK, Emit |
+| `(bm25)`                               | `Bm25Only`               | +RetrievePostgres before TopK               |
+| `(hybrid :weights (sem <f> bm25 <f>))` | `Hybrid { sem, bm25 }`   | +LoadConst(sem), LoadConst(bm25), Fusion    |
+| `(mmr :diversity <f>)`                 | `Mmr { diversity }`      | Mmr(diversity), TopK, Emit                  |
+| `(rrf :k <int>)`                       | `Rrf { k }`              | +RetrievePostgres, Rrf(k), TopK, Emit       |
+| `(any-other :key val)`                 | `Dynamic { name, args }` | CallDynamic(name, args), TopK, Emit         |
 
 ### 2.2 `multi-hop` — Iterative retrieval
 
@@ -105,35 +101,35 @@ AstNode::CorrectiveRag { query, fallback_query }
 
 `Planner::compile(ast: AstNode) -> Program` lowers the AST into a linear `Vec<Instruction>` where each instruction wraps an `OpCode`:
 
-| OpCode | Purpose |
-|---|---|
-| `RetrieveQdrant { query, filters, top_k }` | Fetch candidate vectors from Qdrant |
-| `RetrievePostgres` | Fetch BM25 scores from Postgres |
-| `ComputeSemantic` | Dot-product query vector against all candidate vectors |
-| `LoadConst(f32)` | Push scalar onto VM stack |
-| `Add` / `Mul` / `Div` | Element-wise tensor arithmetic (stack-based) |
-| `Fusion` | Weighted blend: `a*w1 + b*w2` (pops 4 stack values) |
-| `Matmul` | Dot product of two 1D tensors → Scalar |
-| `TopK(usize)` | Sort and select top K indices/scores |
-| `Mmr(f32)` | Maximum Marginal Relevance (mock) |
-| `Rrf(usize)` | Reciprocal Rank Fusion (mock) |
-| `Threshold(f32)` | Zero values below threshold |
-| `Sort` | Sort descending |
-| `Slice(usize, usize)` | Extract sub-range |
-| `IfConfidence(f32, Program, Program)` | Branch on max score |
-| `CallDynamic(String, Value)` | Runtime-dispatchable strategy |
-| `Emit` | Return top-of-stack as result |
+| OpCode                                     | Purpose                                                |
+| ------------------------------------------ | ------------------------------------------------------ |
+| `RetrieveQdrant { query, filters, top_k }` | Fetch candidate vectors from Qdrant                    |
+| `RetrievePostgres`                         | Fetch BM25 scores from Postgres                        |
+| `ComputeSemantic`                          | Dot-product query vector against all candidate vectors |
+| `LoadConst(f32)`                           | Push scalar onto VM stack                              |
+| `Add` / `Mul` / `Div`                      | Element-wise tensor arithmetic (stack-based)           |
+| `Fusion`                                   | Weighted blend: `a*w1 + b*w2` (pops 4 stack values)    |
+| `Matmul`                                   | Dot product of two 1D tensors → Scalar                 |
+| `TopK(usize)`                              | Sort and select top K indices/scores                   |
+| `Mmr(f32)`                                 | Maximum Marginal Relevance (mock)                      |
+| `Rrf(usize)`                               | Reciprocal Rank Fusion (mock)                          |
+| `Threshold(f32)`                           | Zero values below threshold                            |
+| `Sort`                                     | Sort descending                                        |
+| `Slice(usize, usize)`                      | Extract sub-range                                      |
+| `IfConfidence(f32, Program, Program)`      | Branch on max score                                    |
+| `CallDynamic(String, Value)`               | Runtime-dispatchable strategy                          |
+| `Emit`                                     | Return top-of-stack as result                          |
 
 **Compilation patterns by strategy:**
 
-| Strategy | Instruction sequence |
-|---|---|
-| SemanticOnly | RetrieveQdrant, ComputeSemantic, TopK(N), Emit |
-| Bm25Only | +RetrievePostgres, TopK(N), Emit |
-| Hybrid | +RetrievePostgres, LoadConst(w_sem), LoadConst(w_bm25), Fusion, TopK(N), Emit |
-| Mmr | Mmr(d), TopK(N), Emit |
-| Rrf | +RetrievePostgres, Rrf(k), TopK(N), Emit |
-| Dynamic | CallDynamic(name, args), TopK(N), Emit |
+| Strategy     | Instruction sequence                                                          |
+| ------------ | ----------------------------------------------------------------------------- |
+| SemanticOnly | RetrieveQdrant, ComputeSemantic, TopK(N), Emit                                |
+| Bm25Only     | +RetrievePostgres, TopK(N), Emit                                              |
+| Hybrid       | +RetrievePostgres, LoadConst(w_sem), LoadConst(w_bm25), Fusion, TopK(N), Emit |
+| Mmr          | Mmr(d), TopK(N), Emit                                                         |
+| Rrf          | +RetrievePostgres, Rrf(k), TopK(N), Emit                                      |
+| Dynamic      | CallDynamic(name, args), TopK(N), Emit                                        |
 
 ---
 
@@ -150,6 +146,7 @@ The `ComputeSemantic` opcode extracts the fixed-size list column from the Arrow 
 ## 6. Dual Entry in `mcp.rs`
 
 The MCP `SearchTool` accepts either:
+
 - A `"dsl"` key with an S-expression string → `dsl::parse_dsl(s)`
 - A JSON object directly → `serde_json::from_value` into `QueryRequest` → wrapped as `AstNode::Search`
 

@@ -1,7 +1,3 @@
-Now I have the full diff. Here is the documentation draft:
-
----
-
 # Phase 5 Technical Debt — Implementation Summary
 
 ## Overview
@@ -16,14 +12,14 @@ Phase 5 addresses four areas of technical debt that accumulated during the MVP: 
 
 The method signature changed from `(_query, _filters, top_k)` to `(query, filters, top_k)` — the previously-ignored parameters are now used to construct a real Qdrant gRPC/REST JSON payload. The filter-to-Qdrant mapping translates the IR `Filter` struct into Qdrant's `must` condition syntax:
 
-| IR Operator | Qdrant Condition |
-|-------------|------------------|
+| IR Operator | Qdrant Condition  |
+| ----------- | ----------------- |
 | `==` / `=`  | `match { value }` |
-| `>=`        | `range { gte }` |
-| `>`         | `range { gt }` |
-| `<=`        | `range { lte }` |
-| `<`         | `range { lt }` |
-| `in`        | `match { any }` |
+| `>=`        | `range { gte }`   |
+| `>`         | `range { gt }`    |
+| `<=`        | `range { lte }`   |
+| `<`         | `range { lt }`    |
+| `in`        | `match { any }`   |
 | (fallback)  | `match { value }` |
 
 If a `"default"` Qdrant channel exists, the payload is serialized (commented-out gRPC client call). This enables **predicate pushdown**: metadata filtering happens server-side in Qdrant, minimizing data transfer.
@@ -45,6 +41,7 @@ Replaced placeholder `"Metadata for doc {id}"` strings with `SELECT id, text FRO
 The `parse_rerank` else-branch no longer returns an error for unknown strategy names. Instead, it parses the remaining s-expression as opaque key-value args into a `serde_json::Value` and returns `RerankStrategy::Dynamic { name, args }`. This allows any externally-registered reranking strategy to be expressed in the DSL without a parser change.
 
 Example DSL:
+
 ```scheme
 (search :query "test" :rerank (my-custom-algo :param1 42 :param2 "val") :final-top-k 10)
 ```
@@ -73,6 +70,7 @@ The `CallDynamic` stub handler was added to `VM::step` (no-op for now, deferred 
 ## 4. Latency Assertion Tightened (`lib.rs`)
 
 Modified in `lib.rs`:
+
 ```
 - assert!(p99_latency < 65000, ...)
 + assert!(p99_latency < 5000, ...)
@@ -84,10 +82,10 @@ The P99 latency bound was tightened from 65,000 µs (65 ms) to 5,000 µs (5 ms) 
 
 ## Summary of Files Changed
 
-| File | Change Type | Lines Changed |
-|------|-------------|---------------|
-| `db.rs` | SQL mapping + predicate pushdown | ~90 added |
-| `dsl.rs` | Dynamic strategy parsing | ~40 added |
-| `ir.rs` | `Dynamic` variant + `CallDynamic` opcode | ~10 added |
-| `vm.rs` | VM mock optimization + `CallDynamic` stub | ~28 added |
-| `lib.rs` | Tighten P99 assertion | 1 line changed |
+| File     | Change Type                               | Lines Changed  |
+| -------- | ----------------------------------------- | -------------- |
+| `db.rs`  | SQL mapping + predicate pushdown          | ~90 added      |
+| `dsl.rs` | Dynamic strategy parsing                  | ~40 added      |
+| `ir.rs`  | `Dynamic` variant + `CallDynamic` opcode  | ~10 added      |
+| `vm.rs`  | VM mock optimization + `CallDynamic` stub | ~28 added      |
+| `lib.rs` | Tighten P99 assertion                     | 1 line changed |

@@ -1,5 +1,3 @@
-Let me read the key source files for exact references.
-```text
 # Phase 3: Zero-Copy Implementation in tensor-rag
 
 ## Overview
@@ -10,6 +8,7 @@ and the compute engine. The `arrow` crate (v51.0.0) serves as the in-memory repr
 for all tensor data flowing through the system.
 
 **Crate dependency** (`tensor-rag/Cargo.toml:15`):
+
 ```toml
 arrow = "51.0.0"
 ```
@@ -56,6 +55,7 @@ pub fn qdrant_to_record_batch(
 - Returns a `RecordBatch` matching the schema via `RecordBatch::try_new`.
 
 **Invoked from** `mcp.rs:188` inside `execute_program`:
+
 ```rust
 let batch = crate::arrow::qdrant_to_record_batch(&ids, &vectors)?;
 vm.batch = Some(Arc::new(batch));
@@ -122,19 +122,19 @@ Every compute opcode has two implementation paths: one for `Value::Tensor1D` (nd
 backwards-compatible) and one for `Value::ArrowArray` (Arrow-native). The Arrow paths
 use `arrow::compute::kernels::numeric` for element-wise operations:
 
-| OpCode           | Arrow Kernel / Strategy                          | File:Line    |
-|------------------|--------------------------------------------------|--------------|
-| `Add`            | `arrow::compute::kernels::numeric::add`          | vm.rs:62-65  |
-| `Mul`            | `arrow::compute::kernels::numeric::mul`          | vm.rs:77-81  |
-| `Fusion`         | Two `mul` calls + one `add` call                 | vm.rs:96-107 |
-| `Matmul`         | `mul` then `arrow::compute::sum`                 | vm.rs:124-131|
-| `Div`            | `arrow::compute::kernels::numeric::div`          | vm.rs:142-145|
-| `Threshold`      | Iterator with conditional logic                   | vm.rs:157-160|
-| `Sort`           | Collect to Vec, sort descending                  | vm.rs:173-177|
-| `Slice`          | `arr.slice(start, end)` — zero-copy view         | vm.rs:189-191|
-| `TopK`           | Enumerate + sort + take k                        | vm.rs:208-221|
-| `ComputeSemantic`| Direct `flat.values()` read + dot product loop   | vm.rs:229-248|
-| `IfConfidence`   | Iterator over `t_f32.iter().flatten()`            | vm.rs:311-315|
+| OpCode            | Arrow Kernel / Strategy                        | File:Line     |
+| ----------------- | ---------------------------------------------- | ------------- |
+| `Add`             | `arrow::compute::kernels::numeric::add`        | vm.rs:62-65   |
+| `Mul`             | `arrow::compute::kernels::numeric::mul`        | vm.rs:77-81   |
+| `Fusion`          | Two `mul` calls + one `add` call               | vm.rs:96-107  |
+| `Matmul`          | `mul` then `arrow::compute::sum`               | vm.rs:124-131 |
+| `Div`             | `arrow::compute::kernels::numeric::div`        | vm.rs:142-145 |
+| `Threshold`       | Iterator with conditional logic                | vm.rs:157-160 |
+| `Sort`            | Collect to Vec, sort descending                | vm.rs:173-177 |
+| `Slice`           | `arr.slice(start, end)` — zero-copy view       | vm.rs:189-191 |
+| `TopK`            | Enumerate + sort + take k                      | vm.rs:208-221 |
+| `ComputeSemantic` | Direct `flat.values()` read + dot product loop | vm.rs:229-248 |
+| `IfConfidence`    | Iterator over `t_f32.iter().flatten()`         | vm.rs:311-315 |
 
 ### ComputeSemantic: Direct Buffer Read
 
@@ -190,6 +190,7 @@ bytes — the only data that crosses the process boundary back to the LLM agent.
 ## Current Zero-Copy Status
 
 ### Achieved
+
 - `Arc<RecordBatch>` is shared between orchestrator and VM — no clone of the
   full result set.
 - `Arc<dyn Array>` values on the VM stack are reference-counted, not copied.
@@ -198,6 +199,7 @@ bytes — the only data that crosses the process boundary back to the LLM agent.
 - `flat.values()` in `ComputeSemantic` reads directly from the Arrow buffer.
 
 ### Not Yet Achieved
+
 - `qdrant_to_record_batch()` still receives `&[Array1<f32>]` (ndarray) rather than
   building directly from a `bytes::Bytes` gRPC buffer as envisioned in the
   architecture manifesto.
@@ -207,7 +209,7 @@ bytes — the only data that crosses the process boundary back to the LLM agent.
   computed values).
 - mmap-based shared memory (`MmapRegion<T>`) and Arrow IPC inter-process protocol
   (architecture Tasks 8.1–8.3) remain unimplemented.
-```
+
 The documentation has been output to stdout above. It covers:
 
 1. **Arrow crate integration** — `arrow = "51.0.0"` in `Cargo.toml:15`, rationale for choosing official `arrow-rs` over `arrow2`.

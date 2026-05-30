@@ -1,4 +1,3 @@
-```markdown
 # Phase 1 MVP — Implementation Documentation
 
 ## Overview
@@ -69,11 +68,11 @@ All fields are `Clone` (via `Arc`-like refcounting in `sqlx`/`tonic`).
 
 ### Initialization
 
-| Method | Pool | Config |
-|--------|------|--------|
-| `init_postgres(url)` | `PgPoolOptions::new().max_connections(5)` | Async connect |
+| Method                     | Pool                                           | Config        |
+| -------------------------- | ---------------------------------------------- | ------------- |
+| `init_postgres(url)`       | `PgPoolOptions::new().max_connections(5)`      | Async connect |
 | `add_qdrant_node(id, url)` | `tonic::Endpoint::from_shared(url)?.connect()` | Async connect |
-| `add_ml_server(id, url)` | Same as Qdrant | Async connect |
+| `add_ml_server(id, url)`   | Same as Qdrant                                 | Async connect |
 
 ### Mock I/O (MVP default)
 
@@ -83,9 +82,9 @@ When no real backend is configured, methods return synthetic data:
   (vector, limit, filters rendered as Qdrant `must` conditions). Returns `top_k`
   dummy IDs `(0..top_k)` and vectors `[0.1; 768]`.
 - **`fetch_bm25_scores()`** — queries `SELECT id, bm25_score FROM documents WHERE
-  id = ANY($1)`. Returns `1.0` for each ID when no real pool exists.
+id = ANY($1)`. Returns `1.0` for each ID when no real pool exists.
 - **`fetch_metadata()`** — queries `SELECT id, text FROM documents WHERE
-  id = ANY($1)`. Returns `"Metadata for doc {id}"` fallback.
+id = ANY($1)`. Returns `"Metadata for doc {id}"` fallback.
 
 Filters support operators: `==`, `>=`, `>`, `<=`, `<`, `in`, with a fallback to
 `match` for unknown operators.
@@ -118,17 +117,17 @@ AstNode
 
 The `Planner` walks the AST and emits a linear `Vec<Instruction>`.
 
-| AST Node | Emitted IR Sequence |
-|---|---|
-| **Search + SemanticOnly** | `RetrieveQdrant(top_k×10)` → `ComputeSemantic` → `TopK(k)` → `Emit` |
-| **Search + Bm25Only** | `RetrieveQdrant` → `ComputeSemantic` → `RetrievePostgres` → `TopK(k)` → `Emit` |
-| **Search + Hybrid(w1,w2)** | `RetrieveQdrant` → `ComputeSemantic` → `RetrievePostgres` → `LoadConst(w1)` → `LoadConst(w2)` → `Fusion` → `TopK(k)` → `Emit` |
-| **Search + Mmr(div)** | `RetrieveQdrant` → `ComputeSemantic` → `Mmr(div)` → `TopK(k)` → `Emit` |
-| **Search + Rrf(k)** | `RetrieveQdrant` → `ComputeSemantic` → `RetrievePostgres` → `Rrf(k)` → `TopK(k)` → `Emit` |
-| **Search + Dynamic** | `RetrieveQdrant` → `ComputeSemantic` → `CallDynamic(name,args)` → `TopK(k)` → `Emit` |
-| **MultiHop(n)** | `RetrieveQdrant` × `n` → `ComputeSemantic` → `TopK(10)` → `Emit` |
-| **SelfRag(th,low,high)** | `RetrieveQdrant` → `ComputeSemantic` → `IfConfidence(th, compile(low), compile(high))` |
-| **CorrectiveRag(fallback)** | `RetrieveQdrant`(fallback) → `ComputeSemantic` → `TopK(10)` → `Emit` |
+| AST Node                    | Emitted IR Sequence                                                                                                           |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Search + SemanticOnly**   | `RetrieveQdrant(top_k×10)` → `ComputeSemantic` → `TopK(k)` → `Emit`                                                           |
+| **Search + Bm25Only**       | `RetrieveQdrant` → `ComputeSemantic` → `RetrievePostgres` → `TopK(k)` → `Emit`                                                |
+| **Search + Hybrid(w1,w2)**  | `RetrieveQdrant` → `ComputeSemantic` → `RetrievePostgres` → `LoadConst(w1)` → `LoadConst(w2)` → `Fusion` → `TopK(k)` → `Emit` |
+| **Search + Mmr(div)**       | `RetrieveQdrant` → `ComputeSemantic` → `Mmr(div)` → `TopK(k)` → `Emit`                                                        |
+| **Search + Rrf(k)**         | `RetrieveQdrant` → `ComputeSemantic` → `RetrievePostgres` → `Rrf(k)` → `TopK(k)` → `Emit`                                     |
+| **Search + Dynamic**        | `RetrieveQdrant` → `ComputeSemantic` → `CallDynamic(name,args)` → `TopK(k)` → `Emit`                                          |
+| **MultiHop(n)**             | `RetrieveQdrant` × `n` → `ComputeSemantic` → `TopK(10)` → `Emit`                                                              |
+| **SelfRag(th,low,high)**    | `RetrieveQdrant` → `ComputeSemantic` → `IfConfidence(th, compile(low), compile(high))`                                        |
+| **CorrectiveRag(fallback)** | `RetrieveQdrant`(fallback) → `ComputeSemantic` → `TopK(10)` → `Emit`                                                          |
 
 ### JSON Input
 
@@ -177,31 +176,31 @@ pub struct VM {
 
 ### Implemented Opcodes
 
-| OpCode | Stack Effect | Implementation |
-|---|---|---|
-| `LoadConst(f32)` | `→ scalar` | Push scalar onto stack |
-| `Add` | `(t1, t2) → t` | Element-wise add via `ndarray` or `arrow::compute::kernels::numeric::add` |
-| `Mul` | `(t, s) → t` | Tensor-scalar mul via `ndarray` or `arrow::compute` |
-| `Div` | `(t1, t2) → t` | Element-wise div via `arrow::compute::kernels::numeric::div` |
-| `Fusion` | `(t1, t2, w1, w2) → t` | `t1 * w1 + t2 * w2` (weighted blend) |
-| `Matmul` | `(t1, t2) → scalar` | Dot product: `ndarray::dot` or `arrow::compute::sum(mul(t1,t2))` |
-| `Threshold(f)` | `(t) → t` | Zero out values < threshold |
-| `Sort` | `(t) → t` | Descending sort |
-| `Slice(i, j)` | `(t) → t` | Range slice `[i..j)` |
-| `TopK(k)` | `(t) → Result` | Descending sort, take top-k indices+scores |
-| `Emit` | `(v) → ✓` | Pop and return as final result |
-| `ComputeSemantic` | `→ t` | Dot product of `query_vector` with each batch row (768-d) |
-| `Mmr(f)` | `(t) → t` | **Stub** — no-op |
-| `Rrf(k)` | `(t) → t` | **Stub** — no-op |
-| `CallDynamic(n, a)` | `(t) → t` | **Stub** — no-op |
+| OpCode              | Stack Effect           | Implementation                                                            |
+| ------------------- | ---------------------- | ------------------------------------------------------------------------- |
+| `LoadConst(f32)`    | `→ scalar`             | Push scalar onto stack                                                    |
+| `Add`               | `(t1, t2) → t`         | Element-wise add via `ndarray` or `arrow::compute::kernels::numeric::add` |
+| `Mul`               | `(t, s) → t`           | Tensor-scalar mul via `ndarray` or `arrow::compute`                       |
+| `Div`               | `(t1, t2) → t`         | Element-wise div via `arrow::compute::kernels::numeric::div`              |
+| `Fusion`            | `(t1, t2, w1, w2) → t` | `t1 * w1 + t2 * w2` (weighted blend)                                      |
+| `Matmul`            | `(t1, t2) → scalar`    | Dot product: `ndarray::dot` or `arrow::compute::sum(mul(t1,t2))`          |
+| `Threshold(f)`      | `(t) → t`              | Zero out values < threshold                                               |
+| `Sort`              | `(t) → t`              | Descending sort                                                           |
+| `Slice(i, j)`       | `(t) → t`              | Range slice `[i..j)`                                                      |
+| `TopK(k)`           | `(t) → Result`         | Descending sort, take top-k indices+scores                                |
+| `Emit`              | `(v) → ✓`              | Pop and return as final result                                            |
+| `ComputeSemantic`   | `→ t`                  | Dot product of `query_vector` with each batch row (768-d)                 |
+| `Mmr(f)`            | `(t) → t`              | **Stub** — no-op                                                          |
+| `Rrf(k)`            | `(t) → t`              | **Stub** — no-op                                                          |
+| `CallDynamic(n, a)` | `(t) → t`              | **Stub** — no-op                                                          |
 
 ### I/O / Branching Opcodes (orchestrator-routed, not in `step()`)
 
-| OpCode | Handler |
-|---|---|
-| `RetrieveQdrant` | `execute_program()` in `mcp.rs` — calls `DbPools::search_qdrant()`, builds Arrow `RecordBatch` |
-| `RetrievePostgres` | `execute_program()` — calls `DbPools::fetch_bm25_scores()`, pushes `Float32Array` |
-| `IfConfidence(th, low, high)` | `execute_program()` — pops tensor, finds max score, recurses into `low` or `high` sub-program |
+| OpCode                        | Handler                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `RetrieveQdrant`              | `execute_program()` in `mcp.rs` — calls `DbPools::search_qdrant()`, builds Arrow `RecordBatch` |
+| `RetrievePostgres`            | `execute_program()` — calls `DbPools::fetch_bm25_scores()`, pushes `Float32Array`              |
+| `IfConfidence(th, low, high)` | `execute_program()` — pops tensor, finds max score, recurses into `low` or `high` sub-program  |
 
 ### Backward Compatibility `run()` Method
 
@@ -248,4 +247,3 @@ root_type SearchResult;
 Generated Rust bindings in `result_generated.rs` (218 lines). The `SearchTool::handle`
 method serializes final `TopKResult` into this compact binary format before returning
 to the LLM agent.
-```
