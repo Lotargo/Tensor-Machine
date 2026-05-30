@@ -104,3 +104,5 @@ mod tests {
         assert!(memory_increase_mb < 500.0, "Memory increase too high: {:.2} MB", memory_increase_mb);
     }
 }
+
+pub mod dsl;
