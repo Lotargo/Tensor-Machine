@@ -1,199 +1,298 @@
-# OpenCode CLI Agent Collaboration Guidelines
+# OpenCode Support Protocol for Solo Agents
 
-## 1. Core Architecture
+## 1. Core Rule
 
-You (the primary agent) are the **sole architect and coder**. The `opencode` CLI agents are your **support crew** — they research, test, document, and advise, but **NEVER write production code**.
+The primary agent is the owner of the task.
 
-**Why:** `opencode` runs smaller models in isolated, stateless sessions with no inter-agent communication. They cannot coordinate with each other, share context, or safely merge concurrent edits. You are the single source of truth.
+`opencode` is an external, read-only worker pool. Use it to gather facts, run checks, review ideas, and draft supporting text. Do not treat it as a second coder with shared memory or project authority.
 
-## 2. Session Tracking
+The primary agent owns:
 
-All sessions are tracked in `.brains/sessions/` using the format `YYYY-MM-DD-NNNN` (e.g., `2026-05-29-0001`).
+- final architecture and technical decisions
+- production code edits
+- test selection and interpretation
+- final documentation wording
+- user-facing conclusions
 
-Each session directory contains:
+`opencode` may help, but its output is evidence, not truth. Verify anything that affects code, architecture, tests, or documentation.
 
+## 2. When to Use OpenCode
+
+Use `opencode` when the work is:
+
+- context-heavy or repetitive
+- easy to parallelize
+- useful as an independent review
+- likely to take more than 5-10 minutes
+- blocked by uncertainty where a second opinion helps
+- mostly read-only: research, logs, tests, docs, git history, call-site mapping
+
+Do not use `opencode` just to satisfy a ritual. For tiny tasks, direct inspection is fine.
+
+## 3. What to Delegate
+
+Good tasks for `opencode`:
+
+- codebase research and call-site mapping
+- log analysis and failure summarization
+- running specified tests and reporting exact output
+- independent diff review
+- git history inspection: `log`, `blame`, `bisect` support
+- environment validation
+- web research against current official documentation
+- documentation drafts and walkthrough drafts
+
+Do not delegate:
+
+- production source edits
+- bug fixes in project files
+- refactors
+- database or data migrations
+- final architecture decisions
+- cross-file coordination
+- tasks where partial or stale context can corrupt the result
+
+Documentation rule: `opencode` may draft documentation, but the primary agent must verify it against the actual diff, commands, logs, and current project state before accepting it.
+
+## 4. OpenCode Roles
+
+Use one focused role per `opencode` call.
+
+### Scout
+
+Find relevant files, functions, call sites, configs, and risks.
+
+Prompt shape:
+
+```text
+You are Scout. Inspect the repository for [topic].
+Return relevant files, call sites, assumptions, and risks.
+Do not modify any files.
 ```
-.brains/sessions/2026-05-29-0001/
-├── plans/          # Detailed implementation plan (created BEFORE work begins)
-├── tasks/          # Checklist with progress marks: [ ] → [/] → [x]
-└── walkthrough/    # Post-completion summary of what was done and why
+
+### Tester
+
+Run explicit commands and report exact results.
+
+Prompt shape:
+
+```text
+You are Tester. Run these commands:
+[commands]
+Return exit codes, key output, and failures.
+Do not modify any files.
 ```
 
-**Workflow:**
+### Reviewer
 
-1. Create the session directory and write the plan **before** delegating any work.
-2. Update `tasks/` as you progress.
-3. Write the walkthrough **after** verification is complete.
+Review a diff or implementation for bugs, regressions, missing tests, and unsafe assumptions.
 
-Agents can reference the plan file in their prompts for context alignment.
+Prompt shape:
 
-## 3. What Agents Do (and Don't)
+```text
+You are Reviewer. Review the current diff for [goal].
+Prioritize correctness bugs, regressions, and missing tests.
+Return findings with file paths and line references where possible.
+Do not modify any files.
+```
 
-**Delegate to `opencode`:**
+### Researcher
 
-- Codebase research and analysis
-- Web search for docs, APIs, and solutions
-- Running tests and reporting results
-- Generating documentation
-- Git history analysis (bisect, blame, log)
-- Environment setup and validation
+Find current official documentation or best practices.
 
-**NEVER delegate to `opencode`:**
+Prompt shape:
 
-- Writing or modifying source code
-- Architectural decisions
-- Fixing bugs in production files
-- Refactoring
-- Database migrations
-- Anything requiring cross-file coordination
+```text
+You are Researcher. Find the latest official documentation as of 2026-05-30 for [topic].
+Ignore deprecated approaches.
+Return links, short summary, and recommended implementation constraints.
+Do not modify any files.
+```
 
-**NEVER do yourself (always delegate to agents):**
+### Scribe
 
-- Writing documentation — walkthroughs, `docs/` files, README updates, API docs, or any other documentation. Agents generate all documentation; you only review and approve.
+Draft documentation or a walkthrough from facts provided by the primary agent.
 
-## 4. Parallel Dispatch Pattern
+Prompt shape:
 
-Fire off support agents in parallel with `&`, then continue your own coding work. Review their output when notifications arrive.
+```text
+You are Scribe. Draft documentation for [change].
+Use only the facts below. Mark unknowns explicitly.
+[facts]
+Write to stdout unless a specific docs path is explicitly allowed.
+Do not modify source files.
+```
+
+## 5. Required Output Contract
+
+Every `opencode` result should be easy to audit. Ask it to return:
+
+```text
+Summary:
+Evidence:
+Files inspected:
+Commands run:
+Risks or uncertainty:
+Recommendation:
+```
+
+For tests, require exact command lines and exit codes.
+
+For web research, require source links and dates when available.
+
+For reviews, require severity labels:
+
+- P0: data loss, security issue, crash, or unusable core workflow
+- P1: likely correctness bug or major regression
+- P2: edge-case bug, missing validation, or meaningful test gap
+- P3: maintainability or clarity issue
+
+## 6. Session Tracking
+
+Use `.brains/sessions/` for complex or multi-phase work.
+
+Session directory format:
+
+```text
+.brains/sessions/YYYY-MM-DD-NNNN/
+  plans/
+  tasks/
+  walkthrough/
+```
+
+Create a session when the task has multiple phases, multiple agents, or a non-trivial verification trail.
+
+Minimum contents:
+
+- `plans/`: what will be changed or investigated
+- `tasks/`: checklist with `[ ]`, `[/]`, `[x]`
+- `walkthrough/`: final summary after verification
+
+Small tasks do not need a session.
+
+## 7. Parallel Dispatch
+
+Run independent support tasks in parallel, then continue primary work while they run.
+
+Rules:
+
+- one agent = one atomic task
+- prefer 1-3 parallel agents
+- redirect output to log files
+- read and verify logs before using their conclusions
+- include `Do not modify any files.` unless a docs-only write is explicitly allowed
+
+Linux/macOS:
 
 ```bash
-# Research + Test + Doc agents in parallel while you code
-opencode run --pure "Analyze src/core.rs: list all exported functions, their args, and call sites. DO NOT modify any files." > /tmp/research_core.log 2>&1 &
-opencode run --pure "Run: cargo test. Report all failures with full output. DO NOT modify any files." > /tmp/test_results.log 2>&1 &
-opencode run --pure "Search the web for '[relevant technical topic]'. Summarize findings. DO NOT modify any files." > /tmp/web_research.log 2>&1 &
+OPENCODE_SERVER_PASSWORD="" OPENCODE_SERVER_USERNAME="" opencode run --pure "Scout task. Do not modify any files." > /tmp/scout.log 2>&1 &
+OPENCODE_SERVER_PASSWORD="" OPENCODE_SERVER_USERNAME="" opencode run --pure "Tester task. Do not modify any files." > /tmp/tester.log 2>&1 &
 wait
-# Now read /tmp/*.log and incorporate findings into your work
 ```
 
-**Key rules:**
-
-- Every agent prompt MUST include `DO NOT modify any files` (except doc writers targeting `docs/`).
-- Always redirect output to `/tmp/` log files for later review.
-- Use `wait` only when you need results before proceeding. Otherwise, let them run and check later.
-
-## 5. Brainstorming & Consultation
-
-When you hit a wall — a confusing bug, an unclear API, or a design dilemma — **consult `opencode` before asking the user**.
-
-```bash
-# Stuck on a bug? Ask for hypotheses.
-opencode run --pure "I'm debugging [file]. [Description of the problem]. Here is the relevant code: [paste snippet]. What could cause this? List 3-5 hypotheses ranked by likelihood. DO NOT modify any files."
-
-# Need a second opinion on architecture?
-opencode run --pure "I'm considering two approaches for [task]: (A) [approach A], (B) [approach B]. What are the trade-offs? DO NOT modify any files."
-```
-
-**When to escalate to the user:** Only after you've consulted an agent AND still lack clarity on a business/product decision (not a technical one).
-
-## 6. Delegate-First Rule
-
-You MUST delegate research, web lookups, test runs, and codebase analysis to `opencode` agents **before** doing it yourself. Do your own research only when an agent's output was incorrect or insufficient.
-
-**Rationale:** Your context window is expensive. Preserve it for architecture and coding. Let agents burn their disposable contexts on information gathering.
-
-When delegating web research, always instruct agents to verify that documentation and solutions are **current as of today's date**. Outdated patterns from previous years are a common failure mode. Include phrasing like: "Find the latest official documentation as of [current year]. Ignore deprecated approaches."
-
-## 7. Model Selection
-
-- For **documentation generation** and text-heavy tasks, use `DeepSeek V4 Flash Free` or `MiMo V2.5 Free`.
-- For **code analysis and debugging hypotheses**, use `Big Pickle`.
-- For **simple lookups and web search summaries**, use any free model.
-
-## 8. Common Patterns
-
-**Git detective — find where a bug was introduced:**
-
-```bash
-opencode run --pure "Run 'git log --oneline -20 -- [file]' and 'git diff HEAD~5 -- [file]'. Identify which commit likely introduced the [issue]. DO NOT modify any files." > /tmp/git_detective.log 2>&1 &
-```
-
-**Prep environment while you plan:**
-
-```bash
-opencode run --pure "Check that [required tools] are installed and accessible from PATH. Report versions. If any are missing, list installation commands for this OS. DO NOT modify any files." > /tmp/env_check.log 2>&1 &
-```
-
-**Multi-agent research swarm:**
-
-```bash
-opencode run --pure "Search the web for '[topic A]'. Summarize with code examples. DO NOT modify any files." > /tmp/web_topic_a.log 2>&1 &
-opencode run --pure "Search the web for '[topic B]'. Summarize with code examples. DO NOT modify any files." > /tmp/web_topic_b.log 2>&1 &
-opencode run --pure "Analyze [file]: explain what each function does. DO NOT modify any files." > /tmp/research_file.log 2>&1 &
-wait
-```
-
-## 9. Anti-Patterns
-
-- ❌ Letting an agent "fix" code it found during research
-- ❌ Skipping the plan — always write `.brains/sessions/*/plans/` first
-- ❌ Sending a huge prompt with 5 tasks — one agent = one atomic task
-- ❌ Forgetting `DO NOT modify any files` in research/test prompts
-- ❌ Waiting idly for agents — code while they work
-
-## 10. Platform-Specific Notes
-
-### Windows (PowerShell 5.1)
-
-**Known issue:** If `OPENCODE_SERVER_PASSWORD` is set (e.g., by OpenCode Desktop), `opencode run` fails with `Session not found` ([bug #24747](https://github.com/anomalyco/opencode/issues/24747)). Always clear the variable before calling:
+PowerShell:
 
 ```powershell
-$env:OPENCODE_SERVER_PASSWORD=""; $env:OPENCODE_SERVER_USERNAME=""
-opencode run --model "opencode/deepseek-v4-flash-free" "Your prompt here"
-```
-
-PowerShell 5.1 does not support `&` for background jobs. Use `Start-Job` instead:
-
-```powershell
-$env:OPENCODE_SERVER_PASSWORD=""; $env:OPENCODE_SERVER_USERNAME=""
-$j1 = Start-Job -ScriptBlock { param($d) Set-Location $d; opencode run --model "opencode/deepseek-v4-flash-free" "Task 1. DO NOT modify any files." } -ArgumentList (Get-Location).Path
-$j2 = Start-Job -ScriptBlock { param($d) Set-Location $d; opencode run --model "opencode/deepseek-v4-flash-free" "Task 2. DO NOT modify any files." } -ArgumentList (Get-Location).Path
+$env:OPENCODE_SERVER_PASSWORD = ""
+$env:OPENCODE_SERVER_USERNAME = ""
+$root = (Get-Location).Path
+$j1 = Start-Job -ScriptBlock { param($d) Set-Location $d; opencode run --pure "Scout task. Do not modify any files." } -ArgumentList $root
+$j2 = Start-Job -ScriptBlock { param($d) Set-Location $d; opencode run --pure "Tester task. Do not modify any files." } -ArgumentList $root
 $j1, $j2 | Wait-Job | Receive-Job
 ```
 
-For convenience, create a wrapper function in your PowerShell profile:
+## 8. Verification Rules
+
+The primary agent must verify:
+
+- files that `opencode` claims are relevant
+- tests that `opencode` claims passed or failed
+- generated documentation against real diffs and logs
+- web research against official or primary sources when possible
+- any recommendation before implementing it
+
+If `opencode` gives vague output, ask a narrower follow-up or discard it.
+
+If `opencode` disagrees with local evidence, local evidence wins.
+
+## 9. Model Selection
+
+Use models by task type:
+
+- documentation and summaries: `opencode/deepseek-v4-flash-free` or another fast/free text model
+- code analysis and debugging hypotheses: stronger reasoning model when available
+- simple lookups: any reliable free model
+
+Do not rely on model names staying stable. If a named model is unavailable, choose the closest available model for the role.
+
+## 10. Platform Notes
+
+### Windows PowerShell
+
+If `OPENCODE_SERVER_PASSWORD` is set by OpenCode Desktop, `opencode run` may fail with `Session not found`. Clear both variables before running:
 
 ```powershell
-function opencode-run { $env:OPENCODE_SERVER_PASSWORD=""; $env:OPENCODE_SERVER_USERNAME=""; opencode run @args }
+$env:OPENCODE_SERVER_PASSWORD = ""
+$env:OPENCODE_SERVER_USERNAME = ""
+opencode run --pure "Your task. Do not modify any files."
 ```
 
-### Linux / macOS (bash / zsh)
+Optional wrapper:
 
-The same `OPENCODE_SERVER_PASSWORD` issue applies. Use a wrapper or clear the variable inline:
+```powershell
+function opencode-run {
+  $env:OPENCODE_SERVER_PASSWORD = ""
+  $env:OPENCODE_SERVER_USERNAME = ""
+  opencode run @args
+}
+```
+
+### Linux/macOS
+
+Optional wrapper:
 
 ```bash
-# Wrapper function (add to ~/.bashrc or ~/.zshrc)
 opencode-run() {
   OPENCODE_SERVER_PASSWORD="" OPENCODE_SERVER_USERNAME="" opencode run "$@"
 }
-
-# One-liner with env prefix
-OPENCODE_SERVER_PASSWORD="" OPENCODE_SERVER_USERNAME="" opencode run --model "opencode/deepseek-v4-flash-free" "Your prompt here" &
 ```
 
-Parallel dispatch with `&` works natively:
+## 11. Anti-Patterns
 
-```bash
-OPENCODE_SERVER_PASSWORD="" opencode run --pure "Task 1" > /tmp/t1.log 2>&1 &
-OPENCODE_SERVER_PASSWORD="" opencode run --pure "Task 2" > /tmp/t2.log 2>&1 &
-wait
+Avoid:
+
+- letting `opencode` edit production code
+- asking one agent to solve five unrelated tasks
+- accepting summaries without evidence
+- using web results without checking recency and source quality
+- creating a session folder for trivial work
+- waiting idly when independent work can continue
+- treating `opencode` as persistent memory
+
+## 12. Dataset Lessons
+
+After a complex task, `opencode` may draft a lesson for later training data.
+
+Storage:
+
+```text
+.dataset/lessons/
 ```
 
-## 11. Automated Dataset Generation
+Schema:
 
-After completing a complex task, delegate lesson creation to `opencode`:
-
-- **Storage:** `.dataset/lessons/` with snake_case `.json` names.
-- **Language:** English only.
-- **Schema:**
-  ```json
-  {
-    "topic": "Short descriptive topic",
-    "instruction": "The initial problem statement",
-    "context": "Codebase state before the fix",
-    "response": "Detailed solution with before/after code"
-  }
-  ```
-- **After generation:** You MUST read and verify the JSON file yourself.
-
-```bash
-opencode run --pure --model "deepseek v4 flash free" "Generate an AI training lesson in JSON format about [topic]. Write in English. Save to .dataset/lessons/[name].json using the schema from AGENTS.md."
+```json
+{
+  "topic": "Short descriptive topic",
+  "instruction": "The initial problem statement",
+  "context": "Codebase state before the fix",
+  "response": "Detailed solution with before/after code"
+}
 ```
+
+Rules:
+
+- write in English
+- use snake_case file names
+- primary agent must read and verify the JSON before accepting it
+- do not include secrets, private tokens, or unrelated user data
