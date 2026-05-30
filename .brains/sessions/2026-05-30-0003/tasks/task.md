@@ -1,0 +1,1 @@
+[x] 5.1.1 Вынести I/O-операции (сетевые запросы к Qdrant/Postgres) за пределы VM инструкций `RetrieveQdrant` и `RetrievePostgres`. VM должна принимать готовые данные, а не скачивать их (I/O and execution mix).
