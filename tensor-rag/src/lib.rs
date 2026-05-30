@@ -25,10 +25,16 @@ mod tests {
 
         let tool = mcp::SearchTool;
         let response_bytes = tool.handle(request_json).expect("Tool handler failed");
-        let response_json: serde_json::Value = serde_json::from_slice(&response_bytes).expect("Invalid JSON response");
 
-        let indices = response_json.get("indices").expect("Missing indices").as_array().expect("Indices not an array");
+        let result = crate::result_generated::tensor_rag::fbs::root_as_search_result(&response_bytes)
+            .expect("Invalid FlatBuffer response");
+
+        let indices = result.top_indices().expect("Missing indices");
+        let scores = result.top_scores().expect("Missing scores");
         assert_eq!(indices.len(), 5);
+        assert_eq!(scores.len(), 5);
+        assert_eq!(indices.get(0), 0);
+        assert_eq!(indices.get(1), 1);
     }
 
     #[test]
@@ -107,3 +113,5 @@ mod tests {
 
 pub mod dsl;
 pub mod arrow;
+#[allow(non_snake_case)]
+pub mod result_generated;

@@ -78,10 +78,10 @@
   - [x] 3.2.2 Реализовать извлечение колонок из `RecordBatch` как тензоров (`arrow2::array → ndarray`)
   - [x] 3.2.3 Переписать инструкции `topk`, `add`, `mul`, `fusion` на работу с Arrow‑памятью
   - [x] 3.2.4 Вычислять `semantic_scores` напрямую над Arrow‑колонкой `vector` (dot product)
-- [ ] **3.3 FlatBuffer для результата**
-  - [ ] 3.3.1 Подключить крейт `flatbuffers` для сериализации результата
-  - [ ] 3.3.2 Определить FlatBuffer‑схему: `top_indices: [int]`, `top_scores: [float]`
-  - [ ] 3.3.3 Интегрировать FlatBuffer‑результат в MCP‑ответ
+- [x] **3.3 FlatBuffer для результата**
+  - [x] 3.3.1 Подключить крейт `flatbuffers` для сериализации результата
+  - [x] 3.3.2 Определить FlatBuffer‑схему: `top_indices: [int]`, `top_scores: [float]`
+  - [x] 3.3.3 Интегрировать FlatBuffer‑результат в MCP‑ответ
 - [ ] **3.4 mmap‑регионы**
   - [ ] 3.4.1 Реализовать Shared Memory Manager для mmap‑регионов
   - [ ] 3.4.2 Организовать zero‑copy передачу `RecordBatch` между подсистемами через `Arc`

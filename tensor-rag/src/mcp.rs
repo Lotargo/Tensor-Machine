@@ -63,14 +63,24 @@ impl ToolHandler for SearchTool {
 
         match result {
             Some(crate::vm::Value::Result(topk)) => {
-                let mut json_obj = serde_json::Map::new();
-                json_obj.insert("indices".to_string(), serde_json::json!(topk.indices));
-                json_obj.insert("scores".to_string(), serde_json::json!(topk.scores));
+                let mut fbb = flatbuffers::FlatBufferBuilder::new();
 
-                let json_body = serde_json::to_vec(&JsonValue::Object(json_obj))
-                    .map_err(|e| format!("Failed to serialize result: {}", e))?;
+                // Note: The indices are cast to i32 to match the FlatBuffers schema ([int]).
+                // This is safe for now, but will silently truncate if the index exceeds 2^31-1.
+                let indices_i32: Vec<i32> = topk.indices.into_iter().map(|idx| idx as i32).collect();
 
-                Ok(json_body)
+                let top_indices_vec = fbb.create_vector(&indices_i32);
+                let top_scores_vec = fbb.create_vector(&topk.scores);
+
+                let args = crate::result_generated::tensor_rag::fbs::SearchResultArgs {
+                    top_indices: Some(top_indices_vec),
+                    top_scores: Some(top_scores_vec),
+                };
+
+                let result_offset = crate::result_generated::tensor_rag::fbs::SearchResult::create(&mut fbb, &args);
+                fbb.finish(result_offset, None);
+
+                Ok(fbb.finished_data().to_vec())
             }
             _ => Err("VM did not return a valid TopKResult".to_string())
         }
