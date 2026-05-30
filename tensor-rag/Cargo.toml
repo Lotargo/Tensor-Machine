@@ -13,3 +13,4 @@ tokio = { version = "1.52.3", features = ["full"] }
 tonic = "0.14.6"
 lexpr = "0.2.7"
 arrow = "51.0.0"
+flatbuffers = "2.0.8"

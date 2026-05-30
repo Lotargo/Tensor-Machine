@@ -1,0 +1,8 @@
+namespace tensor_rag.fbs;
+
+table SearchResult {
+  top_indices: [int];
+  top_scores: [float];
+}
+
+root_type SearchResult;
