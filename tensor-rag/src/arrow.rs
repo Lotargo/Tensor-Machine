@@ -74,6 +74,20 @@ pub fn qdrant_to_record_batch(
     )
 }
 
+pub fn extract_vector_scores(batch: &RecordBatch) -> Result<Float32Array, String> {
+    let col = batch.column_by_name("vector").ok_or("Missing vector column")?;
+    let fixed = col.as_any().downcast_ref::<FixedSizeListArray>().ok_or("Not FixedSizeList")?;
+    let inner = fixed.values();
+    let flat = inner.as_any().downcast_ref::<Float32Array>().ok_or("Not Float32Array")?;
+    Ok(flat.clone())
+}
+
+pub fn extract_float_column(batch: &RecordBatch, name: &str) -> Result<Float32Array, String> {
+    let col = batch.column_by_name(name).ok_or("Missing column")?;
+    let arr = col.as_any().downcast_ref::<Float32Array>().ok_or("Not Float32Array")?;
+    Ok(arr.clone())
+}
+
 /// Converts PostgreSQL results (ids, bm25_scores, texts) to a RecordBatch.
 pub fn postgres_to_record_batch(
     ids: &[usize],

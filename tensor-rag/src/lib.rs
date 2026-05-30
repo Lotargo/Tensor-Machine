@@ -2,7 +2,6 @@ pub mod mcp;
 pub mod db;
 pub mod vm;
 pub mod ir;
-pub mod arrow;
 
 #[cfg(test)]
 mod tests {
@@ -107,3 +106,4 @@ mod tests {
 }
 
 pub mod dsl;
+pub mod arrow;
