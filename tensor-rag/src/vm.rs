@@ -113,6 +113,43 @@ impl VM {
                     }
                     self.stack.push(Value::Tensor1D(Array1::from_vec(scores)));
                 }
+                OpCode::Mmr(_diversity) => {
+                    // Mock MMR: return the tensor unchanged for now
+                    // In a real implementation, this would perform Maximum Marginal Relevance
+                    // to maximize diversity.
+                }
+                OpCode::Rrf(_k) => {
+                    // Mock RRF: typically this combines multiple rankings.
+                    // For now, we do nothing and let TopK handle the single score tensor.
+                }
+                OpCode::IfConfidence(threshold, low_plan, high_plan) => {
+                    // Pop the scores tensor to check confidence
+                    let a = self.stack.pop().ok_or("Stack underflow in IfConfidence")?;
+                    let mut max_score = 0.0;
+                    if let Value::Tensor1D(ref t) = a {
+                        for &score in t.iter() {
+                            if score > max_score {
+                                max_score = score;
+                            }
+                        }
+                    } else {
+                        return Err("Invalid type for IfConfidence condition".into());
+                    }
+
+                    // Put it back in case the branch needs it
+                    self.stack.push(a);
+
+                    let branch_plan = if max_score >= threshold {
+                        high_plan
+                    } else {
+                        low_plan
+                    };
+
+                    // Execute the chosen branch
+                    if let Some(res) = self.run(branch_plan)? {
+                        return Ok(Some(res));
+                    }
+                }
             }
         }
         Ok(None)
