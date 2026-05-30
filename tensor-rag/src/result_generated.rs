@@ -3,11 +3,8 @@
 
 // @generated
 
-use core::mem;
-use core::cmp::Ordering;
 
 extern crate flatbuffers;
-use self::flatbuffers::{EndianScalar, Follow};
 
 #[allow(unused_imports, dead_code)]
 pub mod tensor_rag {
@@ -153,7 +150,7 @@ pub fn get_size_prefixed_root_as_search_result<'a>(buf: &'a [u8]) -> SearchResul
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
 /// `root_as_search_result_unchecked`.
-pub fn root_as_search_result(buf: &[u8]) -> Result<SearchResult, flatbuffers::InvalidFlatbuffer> {
+pub fn root_as_search_result(buf: &[u8]) -> Result<SearchResult<'_>, flatbuffers::InvalidFlatbuffer> {
   flatbuffers::root::<SearchResult>(buf)
 }
 #[inline]
@@ -163,7 +160,7 @@ pub fn root_as_search_result(buf: &[u8]) -> Result<SearchResult, flatbuffers::In
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
 /// `size_prefixed_root_as_search_result_unchecked`.
-pub fn size_prefixed_root_as_search_result(buf: &[u8]) -> Result<SearchResult, flatbuffers::InvalidFlatbuffer> {
+pub fn size_prefixed_root_as_search_result(buf: &[u8]) -> Result<SearchResult<'_>, flatbuffers::InvalidFlatbuffer> {
   flatbuffers::size_prefixed_root::<SearchResult>(buf)
 }
 #[inline]
@@ -196,14 +193,14 @@ pub fn size_prefixed_root_as_search_result_with_opts<'b, 'o>(
 /// Assumes, without verification, that a buffer of bytes contains a SearchResult and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `SearchResult`.
-pub unsafe fn root_as_search_result_unchecked(buf: &[u8]) -> SearchResult {
+pub unsafe fn root_as_search_result_unchecked(buf: &[u8]) -> SearchResult<'_> {
   unsafe { flatbuffers::root_unchecked::<SearchResult>(buf) }
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed SearchResult and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `SearchResult`.
-pub unsafe fn size_prefixed_root_as_search_result_unchecked(buf: &[u8]) -> SearchResult {
+pub unsafe fn size_prefixed_root_as_search_result_unchecked(buf: &[u8]) -> SearchResult<'_> {
   unsafe { flatbuffers::size_prefixed_root_unchecked::<SearchResult>(buf) }
 }
 #[inline]
