@@ -179,7 +179,6 @@ impl Planner {
                 let low_prog = Planner::compile(*low_plan);
                 let high_prog = Planner::compile(*high_plan);
                 program.push(OpCode::IfConfidence(threshold, low_prog, high_prog));
-                program.push(OpCode::Emit);
             }
             AstNode::CorrectiveRag { query: _, fallback_query } => {
                 // Corrective Rag mocks fallback
