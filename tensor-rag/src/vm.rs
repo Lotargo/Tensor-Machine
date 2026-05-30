@@ -1,7 +1,7 @@
-use ndarray::Array1;
-use std::sync::Arc;
 use crate::ir::{OpCode, Program};
 use arrow::array::Array;
+use ndarray::Array1;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -37,6 +37,12 @@ pub struct VM {
     pub query_vector: Array1<f32>,
 }
 
+impl Default for VM {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VM {
     pub fn new() -> Self {
         Self {
@@ -60,8 +66,11 @@ impl VM {
                         self.stack.push(Value::Tensor1D(t1 + t2));
                     }
                     (Value::ArrowArray(arr1), Value::ArrowArray(arr2)) => {
-                        let result = arrow::compute::kernels::numeric::add(&arr1 as &dyn arrow::array::Datum, &arr2 as &dyn arrow::array::Datum)
-                            .map_err(|e| e.to_string())?;
+                        let result = arrow::compute::kernels::numeric::add(
+                            &arr1 as &dyn arrow::array::Datum,
+                            &arr2 as &dyn arrow::array::Datum,
+                        )
+                        .map_err(|e| e.to_string())?;
                         self.stack.push(Value::ArrowArray(Arc::new(result)));
                     }
                     _ => return Err("Invalid types for Add".into()),
@@ -76,8 +85,11 @@ impl VM {
                     }
                     (Value::ArrowArray(arr), Value::Scalar(s)) => {
                         let s_arr = arrow::array::Float32Array::from(vec![s; arr.len()]);
-                        let result = arrow::compute::kernels::numeric::mul(&arr as &dyn arrow::array::Datum, &s_arr as &dyn arrow::array::Datum)
-                            .map_err(|e| e.to_string())?;
+                        let result = arrow::compute::kernels::numeric::mul(
+                            &arr as &dyn arrow::array::Datum,
+                            &s_arr as &dyn arrow::array::Datum,
+                        )
+                        .map_err(|e| e.to_string())?;
                         self.stack.push(Value::ArrowArray(Arc::new(result)));
                     }
                     _ => return Err("Invalid types for Mul".into()),
@@ -90,19 +102,44 @@ impl VM {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
 
                 match (a, b, w1, w2) {
-                    (Value::Tensor1D(t1), Value::Tensor1D(t2), Value::Scalar(s1), Value::Scalar(s2)) => {
+                    (
+                        Value::Tensor1D(t1),
+                        Value::Tensor1D(t2),
+                        Value::Scalar(s1),
+                        Value::Scalar(s2),
+                    ) => {
                         self.stack.push(Value::Tensor1D((t1 * s1) + (t2 * s2)));
                     }
-                    (Value::ArrowArray(arr1), Value::ArrowArray(arr2), Value::Scalar(s1), Value::Scalar(s2)) => {
+                    (
+                        Value::ArrowArray(arr1),
+                        Value::ArrowArray(arr2),
+                        Value::Scalar(s1),
+                        Value::Scalar(s2),
+                    ) => {
                         let s1_arr = arrow::array::Float32Array::from(vec![s1; arr1.len()]);
                         let s2_arr = arrow::array::Float32Array::from(vec![s2; arr2.len()]);
 
-                        let part1 = arrow::compute::kernels::numeric::mul(&arr1 as &dyn arrow::array::Datum, &s1_arr as &dyn arrow::array::Datum).map_err(|e| e.to_string())?;
-                        let part2 = arrow::compute::kernels::numeric::mul(&arr2 as &dyn arrow::array::Datum, &s2_arr as &dyn arrow::array::Datum).map_err(|e| e.to_string())?;
+                        let part1 = arrow::compute::kernels::numeric::mul(
+                            &arr1 as &dyn arrow::array::Datum,
+                            &s1_arr as &dyn arrow::array::Datum,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let part2 = arrow::compute::kernels::numeric::mul(
+                            &arr2 as &dyn arrow::array::Datum,
+                            &s2_arr as &dyn arrow::array::Datum,
+                        )
+                        .map_err(|e| e.to_string())?;
 
-                        let result = arrow::compute::kernels::numeric::add(&part1 as &dyn arrow::array::Datum, &part2 as &dyn arrow::array::Datum).map_err(|e| e.to_string())?;
+                        let result = arrow::compute::kernels::numeric::add(
+                            &part1 as &dyn arrow::array::Datum,
+                            &part2 as &dyn arrow::array::Datum,
+                        )
+                        .map_err(|e| e.to_string())?;
 
-                        let t_f32 = result.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Downcast failed")?;
+                        let t_f32 = result
+                            .as_any()
+                            .downcast_ref::<arrow::array::Float32Array>()
+                            .ok_or("Downcast failed")?;
                         let result: arrow::array::Float32Array = t_f32.iter().collect();
                         self.stack.push(Value::ArrowArray(Arc::new(result)));
                     }
@@ -122,11 +159,17 @@ impl VM {
                         self.stack.push(Value::Scalar(dot_product));
                     }
                     (Value::ArrowArray(arr1), Value::ArrowArray(arr2)) => {
-                        let part = arrow::compute::kernels::numeric::mul(&arr1 as &dyn arrow::array::Datum, &arr2 as &dyn arrow::array::Datum)
-                            .map_err(|e: arrow::error::ArrowError| e.to_string())?;
+                        let part = arrow::compute::kernels::numeric::mul(
+                            &arr1 as &dyn arrow::array::Datum,
+                            &arr2 as &dyn arrow::array::Datum,
+                        )
+                        .map_err(|e: arrow::error::ArrowError| e.to_string())?;
                         let result = arrow::compute::sum(
-                            part.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?
-                        ).unwrap_or(0.0);
+                            part.as_any()
+                                .downcast_ref::<arrow::array::Float32Array>()
+                                .ok_or("Not Float32Array")?,
+                        )
+                        .unwrap_or(0.0);
                         self.stack.push(Value::Scalar(result));
                     }
                     _ => return Err("Invalid types for Matmul".into()),
@@ -140,8 +183,11 @@ impl VM {
                         self.stack.push(Value::Tensor1D(t1 / t2));
                     }
                     (Value::ArrowArray(arr1), Value::ArrowArray(arr2)) => {
-                        let result = arrow::compute::kernels::numeric::div(&arr1 as &dyn arrow::array::Datum, &arr2 as &dyn arrow::array::Datum)
-                            .map_err(|e: arrow::error::ArrowError| e.to_string())?;
+                        let result = arrow::compute::kernels::numeric::div(
+                            &arr1 as &dyn arrow::array::Datum,
+                            &arr2 as &dyn arrow::array::Datum,
+                        )
+                        .map_err(|e: arrow::error::ArrowError| e.to_string())?;
                         self.stack.push(Value::ArrowArray(Arc::new(result)));
                     }
                     _ => return Err("Invalid types for Div".into()),
@@ -155,9 +201,17 @@ impl VM {
                         self.stack.push(Value::Tensor1D(res));
                     }
                     Value::ArrowArray(arr) => {
-                        let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
-                        let result_vec: Vec<f32> = t_f32.iter().map(|v| v.map_or(0.0, |x| if x >= *threshold { x } else { 0.0 })).collect();
-                        self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(result_vec))));
+                        let t_f32 = arr
+                            .as_any()
+                            .downcast_ref::<arrow::array::Float32Array>()
+                            .ok_or("Not Float32Array")?;
+                        let result_vec: Vec<f32> = t_f32
+                            .iter()
+                            .map(|v| v.map_or(0.0, |x| if x >= *threshold { x } else { 0.0 }))
+                            .collect();
+                        self.stack.push(Value::ArrowArray(Arc::new(
+                            arrow::array::Float32Array::from(result_vec),
+                        )));
                     }
                     _ => return Err("Invalid types for Threshold".into()),
                 }
@@ -171,10 +225,17 @@ impl VM {
                         self.stack.push(Value::Tensor1D(t));
                     }
                     Value::ArrowArray(arr) => {
-                        let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
-                        let mut result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
-                        result_vec.sort_by(|x, y| y.partial_cmp(x).unwrap_or(std::cmp::Ordering::Equal));
-                        self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(result_vec))));
+                        let t_f32 = arr
+                            .as_any()
+                            .downcast_ref::<arrow::array::Float32Array>()
+                            .ok_or("Not Float32Array")?;
+                        let mut result_vec: Vec<f32> =
+                            t_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
+                        result_vec
+                            .sort_by(|x, y| y.partial_cmp(x).unwrap_or(std::cmp::Ordering::Equal));
+                        self.stack.push(Value::ArrowArray(Arc::new(
+                            arrow::array::Float32Array::from(result_vec),
+                        )));
                     }
                     _ => return Err("Invalid types for Sort".into()),
                 }
@@ -197,27 +258,38 @@ impl VM {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
                 match a {
                     Value::Tensor1D(t) => {
-                        let mut indexed_scores: Vec<(usize, f32)> = t.into_iter().enumerate().collect();
-                        indexed_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                        let mut indexed_scores: Vec<(usize, f32)> =
+                            t.into_iter().enumerate().collect();
+                        indexed_scores.sort_by(|a, b| {
+                            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
 
                         let top_k = indexed_scores.into_iter().take(*k);
                         let (indices, scores): (Vec<usize>, Vec<f32>) = top_k.unzip();
 
-                        self.stack.push(Value::Result(TopKResult { indices, scores }));
+                        self.stack
+                            .push(Value::Result(TopKResult { indices, scores }));
                     }
                     Value::ArrowArray(arr) => {
-                        let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
-                        let mut indexed_scores: Vec<(usize, f32)> = t_f32.iter()
+                        let t_f32 = arr
+                            .as_any()
+                            .downcast_ref::<arrow::array::Float32Array>()
+                            .ok_or("Not Float32Array")?;
+                        let mut indexed_scores: Vec<(usize, f32)> = t_f32
+                            .iter()
                             .enumerate()
                             .filter_map(|(i, v)| v.map(|score| (i, score)))
                             .collect();
 
-                        indexed_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                        indexed_scores.sort_by(|a, b| {
+                            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
 
                         let top_k = indexed_scores.into_iter().take(*k);
                         let (indices, scores): (Vec<usize>, Vec<f32>) = top_k.unzip();
 
-                        self.stack.push(Value::Result(TopKResult { indices, scores }));
+                        self.stack
+                            .push(Value::Result(TopKResult { indices, scores }));
                     }
                     _ => return Err("Invalid types for TopK".into()),
                 }
@@ -245,7 +317,9 @@ impl VM {
                     scores.push(dot);
                 }
 
-                self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(scores))));
+                self.stack.push(Value::ArrowArray(Arc::new(
+                    arrow::array::Float32Array::from(scores),
+                )));
             }
             OpCode::Mmr(_diversity) => {
                 // Mock MMR
@@ -257,7 +331,9 @@ impl VM {
                 // Dynamic strategy executed at runtime
             }
             OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres | OpCode::IfConfidence(..) => {
-                return Err("I/O operations and branching must be handled by the orchestrator".into());
+                return Err(
+                    "I/O operations and branching must be handled by the orchestrator".into(),
+                );
             }
         }
         Ok(None)
@@ -267,14 +343,23 @@ impl VM {
     pub fn run(&mut self, program: Program) -> Result<Option<Value>, String> {
         for instruction in program.instructions {
             match instruction.op {
-                OpCode::RetrieveQdrant { query: _, filters: _, top_k } => {
+                OpCode::RetrieveQdrant {
+                    query: _,
+                    filters: _,
+                    top_k,
+                } => {
                     // For mock speed to pass 5ms requirement: generate batch directly instead of
                     // multiple allocations and copies in the test backwards compatibility path
-                    let id_array = arrow::array::Int64Array::from_iter_values((0..top_k).map(|i| i as i64));
+                    let id_array =
+                        arrow::array::Int64Array::from_iter_values((0..top_k).map(|i| i as i64));
                     let flat_vectors = vec![0.1f32; top_k * 768];
                     let inner_array = arrow::array::Float32Array::from(flat_vectors);
                     let vector_array = arrow::array::FixedSizeListArray::new(
-                        Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
+                        Arc::new(arrow::datatypes::Field::new(
+                            "item",
+                            arrow::datatypes::DataType::Float32,
+                            true,
+                        )),
                         768,
                         Arc::new(inner_array),
                         None,
@@ -290,7 +375,8 @@ impl VM {
                             Arc::new(bm25_array) as arrow::array::ArrayRef,
                             Arc::new(text_array) as arrow::array::ArrayRef,
                         ],
-                    ).map_err(|e| e.to_string())?;
+                    )
+                    .map_err(|e| e.to_string())?;
                     self.batch = Some(Arc::new(batch));
                 }
                 OpCode::RetrievePostgres => {
@@ -305,21 +391,34 @@ impl VM {
                     match &a {
                         Value::Tensor1D(t) => {
                             for &score in t.iter() {
-                                if score > max_score { max_score = score; }
+                                if score > max_score {
+                                    max_score = score;
+                                }
                             }
                         }
                         Value::ArrowArray(arr) => {
-                            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+                            let t_f32 = arr
+                                .as_any()
+                                .downcast_ref::<arrow::array::Float32Array>()
+                                .ok_or("Not Float32Array")?;
                             for score in t_f32.iter().flatten() {
-                                if score > max_score { max_score = score; }
+                                if score > max_score {
+                                    max_score = score;
+                                }
                             }
                         }
                         _ => return Err("Invalid type for IfConfidence condition".into()),
                     }
                     self.stack.push(a);
 
-                    let branch_plan = if max_score >= threshold { high_plan } else { low_plan };
-                    if let Some(res) = self.run(branch_plan)? { return Ok(Some(res)); }
+                    let branch_plan = if max_score >= threshold {
+                        high_plan
+                    } else {
+                        low_plan
+                    };
+                    if let Some(res) = self.run(branch_plan)? {
+                        return Ok(Some(res));
+                    }
                 }
                 _ => {
                     if let Some(res) = self.step(&instruction.op)? {
@@ -336,7 +435,6 @@ impl VM {
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_load_const() {
         let mut vm = VM::new();
@@ -351,8 +449,12 @@ mod tests {
     #[test]
     fn test_add() {
         let mut vm = VM::new();
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![1.0, 2.0, 3.0]))));
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![4.0, 5.0, 6.0]))));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![1.0, 2.0, 3.0]),
+        )));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![4.0, 5.0, 6.0]),
+        )));
 
         let mut program = Program::new();
         program.push(OpCode::Add);
@@ -360,7 +462,10 @@ mod tests {
 
         let res = vm.run(program).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
-            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .unwrap();
             let result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap()).collect();
             assert_eq!(result_vec, vec![5.0, 7.0, 9.0]);
         } else {
@@ -371,7 +476,9 @@ mod tests {
     #[test]
     fn test_mul() {
         let mut vm = VM::new();
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![1.0, 2.0, 3.0]))));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![1.0, 2.0, 3.0]),
+        )));
         vm.stack.push(Value::Scalar(2.0));
 
         let mut program = Program::new();
@@ -380,7 +487,10 @@ mod tests {
 
         let res = vm.run(program).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
-            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .unwrap();
             let result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap()).collect();
             assert_eq!(result_vec, vec![2.0, 4.0, 6.0]);
         } else {
@@ -392,10 +502,14 @@ mod tests {
     fn test_fusion() {
         let mut vm = VM::new();
         // Stack order: t1, t2, w1, w2
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![1.0, 1.0, 1.0])))); // a (t1)
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![2.0, 2.0, 2.0])))); // b (t2)
-        vm.stack.push(Value::Scalar(0.5));                     // a_weight (w1)
-        vm.stack.push(Value::Scalar(0.5));                     // b_weight (w2)
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![1.0, 1.0, 1.0]),
+        ))); // a (t1)
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![2.0, 2.0, 2.0]),
+        ))); // b (t2)
+        vm.stack.push(Value::Scalar(0.5)); // a_weight (w1)
+        vm.stack.push(Value::Scalar(0.5)); // b_weight (w2)
 
         let mut program = Program::new();
         program.push(OpCode::Fusion);
@@ -403,7 +517,10 @@ mod tests {
 
         let res = vm.run(program).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
-            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .unwrap();
             let result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap()).collect();
             assert_eq!(result_vec, vec![1.5, 1.5, 1.5]); // 1*0.5 + 2*0.5 = 1.5
         } else {
@@ -414,7 +531,9 @@ mod tests {
     #[test]
     fn test_topk() {
         let mut vm = VM::new();
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![1.0, 5.0, 3.0, 9.0, 2.0]))));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![1.0, 5.0, 3.0, 9.0, 2.0]),
+        )));
 
         let mut program = Program::new();
         program.push(OpCode::TopK(3));
@@ -438,8 +557,12 @@ mod additional_tests {
     #[test]
     fn test_div() {
         let mut vm = VM::new();
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![10.0, 20.0, 30.0]))));
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![2.0, 5.0, 3.0]))));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![10.0, 20.0, 30.0]),
+        )));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![2.0, 5.0, 3.0]),
+        )));
 
         let mut program = Program::new();
         program.push(OpCode::Div);
@@ -447,7 +570,10 @@ mod additional_tests {
 
         let res = vm.run(program).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
-            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .unwrap();
             let result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap()).collect();
             assert_eq!(result_vec, vec![5.0, 4.0, 10.0]);
         } else {
@@ -458,7 +584,9 @@ mod additional_tests {
     #[test]
     fn test_threshold() {
         let mut vm = VM::new();
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![0.1, 0.5, 0.9, 0.2]))));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![0.1, 0.5, 0.9, 0.2]),
+        )));
 
         let mut program = Program::new();
         program.push(OpCode::Threshold(0.5));
@@ -466,7 +594,10 @@ mod additional_tests {
 
         let res = vm.run(program).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
-            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .unwrap();
             let result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap()).collect();
             assert_eq!(result_vec, vec![0.0, 0.5, 0.9, 0.0]);
         } else {
@@ -477,7 +608,9 @@ mod additional_tests {
     #[test]
     fn test_sort() {
         let mut vm = VM::new();
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![0.1, 0.9, 0.5, 0.2]))));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![0.1, 0.9, 0.5, 0.2]),
+        )));
 
         let mut program = Program::new();
         program.push(OpCode::Sort);
@@ -485,7 +618,10 @@ mod additional_tests {
 
         let res = vm.run(program).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
-            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .unwrap();
             let result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap()).collect();
             assert_eq!(result_vec, vec![0.9, 0.5, 0.2, 0.1]);
         } else {
@@ -496,7 +632,9 @@ mod additional_tests {
     #[test]
     fn test_slice() {
         let mut vm = VM::new();
-        vm.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0]))));
+        vm.stack.push(Value::ArrowArray(Arc::new(
+            arrow::array::Float32Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+        )));
 
         let mut program = Program::new();
         program.push(OpCode::Slice(1, 4));
@@ -504,7 +642,10 @@ mod additional_tests {
 
         let res = vm.run(program).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
-            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .unwrap();
             let result_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap()).collect();
             assert_eq!(result_vec, vec![2.0, 3.0, 4.0]);
         } else {
@@ -515,8 +656,10 @@ mod additional_tests {
     #[test]
     fn test_matmul_1d_dot_product() {
         let mut vm = VM::new();
-        vm.stack.push(Value::Tensor1D(Array1::from(vec![1.0, 2.0, 3.0])));
-        vm.stack.push(Value::Tensor1D(Array1::from(vec![4.0, 5.0, 6.0])));
+        vm.stack
+            .push(Value::Tensor1D(Array1::from(vec![1.0, 2.0, 3.0])));
+        vm.stack
+            .push(Value::Tensor1D(Array1::from(vec![4.0, 5.0, 6.0])));
 
         let mut program = Program::new();
         program.push(OpCode::Matmul);

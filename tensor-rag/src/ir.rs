@@ -28,13 +28,9 @@ pub enum RerankStrategy {
         bm25_weight: f32,
     },
     #[serde(rename = "mmr")]
-    Mmr {
-        diversity: f32,
-    },
+    Mmr { diversity: f32 },
     #[serde(rename = "rrf")]
-    Rrf {
-        k: usize,
-    },
+    Rrf { k: usize },
     #[serde(rename = "dynamic")]
     Dynamic {
         name: String,
@@ -64,7 +60,11 @@ pub enum AstNode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OpCode {
     /// Retrieve candidate IDs and vectors from Qdrant
-    RetrieveQdrant { query: String, filters: Option<Vec<Filter>>, top_k: usize },
+    RetrieveQdrant {
+        query: String,
+        filters: Option<Vec<Filter>>,
+        top_k: usize,
+    },
     /// Fetch BM25 scores and metadata from Postgres for given IDs
     RetrievePostgres,
     /// Compute semantic scores (dot product of query vector with retrieved vectors)
@@ -113,6 +113,12 @@ pub struct Program {
     pub instructions: Vec<Instruction>,
 }
 
+impl Default for Program {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Program {
     pub fn new() -> Self {
         Self {
@@ -152,7 +158,10 @@ impl Planner {
                         program.push(OpCode::TopK(request.final_top_k));
                         program.push(OpCode::Emit);
                     }
-                    RerankStrategy::Hybrid { semantic_weight, bm25_weight } => {
+                    RerankStrategy::Hybrid {
+                        semantic_weight,
+                        bm25_weight,
+                    } => {
                         program.push(OpCode::RetrievePostgres);
                         program.push(OpCode::LoadConst(semantic_weight));
                         program.push(OpCode::LoadConst(bm25_weight));
@@ -190,7 +199,12 @@ impl Planner {
                 program.push(OpCode::TopK(10));
                 program.push(OpCode::Emit);
             }
-            AstNode::SelfRag { query, threshold, low_plan, high_plan } => {
+            AstNode::SelfRag {
+                query,
+                threshold,
+                low_plan,
+                high_plan,
+            } => {
                 program.push(OpCode::RetrieveQdrant {
                     query: query.clone(),
                     filters: None,
@@ -202,7 +216,10 @@ impl Planner {
                 let high_prog = Planner::compile(*high_plan);
                 program.push(OpCode::IfConfidence(threshold, low_prog, high_prog));
             }
-            AstNode::CorrectiveRag { query: _, fallback_query } => {
+            AstNode::CorrectiveRag {
+                query: _,
+                fallback_query,
+            } => {
                 // Corrective Rag mocks fallback
                 program.push(OpCode::RetrieveQdrant {
                     query: fallback_query.clone(),
@@ -241,7 +258,10 @@ mod tests {
         let program = Planner::compile(ast);
 
         assert_eq!(program.instructions.len(), 8);
-        assert!(matches!(program.instructions[0].op, OpCode::RetrieveQdrant { .. }));
+        assert!(matches!(
+            program.instructions[0].op,
+            OpCode::RetrieveQdrant { .. }
+        ));
         assert_eq!(program.instructions[1].op, OpCode::ComputeSemantic);
         assert_eq!(program.instructions[2].op, OpCode::RetrievePostgres);
         assert_eq!(program.instructions[3].op, OpCode::LoadConst(0.7));

@@ -1,8 +1,9 @@
-use crate::ir::{Filter, QueryRequest, RerankStrategy, AstNode};
+use crate::ir::{AstNode, Filter, QueryRequest, RerankStrategy};
 use lexpr::Value;
 
 pub fn parse_dsl(input: &str) -> Result<AstNode, String> {
-    let parsed = lexpr::from_str(input).map_err(|e| format!("Failed to parse s-expression: {}", e))?;
+    let parsed =
+        lexpr::from_str(input).map_err(|e| format!("Failed to parse s-expression: {}", e))?;
 
     match &parsed {
         Value::Cons(cell) => {
@@ -17,7 +18,10 @@ pub fn parse_dsl(input: &str) -> Result<AstNode, String> {
                 Some("multi-hop") => parse_multi_hop_args(cdr),
                 Some("self-rag") => parse_self_rag_args(cdr),
                 Some("corrective-rag") => parse_corrective_rag_args(cdr),
-                _ => Err("Expected a 'search', 'multi-hop', 'self-rag', or 'corrective-rag' expression".to_string()),
+                _ => Err(
+                    "Expected a 'search', 'multi-hop', 'self-rag', or 'corrective-rag' expression"
+                        .to_string(),
+                ),
             }
         }
         _ => Err("Expected a list expression".to_string()),
@@ -31,7 +35,10 @@ fn parse_multi_hop_args(args: &Value) -> Result<AstNode, String> {
     let mut current = args;
     while let Value::Cons(cell) = current {
         let key = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
-        let next_cell = cell.cdr().as_cons().ok_or(format!("Expected value after {}", key))?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key))?;
         let value = next_cell.car();
 
         match key {
@@ -53,7 +60,10 @@ fn parse_self_rag_args(args: &Value) -> Result<AstNode, String> {
     let mut current = args;
     while let Value::Cons(cell) = current {
         let key = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
-        let next_cell = cell.cdr().as_cons().ok_or(format!("Expected value after {}", key))?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key))?;
         let value = next_cell.car();
 
         match key {
@@ -81,18 +91,29 @@ fn parse_corrective_rag_args(args: &Value) -> Result<AstNode, String> {
     let mut current = args;
     while let Value::Cons(cell) = current {
         let key = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
-        let next_cell = cell.cdr().as_cons().ok_or(format!("Expected value after {}", key))?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key))?;
         let value = next_cell.car();
 
         match key {
             ":query" => query = value.as_str().ok_or("Query must be a string")?.to_string(),
-            ":fallback-query" => fallback_query = value.as_str().ok_or("Fallback query must be a string")?.to_string(),
+            ":fallback-query" => {
+                fallback_query = value
+                    .as_str()
+                    .ok_or("Fallback query must be a string")?
+                    .to_string()
+            }
             _ => return Err(format!("Unknown parameter: {}", key)),
         }
         current = next_cell.cdr();
     }
 
-    Ok(AstNode::CorrectiveRag { query, fallback_query })
+    Ok(AstNode::CorrectiveRag {
+        query,
+        fallback_query,
+    })
 }
 
 fn parse_inner_node(val: &Value) -> Result<AstNode, String> {
@@ -110,7 +131,9 @@ fn parse_inner_node(val: &Value) -> Result<AstNode, String> {
                 Some("multi-hop") => parse_multi_hop_args(cdr),
                 Some("self-rag") => parse_self_rag_args(cdr),
                 Some("corrective-rag") => parse_corrective_rag_args(cdr),
-                _ => Err("Expected an inner expression list starting with known keyword".to_string()),
+                _ => {
+                    Err("Expected an inner expression list starting with known keyword".to_string())
+                }
             }
         }
         _ => Err("Expected a valid inner AST node list".to_string()),
@@ -126,7 +149,10 @@ fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
     let mut current = args;
     while let Value::Cons(cell) = current {
         let key = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
-        let next_cell = cell.cdr().as_cons().ok_or(format!("Expected value after {}", key))?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key))?;
         let value = next_cell.car();
 
         match key {
@@ -198,9 +224,15 @@ fn parse_filters(filter_val: &Value) -> Result<Vec<Filter>, String> {
 fn parse_rerank(rerank_val: &Value) -> Result<RerankStrategy, String> {
     match rerank_val {
         Value::Cons(cell) => {
-            let strategy = cell.car().as_symbol().ok_or("Expected rerank strategy name")?;
+            let strategy = cell
+                .car()
+                .as_symbol()
+                .ok_or("Expected rerank strategy name")?;
             if strategy == "hybrid" {
-                let rest = cell.cdr().as_cons().ok_or("Expected :weights after hybrid")?;
+                let rest = cell
+                    .cdr()
+                    .as_cons()
+                    .ok_or("Expected :weights after hybrid")?;
                 let weights_key = rest.car().as_symbol().ok_or("Expected :weights keyword")?;
                 if weights_key != ":weights" {
                     return Err("Expected :weights keyword".to_string());
@@ -224,11 +256,12 @@ fn parse_rerank(rerank_val: &Value) -> Result<RerankStrategy, String> {
                     }
 
                     let r3 = r2.cdr().as_cons().ok_or("Expected bm25 weight")?;
-                    let bm25_weight = r3.car().as_f64().ok_or("bm25 weight must be a float")? as f32;
+                    let bm25_weight =
+                        r3.car().as_f64().ok_or("bm25 weight must be a float")? as f32;
 
                     Ok(RerankStrategy::Hybrid {
                         semantic_weight: sem_weight,
-                        bm25_weight: bm25_weight,
+                        bm25_weight,
                     })
                 } else {
                     Err("Expected weights list".to_string())
@@ -238,12 +271,22 @@ fn parse_rerank(rerank_val: &Value) -> Result<RerankStrategy, String> {
             } else if strategy == "bm25" {
                 Ok(RerankStrategy::Bm25Only)
             } else if strategy == "mmr" {
-                let rest = cell.cdr().as_cons().ok_or("Expected :diversity after mmr")?;
-                let diversity_key = rest.car().as_symbol().ok_or("Expected :diversity keyword")?;
+                let rest = cell
+                    .cdr()
+                    .as_cons()
+                    .ok_or("Expected :diversity after mmr")?;
+                let diversity_key = rest
+                    .car()
+                    .as_symbol()
+                    .ok_or("Expected :diversity keyword")?;
                 if diversity_key != ":diversity" {
                     return Err("Expected :diversity keyword".to_string());
                 }
-                let diversity_val = rest.cdr().as_cons().ok_or("Expected diversity value")?.car();
+                let diversity_val = rest
+                    .cdr()
+                    .as_cons()
+                    .ok_or("Expected diversity value")?
+                    .car();
                 let diversity = diversity_val.as_f64().ok_or("diversity must be a float")? as f32;
                 Ok(RerankStrategy::Mmr { diversity })
             } else if strategy == "rrf" {
@@ -260,8 +303,14 @@ fn parse_rerank(rerank_val: &Value) -> Result<RerankStrategy, String> {
                     let mut args_map = serde_json::Map::new();
                     let mut current = rest;
                     loop {
-                        if current.car().is_null() { break; }
-                        let key = current.car().as_symbol().unwrap_or("").trim_start_matches(':');
+                        if current.car().is_null() {
+                            break;
+                        }
+                        let key = current
+                            .car()
+                            .as_symbol()
+                            .unwrap_or("")
+                            .trim_start_matches(':');
                         if let Some(next) = current.cdr().as_cons() {
                             let val = next.car();
                             let json_val = if let Some(n) = val.as_i64() {
@@ -318,7 +367,10 @@ mod tests {
                 assert_eq!(request.final_top_k, 5);
 
                 match request.rerank_strategy {
-                    RerankStrategy::Hybrid { semantic_weight, bm25_weight } => {
+                    RerankStrategy::Hybrid {
+                        semantic_weight,
+                        bm25_weight,
+                    } => {
                         assert_eq!(semantic_weight, 0.7);
                         assert_eq!(bm25_weight, 0.3);
                     }
@@ -337,19 +389,19 @@ mod tests {
 
     #[test]
     fn test_parse_semantic_rerank() {
-         let input = r#"(search :query "test" :rerank (semantic) :final-top-k 10)"#;
-         let ast = parse_dsl(input).expect("Failed to parse valid DSL");
-         match ast {
+        let input = r#"(search :query "test" :rerank (semantic) :final-top-k 10)"#;
+        let ast = parse_dsl(input).expect("Failed to parse valid DSL");
+        match ast {
             AstNode::Search(request) => {
-                 assert_eq!(request.query, "test");
-                 assert_eq!(request.final_top_k, 10);
-                 match request.rerank_strategy {
-                     RerankStrategy::SemanticOnly => {}
-                     _ => panic!("Expected SemanticOnly rerank strategy"),
-                 }
+                assert_eq!(request.query, "test");
+                assert_eq!(request.final_top_k, 10);
+                match request.rerank_strategy {
+                    RerankStrategy::SemanticOnly => {}
+                    _ => panic!("Expected SemanticOnly rerank strategy"),
+                }
             }
             _ => panic!("Expected Search AST Node"),
-         }
+        }
     }
 
     #[test]
@@ -373,7 +425,12 @@ mod tests {
                                   :high-confidence (search :query "self rag test" :rerank (semantic) :final-top-k 5))"#;
         let ast = parse_dsl(input).expect("Failed to parse self-rag");
         match ast {
-            AstNode::SelfRag { query, threshold, low_plan, high_plan } => {
+            AstNode::SelfRag {
+                query,
+                threshold,
+                low_plan,
+                high_plan,
+            } => {
                 assert_eq!(query, "self rag test");
                 assert_eq!(threshold, 0.85);
                 assert!(matches!(*low_plan, AstNode::Search(_)));
@@ -385,10 +442,14 @@ mod tests {
 
     #[test]
     fn test_parse_corrective_rag() {
-        let input = r#"(corrective-rag :query "corrective test" :fallback-query "simple fallback")"#;
+        let input =
+            r#"(corrective-rag :query "corrective test" :fallback-query "simple fallback")"#;
         let ast = parse_dsl(input).expect("Failed to parse corrective-rag");
         match ast {
-            AstNode::CorrectiveRag { query, fallback_query } => {
+            AstNode::CorrectiveRag {
+                query,
+                fallback_query,
+            } => {
                 assert_eq!(query, "corrective test");
                 assert_eq!(fallback_query, "simple fallback");
             }
@@ -401,12 +462,10 @@ mod tests {
         let input = r#"(search :query "mmr test" :rerank (mmr :diversity 0.6) :final-top-k 5)"#;
         let ast = parse_dsl(input).expect("Failed to parse mmr");
         match ast {
-            AstNode::Search(request) => {
-                match request.rerank_strategy {
-                    RerankStrategy::Mmr { diversity } => assert_eq!(diversity, 0.6),
-                    _ => panic!("Expected Mmr rerank strategy"),
-                }
-            }
+            AstNode::Search(request) => match request.rerank_strategy {
+                RerankStrategy::Mmr { diversity } => assert_eq!(diversity, 0.6),
+                _ => panic!("Expected Mmr rerank strategy"),
+            },
             _ => panic!("Expected Search AST Node"),
         }
     }
@@ -416,12 +475,10 @@ mod tests {
         let input = r#"(search :query "rrf test" :rerank (rrf :k 60) :final-top-k 10)"#;
         let ast = parse_dsl(input).expect("Failed to parse rrf");
         match ast {
-            AstNode::Search(request) => {
-                match request.rerank_strategy {
-                    RerankStrategy::Rrf { k } => assert_eq!(k, 60),
-                    _ => panic!("Expected Rrf rerank strategy"),
-                }
-            }
+            AstNode::Search(request) => match request.rerank_strategy {
+                RerankStrategy::Rrf { k } => assert_eq!(k, 60),
+                _ => panic!("Expected Rrf rerank strategy"),
+            },
             _ => panic!("Expected Search AST Node"),
         }
     }
@@ -432,16 +489,14 @@ fn test_parse_dynamic() {
     let input = r#"(search :query "dynamic test" :rerank (my-custom-algo :param1 42 :param2 "val") :final-top-k 10)"#;
     let ast = parse_dsl(input).expect("Failed to parse dynamic");
     match ast {
-        AstNode::Search(request) => {
-            match request.rerank_strategy {
-                RerankStrategy::Dynamic { name, args } => {
-                    assert_eq!(name, "my-custom-algo");
-                    assert_eq!(args["param1"], 42);
-                    assert_eq!(args["param2"], "val");
-                }
-                _ => panic!("Expected Dynamic rerank strategy"),
+        AstNode::Search(request) => match request.rerank_strategy {
+            RerankStrategy::Dynamic { name, args } => {
+                assert_eq!(name, "my-custom-algo");
+                assert_eq!(args["param1"], 42);
+                assert_eq!(args["param2"], "val");
             }
-        }
+            _ => panic!("Expected Dynamic rerank strategy"),
+        },
         _ => panic!("Expected Search AST Node"),
     }
 }
