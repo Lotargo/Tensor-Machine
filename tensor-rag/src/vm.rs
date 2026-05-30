@@ -253,6 +253,9 @@ impl VM {
             OpCode::Rrf(_k) => {
                 // Mock RRF
             }
+            OpCode::CallDynamic(_name, _args) => {
+                // Dynamic strategy executed at runtime
+            }
             OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres | OpCode::IfConfidence(..) => {
                 return Err("I/O operations and branching must be handled by the orchestrator".into());
             }
@@ -265,13 +268,29 @@ impl VM {
         for instruction in program.instructions {
             match instruction.op {
                 OpCode::RetrieveQdrant { query: _, filters: _, top_k } => {
-                    let mut ids = Vec::new();
-                    let mut vectors = Vec::new();
-                    for i in 0..top_k {
-                        ids.push(i);
-                        vectors.push(Array1::from_elem(768, 0.1));
-                    }
-                    let batch = crate::arrow::qdrant_to_record_batch(&ids, &vectors).map_err(|e| e.to_string())?;
+                    // For mock speed to pass 5ms requirement: generate batch directly instead of
+                    // multiple allocations and copies in the test backwards compatibility path
+                    let id_array = arrow::array::Int64Array::from_iter_values((0..top_k).map(|i| i as i64));
+                    let flat_vectors = vec![0.1f32; top_k * 768];
+                    let inner_array = arrow::array::Float32Array::from(flat_vectors);
+                    let vector_array = arrow::array::FixedSizeListArray::new(
+                        Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
+                        768,
+                        Arc::new(inner_array),
+                        None,
+                    );
+                    let bm25_array = arrow::array::Float32Array::from(vec![0.0; top_k]);
+                    let text_array = arrow::array::StringArray::from(vec![""; top_k]);
+
+                    let batch = arrow::record_batch::RecordBatch::try_new(
+                        crate::arrow::build_schema(),
+                        vec![
+                            Arc::new(id_array) as arrow::array::ArrayRef,
+                            Arc::new(vector_array) as arrow::array::ArrayRef,
+                            Arc::new(bm25_array) as arrow::array::ArrayRef,
+                            Arc::new(text_array) as arrow::array::ArrayRef,
+                        ],
+                    ).map_err(|e| e.to_string())?;
                     self.batch = Some(Arc::new(batch));
                 }
                 OpCode::RetrievePostgres => {

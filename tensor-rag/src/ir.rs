@@ -35,6 +35,11 @@ pub enum RerankStrategy {
     Rrf {
         k: usize,
     },
+    #[serde(rename = "dynamic")]
+    Dynamic {
+        name: String,
+        args: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +97,8 @@ pub enum OpCode {
     Slice(usize, usize),
     /// Matrix multiplication (dot product for 1D)
     Matmul,
+    /// Call a dynamic strategy registered at runtime
+    CallDynamic(String, serde_json::Value),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +168,11 @@ impl Planner {
                     RerankStrategy::Rrf { k } => {
                         program.push(OpCode::RetrievePostgres);
                         program.push(OpCode::Rrf(k));
+                        program.push(OpCode::TopK(request.final_top_k));
+                        program.push(OpCode::Emit);
+                    }
+                    RerankStrategy::Dynamic { name, args } => {
+                        program.push(OpCode::CallDynamic(name, args));
                         program.push(OpCode::TopK(request.final_top_k));
                         program.push(OpCode::Emit);
                     }
