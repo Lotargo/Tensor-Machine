@@ -50,9 +50,17 @@ mod tests {
             final_top_k: 100, // 100 * 10 = 1000 initial candidates
         };
 
-        let mut latencies: Vec<u128> = Vec::with_capacity(100);
+        // Warm-up phase
+        for _ in 0..50 {
+            let program = ir::Planner::compile(ir::AstNode::Search(benchmark_request.clone()));
+            let mut vm = vm::VM::new();
+            let _ = vm.run(program).unwrap();
+        }
 
-        for _ in 0..100 {
+        let iterations = 1000;
+        let mut latencies: Vec<u128> = Vec::with_capacity(iterations);
+
+        for _ in 0..iterations {
             let program = ir::Planner::compile(ir::AstNode::Search(benchmark_request.clone()));
             let mut vm = vm::VM::new();
 
@@ -62,12 +70,12 @@ mod tests {
         }
 
         latencies.sort_unstable();
-        let p99_latency = latencies[99]; // 99th index out of 100 is the 99th percentile
+        // 99th percentile index for 1000 elements is 989
+        let p99_index = (iterations as f64 * 0.99) as usize - 1;
+        let p99_latency = latencies[p99_index];
 
         println!("P99 Latency for Top-1000: {} us", p99_latency);
-        // The sandbox environment can have variable CPU performance resulting in >5ms
-        // spikes for the mock, so we assert <50000 to avoid flakiness in the test environment,
-        // while logging the actual P99 latency.
+        // We enforce < 5000 us (5ms) as per architectural requirements.
         assert!(p99_latency < 5000, "P99 Latency too high: {} us (expected < 5000 us)", p99_latency);
     }
 
