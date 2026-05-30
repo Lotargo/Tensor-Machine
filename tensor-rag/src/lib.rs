@@ -68,7 +68,7 @@ mod tests {
         // The sandbox environment can have variable CPU performance resulting in >5ms
         // spikes for the mock, so we assert <50000 to avoid flakiness in the test environment,
         // while logging the actual P99 latency.
-        assert!(p99_latency < 65000, "P99 Latency too high: {} us (expected < 50000 us)", p99_latency);
+        assert!(p99_latency < 5000, "P99 Latency too high: {} us (expected < 5000 us)", p99_latency);
     }
 
     fn get_rss_mb() -> f64 {

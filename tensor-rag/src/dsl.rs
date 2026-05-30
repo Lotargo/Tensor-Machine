@@ -256,7 +256,44 @@ fn parse_rerank(rerank_val: &Value) -> Result<RerankStrategy, String> {
                 let k = k_val.as_u64().ok_or("k must be an integer")? as usize;
                 Ok(RerankStrategy::Rrf { k })
             } else {
-                Err(format!("Unknown rerank strategy: {}", strategy))
+                let rest_json = if let Some(rest) = cell.cdr().as_cons() {
+                    let mut args_map = serde_json::Map::new();
+                    let mut current = rest;
+                    loop {
+                        if current.car().is_null() { break; }
+                        let key = current.car().as_symbol().unwrap_or("").trim_start_matches(':');
+                        if let Some(next) = current.cdr().as_cons() {
+                            let val = next.car();
+                            let json_val = if let Some(n) = val.as_i64() {
+                                serde_json::json!(n)
+                            } else if let Some(f) = val.as_f64() {
+                                serde_json::json!(f)
+                            } else if let Some(s) = val.as_symbol() {
+                                serde_json::json!(s)
+                            } else if let Some(s) = val.as_str() {
+                                serde_json::json!(s)
+                            } else {
+                                serde_json::json!(val.to_string())
+                            };
+                            args_map.insert(key.to_string(), json_val);
+                            if let Some(nnext) = next.cdr().as_cons() {
+                                current = nnext;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    serde_json::Value::Object(args_map)
+                } else {
+                    serde_json::json!({})
+                };
+
+                Ok(RerankStrategy::Dynamic {
+                    name: strategy.to_string(),
+                    args: rest_json,
+                })
             }
         }
         _ => Err("Expected a rerank expression list".to_string()),
@@ -387,5 +424,24 @@ mod tests {
             }
             _ => panic!("Expected Search AST Node"),
         }
+    }
+}
+
+#[test]
+fn test_parse_dynamic() {
+    let input = r#"(search :query "dynamic test" :rerank (my-custom-algo :param1 42 :param2 "val") :final-top-k 10)"#;
+    let ast = parse_dsl(input).expect("Failed to parse dynamic");
+    match ast {
+        AstNode::Search(request) => {
+            match request.rerank_strategy {
+                RerankStrategy::Dynamic { name, args } => {
+                    assert_eq!(name, "my-custom-algo");
+                    assert_eq!(args["param1"], 42);
+                    assert_eq!(args["param2"], "val");
+                }
+                _ => panic!("Expected Dynamic rerank strategy"),
+            }
+        }
+        _ => panic!("Expected Search AST Node"),
     }
 }
