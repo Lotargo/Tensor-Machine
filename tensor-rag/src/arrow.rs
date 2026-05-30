@@ -1,5 +1,5 @@
 use arrow::{
-    array::{ArrayRef, Float32Array, Int64Array, StringArray, FixedSizeListArray},
+    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -75,16 +75,27 @@ pub fn qdrant_to_record_batch(
 }
 
 pub fn extract_vector_scores(batch: &RecordBatch) -> Result<Float32Array, String> {
-    let col = batch.column_by_name("vector").ok_or("Missing vector column")?;
-    let fixed = col.as_any().downcast_ref::<FixedSizeListArray>().ok_or("Not FixedSizeList")?;
+    let col = batch
+        .column_by_name("vector")
+        .ok_or("Missing vector column")?;
+    let fixed = col
+        .as_any()
+        .downcast_ref::<FixedSizeListArray>()
+        .ok_or("Not FixedSizeList")?;
     let inner = fixed.values();
-    let flat = inner.as_any().downcast_ref::<Float32Array>().ok_or("Not Float32Array")?;
+    let flat = inner
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .ok_or("Not Float32Array")?;
     Ok(flat.clone())
 }
 
 pub fn extract_float_column(batch: &RecordBatch, name: &str) -> Result<Float32Array, String> {
     let col = batch.column_by_name(name).ok_or("Missing column")?;
-    let arr = col.as_any().downcast_ref::<Float32Array>().ok_or("Not Float32Array")?;
+    let arr = col
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .ok_or("Not Float32Array")?;
     Ok(arr.clone())
 }
 
@@ -136,10 +147,7 @@ mod tests {
     #[test]
     fn test_qdrant_to_record_batch() {
         let ids = vec![1, 2];
-        let vectors = vec![
-            Array1::from_elem(768, 0.1),
-            Array1::from_elem(768, 0.2),
-        ];
+        let vectors = vec![Array1::from_elem(768, 0.1), Array1::from_elem(768, 0.2)];
 
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
         assert_eq!(batch.num_columns(), 4);

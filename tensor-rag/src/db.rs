@@ -1,13 +1,18 @@
+use qdrant_client::Qdrant;
+use qdrant_client::qdrant::{
+    Condition, FieldCondition, Filter as QFilter, Match, PointId, Range, SearchPoints,
+    VectorsOutput, WithVectorsSelector, condition::ConditionOneOf, r#match::MatchValue,
+    point_id::PointIdOptions,
+};
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use tonic::transport::{Channel, Endpoint};
 use std::collections::HashMap;
-
+use tonic::transport::{Channel, Endpoint};
 
 /// A simple connection pool manager for various databases and external ML services.
 #[derive(Clone)]
 pub struct DbPools {
     pub postgres: Option<PgPool>,
-    pub qdrant_channels: HashMap<String, Channel>,
+    pub qdrant_clients: HashMap<String, Qdrant>,
     pub ml_servers: HashMap<String, Channel>,
 }
 
@@ -15,7 +20,7 @@ impl DbPools {
     pub fn new() -> Self {
         Self {
             postgres: None,
-            qdrant_channels: HashMap::new(),
+            qdrant_clients: HashMap::new(),
             ml_servers: HashMap::new(),
         }
     }
@@ -31,15 +36,22 @@ impl DbPools {
     }
 
     /// Adds a connection channel to a Qdrant node
-    pub async fn add_qdrant_node(&mut self, node_id: &str, url: &str) -> Result<(), tonic::transport::Error> {
-        let endpoint = Endpoint::from_shared(url.to_string())?;
-        let channel = endpoint.connect().await?;
-        self.qdrant_channels.insert(node_id.to_string(), channel);
+    pub async fn add_qdrant_node(
+        &mut self,
+        node_id: &str,
+        url: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let client = Qdrant::from_url(url).build()?;
+        self.qdrant_clients.insert(node_id.to_string(), client);
         Ok(())
     }
 
     /// Adds a connection channel to an external ML server
-    pub async fn add_ml_server(&mut self, server_id: &str, url: &str) -> Result<(), tonic::transport::Error> {
+    pub async fn add_ml_server(
+        &mut self,
+        server_id: &str,
+        url: &str,
+    ) -> Result<(), tonic::transport::Error> {
         let endpoint = Endpoint::from_shared(url.to_string())?;
         let channel = endpoint.connect().await?;
         self.ml_servers.insert(server_id.to_string(), channel);
@@ -47,63 +59,172 @@ impl DbPools {
     }
 
     /// Mock method for ANN search in Qdrant (Task 1.4.1, 1.4.6)
-    pub async fn search_qdrant(&self, query: &ndarray::Array1<f32>, filters: &Option<Vec<crate::ir::Filter>>, top_k: usize) -> (Vec<usize>, Vec<ndarray::Array1<f32>>) {
-        // Construct the basic Qdrant grpc/REST payload payload log representation
-        let qdrant_request_payload = serde_json::json!({
-            "vector": query.to_vec(),
-            "limit": top_k,
-            "filter": filters.as_ref().map(|f| {
-                let must_conditions: Vec<_> = f.iter().map(|filter| {
-                    match filter.operator.as_str() {
-                        "==" | "=" => serde_json::json!({
-                            "key": filter.field,
-                            "match": { "value": filter.value }
-                        }),
-                        ">=" => serde_json::json!({
-                            "key": filter.field,
-                            "range": { "gte": filter.value }
-                        }),
-                        ">" => serde_json::json!({
-                            "key": filter.field,
-                            "range": { "gt": filter.value }
-                        }),
-                        "<=" => serde_json::json!({
-                            "key": filter.field,
-                            "range": { "lte": filter.value }
-                        }),
-                        "<" => serde_json::json!({
-                            "key": filter.field,
-                            "range": { "lt": filter.value }
-                        }),
-                        "in" => serde_json::json!({
-                            "key": filter.field,
-                            "match": { "any": filter.value }
-                        }),
-                        _ => serde_json::json!({
-                            "key": filter.field,
-                            "match": { "value": filter.value } // fallback
-                        })
-                    }
-                }).collect();
-                serde_json::json!({ "must": must_conditions })
-            })
-        });
+    pub async fn search_qdrant(
+        &self,
+        query: &ndarray::Array1<f32>,
+        filters: &Option<Vec<crate::ir::Filter>>,
+        top_k: usize,
+    ) -> Result<(Vec<usize>, Vec<ndarray::Array1<f32>>), String> {
+        let client_opt = self.qdrant_clients.get("default");
 
-        // Simulate sending a real gRPC/HTTP request to Qdrant if channel exists
-        if let Some(_channel) = self.qdrant_channels.get("default") {
-            // Note: In real gRPC, you would use a pre-generated client here with `_channel.clone()`
-            let _payload_str = serde_json::to_string(&qdrant_request_payload).unwrap_or_default();
-            // let mut client = qdrant_client::grpc::QdrantClient::new(_channel.clone());
-            // let _res = client.search(tonic::Request::new(search_points)).await;
-        }
+        if let Some(client) = client_opt {
+            let mut search_points = SearchPoints {
+                collection_name: "default".to_string(), // In real app, this should be configurable
+                vector: query.to_vec(),
+                limit: top_k as u64,
+                with_vectors: Some(WithVectorsSelector {
+                    selector_options: Some(
+                        qdrant_client::qdrant::with_vectors_selector::SelectorOptions::Enable(true),
+                    ),
+                }),
+                with_payload: None,
+                ..Default::default()
+            };
 
-        let mut ids = Vec::new();
-        let mut vectors = Vec::new();
-        for i in 0..top_k {
-            ids.push(i);
-            vectors.push(ndarray::Array1::from_elem(768, 0.1));
+            if let Some(filters) = filters {
+                let must: Vec<Condition> = filters.iter()
+                    .map(|filter| {
+                        let condition_one_of = match filter.operator.as_str() {
+                            "==" | "=" => {
+                                ConditionOneOf::Field(FieldCondition {
+                                    key: filter.field.clone(),
+                                    r#match: Some(Match {
+                                        match_value: match &filter.value {
+                                            serde_json::Value::String(s) => Some(MatchValue::Keyword(s.clone())),
+                                            serde_json::Value::Number(n) => n.as_i64().map(MatchValue::Integer),
+                                            serde_json::Value::Bool(b) => Some(MatchValue::Boolean(*b)),
+                                            _ => None
+                                        }
+                                    }),
+                                    ..Default::default()
+                                })
+                            },
+                            ">=" => {
+                                ConditionOneOf::Field(FieldCondition {
+                                    key: filter.field.clone(),
+                                    range: Some(Range {
+                                        gte: filter.value.as_f64(),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                })
+                            },
+                            ">" => {
+                                ConditionOneOf::Field(FieldCondition {
+                                    key: filter.field.clone(),
+                                    range: Some(Range {
+                                        gt: filter.value.as_f64(),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                })
+                            },
+                            "<=" => {
+                                ConditionOneOf::Field(FieldCondition {
+                                    key: filter.field.clone(),
+                                    range: Some(Range {
+                                        lte: filter.value.as_f64(),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                })
+                            },
+                            "<" => {
+                                ConditionOneOf::Field(FieldCondition {
+                                    key: filter.field.clone(),
+                                    range: Some(Range {
+                                        lt: filter.value.as_f64(),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                })
+                            },
+                            "in" => {
+                                ConditionOneOf::Field(FieldCondition {
+                                    key: filter.field.clone(),
+                                    r#match: Some(Match {
+                                        match_value: match &filter.value {
+                                            serde_json::Value::Array(arr) => {
+                                                if let Some(first) = arr.first() {
+                                                    if first.is_string() {
+                                                        Some(MatchValue::Keywords(qdrant_client::qdrant::RepeatedStrings { strings: arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect() }))
+                                                    } else if first.is_i64() {
+                                                        Some(MatchValue::Integers(qdrant_client::qdrant::RepeatedIntegers { integers: arr.iter().filter_map(|v| v.as_i64()).collect() }))
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                }
+                                            },
+                                            _ => None
+                                        }
+                                    }),
+                                    ..Default::default()
+                                })
+                            },
+                            _ => {
+                                ConditionOneOf::Field(FieldCondition {
+                                    key: filter.field.clone(),
+                                    r#match: Some(Match {
+                                        match_value: match &filter.value {
+                                            serde_json::Value::String(s) => Some(MatchValue::Keyword(s.clone())),
+                                            serde_json::Value::Number(n) => n.as_i64().map(MatchValue::Integer),
+                                            serde_json::Value::Bool(b) => Some(MatchValue::Boolean(*b)),
+                                            _ => None
+                                        }
+                                    }),
+                                    ..Default::default()
+                                })
+                            }
+                        };
+                        Condition {
+                            condition_one_of: Some(condition_one_of)
+                        }
+                    })
+                    .collect();
+                search_points.filter = Some(QFilter {
+                    must,
+                    ..Default::default()
+                });
+            }
+
+            let response = client
+                .search_points(search_points)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let mut ids = Vec::new();
+            let mut vectors = Vec::new();
+            for point in &response.result {
+                let id = match &point.id {
+                    Some(PointId {
+                        point_id_options: Some(PointIdOptions::Num(n)),
+                    }) => *n as usize,
+                    _ => continue,
+                };
+                ids.push(id);
+                if let Some(VectorsOutput {
+                    vectors_options:
+                        Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v)),
+                }) = &point.vectors
+                {
+                    vectors.push(ndarray::Array1::from(v.data.clone()));
+                } else {
+                    vectors.push(ndarray::Array1::from_elem(768, 0.1));
+                }
+            }
+            Ok((ids, vectors))
+        } else {
+            // Mock fallback
+            let mut ids = Vec::new();
+            let mut vectors = Vec::new();
+            for i in 0..top_k {
+                ids.push(i);
+                vectors.push(ndarray::Array1::from_elem(768, 0.1));
+            }
+            Ok((ids, vectors))
         }
-        (ids, vectors)
     }
 
     /// Fetches bm25_scores from Postgres for the given ids
@@ -113,7 +234,8 @@ impl DbPools {
             let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
             let rows = sqlx::query("SELECT id, bm25_score FROM documents WHERE id = ANY($1)")
                 .bind(&ids_i64[..])
-                .fetch_all(pool).await;
+                .fetch_all(pool)
+                .await;
 
             if let Ok(rows) = rows {
                 let mut map = std::collections::HashMap::new();
@@ -122,7 +244,10 @@ impl DbPools {
                     let score: f32 = row.try_get("bm25_score").unwrap_or(1.0);
                     map.insert(id, score);
                 }
-                return ids_i64.iter().map(|&id| *map.get(&id).unwrap_or(&1.0)).collect();
+                return ids_i64
+                    .iter()
+                    .map(|&id| *map.get(&id).unwrap_or(&1.0))
+                    .collect();
             }
         }
         vec![1.0; ids.len()]
@@ -135,7 +260,8 @@ impl DbPools {
             let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
             let rows = sqlx::query("SELECT id, text FROM documents WHERE id = ANY($1)")
                 .bind(&ids_i64[..])
-                .fetch_all(pool).await;
+                .fetch_all(pool)
+                .await;
 
             if let Ok(rows) = rows {
                 let mut map = std::collections::HashMap::new();
@@ -144,10 +270,19 @@ impl DbPools {
                     let text: String = row.try_get("text").unwrap_or_default();
                     map.insert(id, text);
                 }
-                return ids_i64.iter().map(|&id| map.get(&id).cloned().unwrap_or_else(|| format!("Metadata for doc {}", id))).collect();
+                return ids_i64
+                    .iter()
+                    .map(|&id| {
+                        map.get(&id)
+                            .cloned()
+                            .unwrap_or_else(|| format!("Metadata for doc {}", id))
+                    })
+                    .collect();
             }
         }
-        ids.iter().map(|id| format!("Metadata for doc {}", id)).collect()
+        ids.iter()
+            .map(|id| format!("Metadata for doc {}", id))
+            .collect()
     }
 }
 

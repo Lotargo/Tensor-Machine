@@ -1,14 +1,14 @@
-pub mod mcp;
 pub mod db;
-pub mod vm;
 pub mod ir;
+pub mod mcp;
+pub mod vm;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::ToolHandler;
     use serde_json::json;
-    use std::sync::Arc;
-    use crate::mcp::ToolHandler; // Added import for the handle method
+    use std::sync::Arc; // Added import for the handle method
 
     #[tokio::test]
     async fn test_e2e_pipeline() {
@@ -26,10 +26,14 @@ mod tests {
 
         let tool = mcp::SearchTool;
         let db_pools = crate::db::DbPools::new();
-        let response_bytes = tool.handle(request_json, &db_pools).await.expect("Tool handler failed");
+        let response_bytes = tool
+            .handle(request_json, &db_pools)
+            .await
+            .expect("Tool handler failed");
 
-        let result = crate::result_generated::tensor_rag::fbs::root_as_search_result(&response_bytes)
-            .expect("Invalid FlatBuffer response");
+        let result =
+            crate::result_generated::tensor_rag::fbs::root_as_search_result(&response_bytes)
+                .expect("Invalid FlatBuffer response");
 
         let indices = result.top_indices().expect("Missing indices");
         let scores = result.top_scores().expect("Missing scores");
@@ -66,9 +70,13 @@ mod tests {
 
         println!("P99 Latency for Top-1000: {} us", p99_latency);
         // The sandbox environment can have variable CPU performance resulting in >5ms
-        // spikes for the mock, so we assert <50000 to avoid flakiness in the test environment,
+        // spikes for the mock, so we assert <5000 to avoid flakiness in the test environment,
         // while logging the actual P99 latency.
-        assert!(p99_latency < 5000, "P99 Latency too high: {} us (expected < 5000 us)", p99_latency);
+        assert!(
+            p99_latency < 5000,
+            "P99 Latency too high: {} us (expected < 5000 us)",
+            p99_latency
+        );
     }
 
     fn get_rss_mb() -> f64 {
@@ -107,14 +115,21 @@ mod tests {
 
         println!("Initial RSS: {:.2} MB", initial_rss);
         println!("Final RSS: {:.2} MB", final_rss);
-        println!("Memory increase for 10k sessions: {:.2} MB", memory_increase_mb);
+        println!(
+            "Memory increase for 10k sessions: {:.2} MB",
+            memory_increase_mb
+        );
 
         // Target: < 500 MB (we assert against a safe margin since it's just sessions overhead)
-        assert!(memory_increase_mb < 500.0, "Memory increase too high: {:.2} MB", memory_increase_mb);
+        assert!(
+            memory_increase_mb < 500.0,
+            "Memory increase too high: {:.2} MB",
+            memory_increase_mb
+        );
     }
 }
 
-pub mod dsl;
 pub mod arrow;
+pub mod dsl;
 #[allow(non_snake_case)]
 pub mod result_generated;

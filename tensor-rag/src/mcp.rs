@@ -26,7 +26,11 @@ use std::sync::Arc;
 
 /// A trait for handling specific tool calls from the MCP.
 pub trait ToolHandler: Send + Sync {
-    fn handle<'a>(&'a self, args: JsonValue, db_pools: &'a crate::db::DbPools) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+    fn handle<'a>(
+        &'a self,
+        args: JsonValue,
+        db_pools: &'a crate::db::DbPools,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 }
 
 /// Represents an active MCP session with guaranteed message ordering
@@ -49,7 +53,11 @@ impl McpSession {
 pub struct SearchTool;
 
 impl ToolHandler for SearchTool {
-    fn handle<'a>(&'a self, args: JsonValue, db_pools: &'a crate::db::DbPools) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+    fn handle<'a>(
+        &'a self,
+        args: JsonValue,
+        db_pools: &'a crate::db::DbPools,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
             let ast = if let Some(dsl_string) = args.get("dsl").and_then(|v| v.as_str()) {
                 crate::dsl::parse_dsl(dsl_string)?
@@ -63,7 +71,8 @@ impl ToolHandler for SearchTool {
             let program = crate::ir::Planner::compile(ast);
             let mut vm = crate::vm::VM::new();
 
-            let result = execute_program(&program, &mut vm, db_pools).await
+            let result = execute_program(&program, &mut vm, db_pools)
+                .await
                 .map_err(|e| format!("Execution error: {}", e))?;
 
             match result {
@@ -72,7 +81,8 @@ impl ToolHandler for SearchTool {
 
                     // Note: The indices are cast to i32 to match the FlatBuffers schema ([int]).
                     // This is safe for now, but will silently truncate if the index exceeds 2^31-1.
-                    let indices_i32: Vec<i32> = topk.indices.into_iter().map(|idx| idx as i32).collect();
+                    let indices_i32: Vec<i32> =
+                        topk.indices.into_iter().map(|idx| idx as i32).collect();
 
                     let top_indices_vec = fbb.create_vector(&indices_i32);
                     let top_scores_vec = fbb.create_vector(&topk.scores);
@@ -82,12 +92,15 @@ impl ToolHandler for SearchTool {
                         top_scores: Some(top_scores_vec),
                     };
 
-                    let result_offset = crate::result_generated::tensor_rag::fbs::SearchResult::create(&mut fbb, &args);
+                    let result_offset =
+                        crate::result_generated::tensor_rag::fbs::SearchResult::create(
+                            &mut fbb, &args,
+                        );
                     fbb.finish(result_offset, None);
 
                     Ok(fbb.finished_data().to_vec())
                 }
-                _ => Err("VM did not return a valid TopKResult".to_string())
+                _ => Err("VM did not return a valid TopKResult".to_string()),
             }
         })
     }
@@ -178,28 +191,41 @@ pub fn execute_program<'a>(
     Box::pin(async move {
         for op in &program.instructions {
             match &op.op {
-                crate::ir::OpCode::RetrieveQdrant { query: _, filters, top_k } => {
+                crate::ir::OpCode::RetrieveQdrant {
+                    query: _,
+                    filters,
+                    top_k,
+                } => {
                     // Currently Mocking using db_pools method. Wait, DbPools expects ndarray.
                     // Let's just create a dummy query vector for the mock I/O
                     let query_vec = ndarray::Array1::from_elem(768, 0.1);
                     vm.query_vector = query_vec.clone();
 
-                    let (ids, vectors) = db_pools.search_qdrant(&query_vec, filters, *top_k).await;
+                    let (ids, vectors) =
+                        db_pools.search_qdrant(&query_vec, filters, *top_k).await?;
                     let batch = crate::arrow::qdrant_to_record_batch(&ids, &vectors)
                         .map_err(|e| format!("Failed to convert qdrant results: {}", e))?;
                     vm.batch = Some(Arc::new(batch));
                 }
                 crate::ir::OpCode::RetrievePostgres => {
-                    let batch = vm.batch.as_ref().ok_or("No batch found for RetrievePostgres")?;
-
+                    let batch = vm
+                        .batch
+                        .as_ref()
+                        .ok_or("No batch found for RetrievePostgres")?;
 
                     // We mock fetching BM25 scores (actually we need IDs from batch)
                     let id_col = batch.column_by_name("id").ok_or("Missing id column")?;
-                    let id_arr = id_col.as_any().downcast_ref::<arrow::array::Int64Array>().ok_or("Not Int64Array")?;
-                    let real_ids: Vec<usize> = id_arr.iter().map(|v| v.unwrap_or(0) as usize).collect();
+                    let id_arr = id_col
+                        .as_any()
+                        .downcast_ref::<arrow::array::Int64Array>()
+                        .ok_or("Not Int64Array")?;
+                    let real_ids: Vec<usize> =
+                        id_arr.iter().map(|v| v.unwrap_or(0) as usize).collect();
                     let scores = db_pools.fetch_bm25_scores(&real_ids).await;
 
-                    vm.stack.push(crate::vm::Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(scores))));
+                    vm.stack.push(crate::vm::Value::ArrowArray(Arc::new(
+                        arrow::array::Float32Array::from(scores),
+                    )));
                 }
                 crate::ir::OpCode::IfConfidence(threshold, low_plan, high_plan) => {
                     let a = vm.stack.pop().ok_or("Stack underflow in IfConfidence")?;
@@ -207,13 +233,20 @@ pub fn execute_program<'a>(
                     match &a {
                         crate::vm::Value::Tensor1D(t) => {
                             for &score in t.iter() {
-                                if score > max_score { max_score = score; }
+                                if score > max_score {
+                                    max_score = score;
+                                }
                             }
                         }
                         crate::vm::Value::ArrowArray(arr) => {
-                            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+                            let t_f32 = arr
+                                .as_any()
+                                .downcast_ref::<arrow::array::Float32Array>()
+                                .ok_or("Not Float32Array")?;
                             for score in t_f32.iter().flatten() {
-                                if score > max_score { max_score = score; }
+                                if score > max_score {
+                                    max_score = score;
+                                }
                             }
                         }
                         _ => return Err("Invalid type for IfConfidence condition".to_string()),
