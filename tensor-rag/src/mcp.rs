@@ -42,6 +42,39 @@ impl McpSession {
     }
 }
 
+pub struct SearchTool;
+
+impl ToolHandler for SearchTool {
+    fn handle(&self, args: JsonValue) -> Result<Vec<u8>, String> {
+        let request: crate::ir::QueryRequest = serde_json::from_value(args)
+            .map_err(|e| format!("Failed to parse QueryRequest: {}", e))?;
+
+        let program = crate::ir::Planner::compile(request);
+        let mut vm = crate::vm::VM::new();
+
+        let result = vm.run(program)
+            .map_err(|e| format!("VM Execution error: {}", e))?;
+
+        match result {
+            Some(crate::vm::Value::Result(topk)) => {
+                let mut json_obj = serde_json::Map::new();
+                json_obj.insert("indices".to_string(), serde_json::json!(topk.indices));
+                json_obj.insert("scores".to_string(), serde_json::json!(topk.scores));
+
+                let json_body = serde_json::to_vec(&JsonValue::Object(json_obj))
+                    .map_err(|e| format!("Failed to serialize result: {}", e))?;
+
+                Ok(json_body)
+            }
+            _ => Err("VM did not return a valid TopKResult".to_string())
+        }
+    }
+}
+
+pub fn register_search_tool(server: &mut McpServer) {
+    server.register_tool("search", Box::new(SearchTool));
+}
+
 /// The core MCP server that maintains connections and routes tool calls.
 pub struct McpServer {
     tools: HashMap<String, Box<dyn ToolHandler>>,

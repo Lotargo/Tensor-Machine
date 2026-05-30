@@ -16,12 +16,18 @@ pub enum Value {
 
 pub struct VM {
     pub stack: Vec<Value>,
+    pub candidate_ids: Vec<usize>,
+    pub candidate_vectors: Vec<Array1<f32>>,
+    pub query_vector: Array1<f32>,
 }
 
 impl VM {
     pub fn new() -> Self {
         Self {
             stack: Vec::new(),
+            candidate_ids: Vec::new(),
+            candidate_vectors: Vec::new(),
+            query_vector: Array1::zeros(768), // Default initialization, could be populated externally
         }
     }
 
@@ -82,15 +88,30 @@ impl VM {
                     let res = self.stack.pop().ok_or("Stack underflow")?;
                     return Ok(Some(res));
                 }
-                // Mock operations for unimplemented instructions
-                OpCode::RetrieveQdrant { .. } => {
-                    // In a real implementation this would fetch data
+                OpCode::RetrieveQdrant { query: _, filters: _, top_k } => {
+                    // Mock data retrieval (Task 1.4.1, 1.4.6)
+                    let mut ids = Vec::new();
+                    let mut vectors = Vec::new();
+                    for i in 0..top_k {
+                        ids.push(i);
+                        vectors.push(Array1::from_elem(768, 0.1));
+                    }
+                    self.candidate_ids = ids;
+                    self.candidate_vectors = vectors;
                 }
                 OpCode::RetrievePostgres => {
-                    // In a real implementation this would fetch data
+                    // Mock retrieving BM25 scores (Task 1.4.2, 1.4.5 context)
+                    let scores = Array1::from_elem(self.candidate_ids.len(), 1.0);
+                    self.stack.push(Value::Tensor1D(scores));
                 }
                 OpCode::ComputeSemantic => {
-                    // In a real implementation this would compute scores
+                    // Compute dot product of query_vector with each candidate vector (Task 1.4.4)
+                    let mut scores = Vec::with_capacity(self.candidate_vectors.len());
+                    for vec in &self.candidate_vectors {
+                        let score = self.query_vector.dot(vec);
+                        scores.push(score);
+                    }
+                    self.stack.push(Value::Tensor1D(Array1::from_vec(scores)));
                 }
             }
         }
