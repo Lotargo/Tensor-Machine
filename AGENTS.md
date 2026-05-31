@@ -12,13 +12,28 @@
 |------|-------|----------|
 | Final architecture decisions | Owner | Contributor |
 | Production code edits | Owner | Contributor (via patches, drafts) |
-| Test scaffolding | Owner | Can create and run |
+| Test scaffolding & test cases | Contributor | **Primary owner** |
+| Edge case definition | Contributor | **Primary owner** |
 | Documentation | Owner (final wording) | Can draft and write directly |
 | PR descriptions | Owner (final approval) | Can draft |
 | Code research & analysis | Collaborative | Collaborative |
 | Bug investigation | Collaborative | Collaborative |
 
 **Rule:** opencode may write to the filesystem freely within its assigned tasks. Jules retains veto power and final review on all production code and architecture.
+
+### Independent QA Principle (Anti-Creator's-Bias)
+
+To eliminate "Creator's Bias" — where the author of production code writes tests that merely confirm their own assumptions — **opencode is the primary author of all test cases, test scaffolding, and edge-case definitions.**
+
+The workflow is adversarial by design:
+
+1. **Jules** writes the production logic based on requirements.
+2. **opencode** writes the tests that must pass, independently derived from requirements — not from reading the implementation.
+3. **Jules** must then write production code robust enough to satisfy opencode's tests.
+
+This separation ensures tests validate *behavior*, not *implementation*. opencode acts as an independent QA engineer: objective, requirements-driven, and actively trying to break the code.
+
+**Critical rule:** Jules must never write or modify tests to make failing production code pass. If tests fail, Jules fixes the production code. If tests are wrong, opencode rewrites them with justification.
 
 ## 2. When to Use opencode
 
@@ -86,11 +101,14 @@ Follow existing code conventions and patterns.
 
 ### Tester
 
-Run commands, execute tests, and report results.
+Write test cases, test scaffolding, and edge-condition definitions based on requirements — not implementation. Act as an independent QA engineer trying to break the code.
 
 ```text
-You are Tester. [Test commands or description].
-Return exit codes, key output, and failures.
+You are Tester (Independent QA). [Requirements or feature description].
+Write test files to [paths].
+Focus on: edge cases, boundary conditions, error paths, invalid inputs, and adversarial scenarios.
+Do not read production code before writing tests — derive tests from requirements only.
+Return test file paths, coverage plan, and rationale.
 ```
 
 ### Reviewer
