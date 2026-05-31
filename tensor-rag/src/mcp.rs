@@ -71,7 +71,10 @@ impl ToolHandler for SearchTool {
             let program = crate::ir::Planner::compile(ast);
             let mut vm = crate::vm::VM::new();
 
-            let result = execute_program(&program, &mut vm, db_pools)
+            let mut instruction_count = 0;
+            let max_instructions = 100_000;
+
+            let result = execute_program(&program, &mut vm, db_pools, &mut instruction_count, max_instructions)
                 .await
                 .map_err(|e| format!("Execution error: {}", e))?;
 
@@ -187,9 +190,16 @@ pub fn execute_program<'a>(
     program: &'a crate::ir::Program,
     vm: &'a mut crate::vm::VM,
     db_pools: &'a crate::db::DbPools,
+    instruction_count: &'a mut usize,
+    max_instructions: usize,
 ) -> Pin<Box<dyn Future<Output = Result<Option<crate::vm::Value>, String>> + Send + 'a>> {
     Box::pin(async move {
         for op in &program.instructions {
+            if *instruction_count >= max_instructions {
+                return Err(format!("Execution error: Instruction limit exceeded ({})", max_instructions));
+            }
+            *instruction_count += 1;
+
             match &op.op {
                 crate::ir::OpCode::RetrieveQdrant {
                     query: _,
@@ -260,7 +270,7 @@ pub fn execute_program<'a>(
                         low_plan
                     };
 
-                    if let Some(res) = execute_program(branch_plan, vm, db_pools).await? {
+                    if let Some(res) = execute_program(branch_plan, vm, db_pools, instruction_count, max_instructions).await? {
                         return Ok(Some(res));
                     }
                 }
