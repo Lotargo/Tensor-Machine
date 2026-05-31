@@ -301,9 +301,9 @@ impl VM {
             OpCode::ComputeSemantic => {
                 // Compute dot product of query_vector with each candidate vector (Task 1.4.4)
                 let batch = self.batch.as_ref().ok_or("No batch found")?;
-                let flat = crate::arrow::extract_vector_scores(batch)?;
+                let flat = crate::arrow::extract_flat_vector_values(batch)?;
 
-                let dim = 768;
+                let dim = crate::arrow::VECTOR_DIM;
                 let n = flat.len() / dim;
                 let mut scores = Vec::with_capacity(n);
 

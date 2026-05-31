@@ -133,5 +133,6 @@ mod tests {
 
 pub mod arrow;
 pub mod dsl;
+pub mod shared_memory;
 #[allow(non_snake_case)]
 pub mod result_generated;

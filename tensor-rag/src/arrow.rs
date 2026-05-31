@@ -5,11 +5,15 @@ use arrow::{
 };
 use ndarray::Array1;
 use std::sync::Arc;
+use arrow::ipc::writer::FileWriter;
+use arrow::ipc::reader::FileReader;
+
+pub const VECTOR_DIM: usize = 768;
 
 /// Defines the schema of our RecordBatch
 /// Columns:
 /// - id: Int64
-/// - vector: FixedSizeList(Float32, 768)
+/// - vector: FixedSizeList(Float32, VECTOR_DIM)
 /// - bm25_score: Float32
 /// - text: Utf8
 pub fn build_schema() -> Arc<Schema> {
@@ -17,7 +21,7 @@ pub fn build_schema() -> Arc<Schema> {
         Field::new("id", DataType::Int64, false),
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 768),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), VECTOR_DIM as i32),
             false,
         ),
         Field::new("bm25_score", DataType::Float32, false),
@@ -38,11 +42,11 @@ pub fn qdrant_to_record_batch(
 
     let id_array = Int64Array::from(ids.iter().map(|&id| id as i64).collect::<Vec<_>>());
 
-    let mut flat_vectors: Vec<f32> = Vec::with_capacity(ids.len() * 768);
+    let mut flat_vectors: Vec<f32> = Vec::with_capacity(ids.len() * VECTOR_DIM);
     for vec in vectors {
-        if vec.len() != 768 {
+        if vec.len() != VECTOR_DIM {
             return Err(arrow::error::ArrowError::InvalidArgumentError(
-                "Vector length must be exactly 768".to_string(),
+                format!("Vector length must be exactly {}", VECTOR_DIM),
             ));
         }
         flat_vectors.extend(vec.iter().copied());
@@ -52,7 +56,7 @@ pub fn qdrant_to_record_batch(
 
     let vector_array = FixedSizeListArray::new(
         Arc::new(Field::new("item", DataType::Float32, true)),
-        768,
+        VECTOR_DIM as i32,
         Arc::new(inner_array) as ArrayRef,
         None,
     );
@@ -74,7 +78,7 @@ pub fn qdrant_to_record_batch(
     )
 }
 
-pub fn extract_vector_scores(batch: &RecordBatch) -> Result<Float32Array, String> {
+pub fn extract_flat_vector_values(batch: &RecordBatch) -> Result<Float32Array, String> {
     let col = batch
         .column_by_name("vector")
         .ok_or("Missing vector column")?;
@@ -114,11 +118,11 @@ pub fn postgres_to_record_batch(
     let id_array = Int64Array::from(ids.iter().map(|&id| id as i64).collect::<Vec<_>>());
 
     // Default vectors to zeros
-    let flat_vectors = vec![0.0f32; ids.len() * 768];
+    let flat_vectors = vec![0.0f32; ids.len() * VECTOR_DIM];
     let inner_array = Float32Array::from(flat_vectors);
     let vector_array = FixedSizeListArray::new(
         Arc::new(Field::new("item", DataType::Float32, true)),
-        768,
+        VECTOR_DIM as i32,
         Arc::new(inner_array) as ArrayRef,
         None,
     );
@@ -139,6 +143,42 @@ pub fn postgres_to_record_batch(
     )
 }
 
+pub fn write_batch_to_shm(
+    manager: &crate::shared_memory::SharedMemoryManager,
+    batch: &RecordBatch,
+) -> Result<Arc<crate::shared_memory::MmapRegion>, String> {
+    let region_name = format!("batch_{}", uuid::Uuid::new_v4());
+    let region = manager.allocate(&region_name)?;
+
+    let file = region.get_file_for_write()?;
+    let mut writer = FileWriter::try_new(file, &batch.schema())
+        .map_err(|e| format!("Failed to create IPC writer: {}", e))?;
+
+    writer.write(batch)
+        .map_err(|e| format!("Failed to write batch to IPC: {}", e))?;
+    writer.finish()
+        .map_err(|e| format!("Failed to finish IPC writing: {}", e))?;
+
+    Ok(region)
+}
+
+pub fn read_batch_from_shm(
+    manager: &crate::shared_memory::SharedMemoryManager,
+    region_name: &str,
+) -> Result<RecordBatch, String> {
+    let region = manager.open(region_name)?;
+    let file = region.get_file_for_read()?;
+
+    let mut reader = FileReader::try_new(file, None)
+        .map_err(|e| format!("Failed to create IPC reader: {}", e))?;
+
+    let batch = reader.next()
+        .ok_or_else(|| "No batch found in IPC file".to_string())?
+        .map_err(|e| format!("Failed to read batch from IPC: {}", e))?;
+
+    Ok(batch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,7 +187,7 @@ mod tests {
     #[test]
     fn test_qdrant_to_record_batch() {
         let ids = vec![1, 2];
-        let vectors = vec![Array1::from_elem(768, 0.1), Array1::from_elem(768, 0.2)];
+        let vectors = vec![Array1::from_elem(VECTOR_DIM, 0.1), Array1::from_elem(VECTOR_DIM, 0.2)];
 
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
         assert_eq!(batch.num_columns(), 4);
@@ -163,5 +203,29 @@ mod tests {
         let batch = postgres_to_record_batch(&ids, &scores, &texts).unwrap();
         assert_eq!(batch.num_columns(), 4);
         assert_eq!(batch.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_ipc_roundtrip() {
+        let ids = vec![10, 20];
+        let vectors = vec![Array1::from_elem(VECTOR_DIM, 0.5), Array1::from_elem(VECTOR_DIM, 0.8)];
+        let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
+
+        let manager = crate::shared_memory::SharedMemoryManager::new();
+        let region = write_batch_to_shm(&manager, &batch).expect("Failed to write to shm");
+
+        let batch_read = read_batch_from_shm(&manager, &region.name).expect("Failed to read from shm");
+
+        assert_eq!(batch.num_columns(), batch_read.num_columns());
+        assert_eq!(batch.num_rows(), batch_read.num_rows());
+
+        let original_flat = extract_flat_vector_values(&batch).unwrap();
+        let read_flat = extract_flat_vector_values(&batch_read).unwrap();
+
+        assert_eq!(original_flat.len(), read_flat.len());
+        assert_eq!(original_flat.value(0), read_flat.value(0));
+        assert_eq!(original_flat.value(VECTOR_DIM), read_flat.value(VECTOR_DIM));
+
+        region.destroy().unwrap();
     }
 }
