@@ -38,9 +38,9 @@ impl CircuitBreaker {
     }
 
     pub fn record_success(&self) {
-        self.failures.store(0, Ordering::SeqCst);
         let mut last = self.last_failure.write().unwrap();
         *last = None;
+        self.failures.store(0, Ordering::SeqCst);
     }
 }
 use qdrant_client::Qdrant;
