@@ -1,7 +1,11 @@
+use tokio_util::sync::CancellationToken;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use std::sync::Mutex;
+use std::time::Instant;
+
 
 /// An incoming request from an LLM Agent using the Model Context Protocol.
 #[derive(Debug, Deserialize, Serialize)]
@@ -31,6 +35,43 @@ pub trait ToolHandler: Send + Sync {
         args: JsonValue,
         db_pools: &'a crate::db::DbPools,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+}
+
+
+/// Simple Token Bucket Rate Limiter
+pub struct RateLimiter {
+    capacity: u32,
+    tokens: Mutex<f64>,
+    last_replenished: Mutex<Instant>,
+    refill_rate_per_sec: f64,
+}
+
+impl RateLimiter {
+    pub fn new(capacity: u32, refill_rate_per_sec: f64) -> Self {
+        Self {
+            capacity,
+            tokens: Mutex::new(capacity as f64),
+            last_replenished: Mutex::new(Instant::now()),
+            refill_rate_per_sec,
+        }
+    }
+
+    pub fn acquire(&self) -> bool {
+        let mut tokens = self.tokens.lock().unwrap();
+        let mut last_replenished = self.last_replenished.lock().unwrap();
+        let now = Instant::now();
+        let elapsed = now.duration_since(*last_replenished).as_secs_f64();
+
+        *tokens = (*tokens + elapsed * self.refill_rate_per_sec).min(self.capacity as f64);
+        *last_replenished = now;
+
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Represents an active MCP session with guaranteed message ordering
@@ -118,6 +159,7 @@ pub struct McpServer {
     tools: HashMap<String, Box<dyn ToolHandler>>,
     sessions: HashMap<String, McpSession>,
     pub db_pools: Arc<crate::db::DbPools>,
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 impl Default for McpServer {
@@ -132,6 +174,7 @@ impl McpServer {
             tools: HashMap::new(),
             sessions: HashMap::new(),
             db_pools,
+            rate_limiter: Arc::new(RateLimiter::new(100, 100.0)), // 100 req/sec
         }
     }
 
@@ -150,6 +193,10 @@ impl McpServer {
 
     /// Dispatch an incoming request to the appropriate tool handler.
     pub async fn handle_request(&mut self, request: McpRequest) -> Result<McpResponse, String> {
+        if !self.rate_limiter.acquire() {
+            return Err("Rate limit exceeded".to_string());
+        }
+
         // Validate session and sequence number for message ordering
         let seq_num = request.sequence_number;
         let tool = request.tool.clone();
@@ -181,6 +228,28 @@ impl McpServer {
             }
         } else {
             Err(format!("Tool not found: {}", tool))
+        }
+    }
+    pub async fn run_server(&mut self, mut rx: mpsc::Receiver<McpRequest>, cancel_token: CancellationToken) {
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    println!("Shutdown signal received, shutting down gracefully...");
+                    // Graceful shutdown can wait for active connections here
+                    break;
+                }
+                req = rx.recv() => {
+                    match req {
+                        Some(request) => {
+                            match self.handle_request(request).await {
+                                Ok(_) => {},
+                                Err(e) => println!("Error handling request: {}", e),
+                            }
+                        }
+                        None => break, // Channel closed
+                    }
+                }
+            }
         }
     }
 }

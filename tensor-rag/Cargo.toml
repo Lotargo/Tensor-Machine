@@ -16,6 +16,7 @@ lexpr = "0.2.7"
 arrow = "51.0.0"
 flatbuffers = "2.0.8"
 qdrant-client = "1.13.0"
+tokio-util = { version = "0.7.18", features = ["full"] }
 
 [dev-dependencies]
 criterion = "0.5"
