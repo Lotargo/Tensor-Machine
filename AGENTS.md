@@ -225,13 +225,9 @@ If opencode disagrees with local evidence, local evidence wins.
 
 ## 10. Model Selection
 
-Use models by task type:
+**All opencode invocations must use `mimo-v2.5-free` (model ID: `opencode/mimo-v2.5-free`).** No exceptions. Do not switch models based on task type, role, or availability of alternatives. This model has proven to be the most effective and valuable across all task categories — documentation, code analysis, debugging, scaffolding, research, and review.
 
-- documentation and summaries: fast/free text model
-- code analysis and debugging: stronger reasoning model when available
-- simple lookups: any reliable free model
-
-Do not rely on model names staying stable. If a named model is unavailable, choose the closest available model for the role.
+If `mimo-v2.5-free` is unavailable, **stop and report the issue** rather than silently substituting another model.
 
 ## 11. Platform Notes
 
@@ -279,7 +275,7 @@ Avoid:
 
 ## 13. Dataset Lessons
 
-After a complex task, opencode may draft a lesson for later training data.
+After completing any non-trivial task, **Jules must invoke opencode** (as Builder) to generate a `.dataset/lessons/` entry. This is mandatory, not optional. The purpose is to build a universally valuable dataset for fine-tuning — records must be self-contained, not dependent on local repo state.
 
 Storage:
 
@@ -291,16 +287,20 @@ Schema:
 
 ```json
 {
-  "topic": "Short descriptive topic",
-  "instruction": "The initial problem statement",
-  "context": "Codebase state before the fix",
-  "response": "Detailed solution with before/after code"
+  "topic": "Concise title (e.g., 'Prefer explicit over implicit return')",
+  "principle": "The universal lesson or best practice learned, stated abstractly",
+  "instruction": "What a developer might ask or encounter that triggers this lesson",
+  "bad_example": "Self-contained minimal code or text demonstrating the anti-pattern",
+  "good_example": "Self-contained minimal code or text demonstrating the correct approach",
+  "tags": ["list", "of", "relevant", "tags"]
 }
 ```
 
 Rules:
 
 - write in English
-- use snake_case file names
-- primary agent must read and verify the JSON before accepting it
+- use snake_case file names for lesson files
+- **`principle` must be generalizable** — no file paths, line numbers, or repo-specific references
+- **`bad_example` and `good_example` must be self-contained** — a reader should understand them without needing surrounding code or repo context
 - do not include secrets, private tokens, or unrelated user data
+- primary agent must read and verify the JSON before accepting it
