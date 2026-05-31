@@ -340,85 +340,16 @@ impl VM {
     }
 
     /// Backwards compatibility run function for tests
-    pub fn run(&mut self, program: Program) -> Result<Option<Value>, String> {
+    pub fn run(&mut self, program: Program, instruction_count: &mut usize, max_instructions: usize) -> Result<Option<Value>, String> {
         for instruction in program.instructions {
+            if *instruction_count >= max_instructions {
+                return Err(format!("Execution error: Instruction limit exceeded ({})", max_instructions));
+            }
+            *instruction_count += 1;
+
             match instruction.op {
-                OpCode::RetrieveQdrant {
-                    query: _,
-                    filters: _,
-                    top_k,
-                } => {
-                    // For mock speed to pass 5ms requirement: generate batch directly instead of
-                    // multiple allocations and copies in the test backwards compatibility path
-                    let id_array =
-                        arrow::array::Int64Array::from_iter_values((0..top_k).map(|i| i as i64));
-                    let flat_vectors = vec![0.1f32; top_k * 768];
-                    let inner_array = arrow::array::Float32Array::from(flat_vectors);
-                    let vector_array = arrow::array::FixedSizeListArray::new(
-                        Arc::new(arrow::datatypes::Field::new(
-                            "item",
-                            arrow::datatypes::DataType::Float32,
-                            true,
-                        )),
-                        768,
-                        Arc::new(inner_array),
-                        None,
-                    );
-                    let bm25_array = arrow::array::Float32Array::from(vec![0.0; top_k]);
-                    let text_array = arrow::array::StringArray::from(vec![""; top_k]);
-
-                    let batch = arrow::record_batch::RecordBatch::try_new(
-                        crate::arrow::build_schema(),
-                        vec![
-                            Arc::new(id_array) as arrow::array::ArrayRef,
-                            Arc::new(vector_array) as arrow::array::ArrayRef,
-                            Arc::new(bm25_array) as arrow::array::ArrayRef,
-                            Arc::new(text_array) as arrow::array::ArrayRef,
-                        ],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    self.batch = Some(Arc::new(batch));
-                }
-                OpCode::RetrievePostgres => {
-                    let batch = self.batch.as_ref().ok_or("No batch found")?;
-                    let n = batch.num_rows();
-                    let scores = arrow::array::Float32Array::from(vec![1.0; n]);
-                    self.stack.push(Value::ArrowArray(Arc::new(scores)));
-                }
-                OpCode::IfConfidence(threshold, low_plan, high_plan) => {
-                    let a = self.stack.pop().ok_or("Stack underflow in IfConfidence")?;
-                    let mut max_score = 0.0;
-                    match &a {
-                        Value::Tensor1D(t) => {
-                            for &score in t.iter() {
-                                if score > max_score {
-                                    max_score = score;
-                                }
-                            }
-                        }
-                        Value::ArrowArray(arr) => {
-                            let t_f32 = arr
-                                .as_any()
-                                .downcast_ref::<arrow::array::Float32Array>()
-                                .ok_or("Not Float32Array")?;
-                            for score in t_f32.iter().flatten() {
-                                if score > max_score {
-                                    max_score = score;
-                                }
-                            }
-                        }
-                        _ => return Err("Invalid type for IfConfidence condition".into()),
-                    }
-                    self.stack.push(a);
-
-                    let branch_plan = if max_score >= threshold {
-                        high_plan
-                    } else {
-                        low_plan
-                    };
-                    if let Some(res) = self.run(branch_plan)? {
-                        return Ok(Some(res));
-                    }
+                OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres | OpCode::IfConfidence(..) => {
+                    return Err("I/O operations and branching must be handled by the orchestrator".into());
                 }
                 _ => {
                     if let Some(res) = self.step(&instruction.op)? {
@@ -442,7 +373,7 @@ mod tests {
         program.push(OpCode::LoadConst(42.0));
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         assert_eq!(res, Value::Scalar(42.0));
     }
 
@@ -460,7 +391,7 @@ mod tests {
         program.push(OpCode::Add);
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
             let t_f32 = arr
                 .as_any()
@@ -485,7 +416,7 @@ mod tests {
         program.push(OpCode::Mul);
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
             let t_f32 = arr
                 .as_any()
@@ -515,7 +446,7 @@ mod tests {
         program.push(OpCode::Fusion);
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
             let t_f32 = arr
                 .as_any()
@@ -539,7 +470,7 @@ mod tests {
         program.push(OpCode::TopK(3));
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::Result(topk) = res {
             assert_eq!(topk.indices, vec![3, 1, 2]);
             assert_eq!(topk.scores, vec![9.0, 5.0, 3.0]);
@@ -568,7 +499,7 @@ mod additional_tests {
         program.push(OpCode::Div);
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
             let t_f32 = arr
                 .as_any()
@@ -592,7 +523,7 @@ mod additional_tests {
         program.push(OpCode::Threshold(0.5));
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
             let t_f32 = arr
                 .as_any()
@@ -616,7 +547,7 @@ mod additional_tests {
         program.push(OpCode::Sort);
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
             let t_f32 = arr
                 .as_any()
@@ -640,7 +571,7 @@ mod additional_tests {
         program.push(OpCode::Slice(1, 4));
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::ArrowArray(arr) = res {
             let t_f32 = arr
                 .as_any()
@@ -665,11 +596,45 @@ mod additional_tests {
         program.push(OpCode::Matmul);
         program.push(OpCode::Emit);
 
-        let res = vm.run(program).unwrap().unwrap();
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
         if let Value::Scalar(s) = res {
             assert_eq!(s, 32.0); // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
         } else {
             panic!("Expected Scalar");
         }
+    }
+
+    #[test]
+    fn test_instruction_limit() {
+        let mut vm = VM::new();
+        let mut program = Program::new();
+        for _ in 0..10 {
+            program.push(OpCode::LoadConst(42.0));
+        }
+
+        let mut instruction_count = 0;
+        let max_instructions = 5;
+
+        let res = vm.run(program, &mut instruction_count, max_instructions);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "Execution error: Instruction limit exceeded (5)");
+        assert_eq!(instruction_count, 5);
+    }
+}
+
+#[cfg(test)]
+mod io_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn test_vm_run_rejects_io_opcodes() {
+        let mut vm = VM::new();
+
+        let mut program = Program::new();
+        program.push(OpCode::RetrievePostgres);
+
+        let res = vm.run(program, &mut 0, 10);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "I/O operations and branching must be handled by the orchestrator");
     }
 }

@@ -58,6 +58,16 @@ impl DbPools {
         Ok(())
     }
 
+    /// Fetches an embedding vector for the given text from the ML server
+    pub async fn get_embedding(&self, text: &str) -> ndarray::Array1<f32> {
+        // In a real application, this would make a gRPC call to the configured
+        // ML server (e.g. self.ml_servers.get("embedding")) to generate the vector.
+        // For the scope of this project without a real ML server running,
+        // we return a deterministic dummy embedding for tests.
+        let _ = text;
+        ndarray::Array1::from_elem(768, 0.1)
+    }
+
     /// Mock method for ANN search in Qdrant (Task 1.4.1, 1.4.6)
     pub async fn search_qdrant(
         &self,
