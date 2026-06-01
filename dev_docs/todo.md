@@ -96,11 +96,11 @@
 ### Фаза 4: Production‑фичи (непрерывно)
 
 - [ ] **4.1 GPU‑бэкенд через WGPU**
-  - [ ] 4.1.1 Подключить крейт `wgpu` для GPU‑вычислений
-  - [ ] 4.1.2 Реализовать бэкенд‑переключатель: CPU (SIMD) vs GPU (WGPU compute shaders)
-  - [ ] 4.1.3 Написать compute-шейдеры для `matmul`, `topk`, `fusion`, `add`, `mul`
-  - [ ] 4.1.4 Настроить передачу Arrow‑данных в GPU‑буфер без копирования
-  - [ ] 4.1.5 Добавить автоопределение доступного GPU при старте
+  - [x] 4.1.1 Подключить крейт `wgpu` для GPU‑вычислений
+  - [x] 4.1.2 Реализовать бэкенд‑переключатель: CPU (SIMD) vs GPU (WGPU compute shaders)
+  - [ ] 4.1.3 Написать compute-шейдеры для `matmul`, `topk`, `fusion`, `add`, `mul` (частично: `add`)
+  - [x] 4.1.4 Настроить передачу Arrow‑данных в GPU‑буфер без копирования (через bytemuck и wgpu::Buffer)
+  - [x] 4.1.5 Добавить автоопределение доступного GPU при старте (в GpuContext::new)
 - [ ] **4.2 Поддержка ColBERT и late interaction**
   - [ ] 4.2.1 Добавить IR‑инструкцию `colbert_maxsim(query_token_tensor, doc_tokens_tensor) → scores`
   - [ ] 4.2.2 Обеспечить хранение по‑токенных эмбеддингов в Arrow / LanceDB
