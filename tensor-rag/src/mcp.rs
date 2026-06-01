@@ -111,6 +111,7 @@ impl ToolHandler for SearchTool {
 
             let program = crate::ir::Planner::compile(ast);
             let mut vm = crate::vm::VM::new();
+            let _ = vm.init_gpu().await;
 
             let mut instruction_count = 0;
             let max_instructions = 100_000;
