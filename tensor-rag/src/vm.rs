@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub enum Value {
     Scalar(f32),
     Tensor1D(Array1<f32>),
+    Tensor2D(ndarray::Array2<f32>),
     ArrowArray(Arc<dyn Array>),
     Result(TopKResult),
 }
@@ -16,6 +17,7 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Scalar(a), Value::Scalar(b)) => a == b,
             (Value::Tensor1D(a), Value::Tensor1D(b)) => a == b,
+            (Value::Tensor2D(a), Value::Tensor2D(b)) => a == b,
             (Value::Result(a), Value::Result(b)) => a.indices == b.indices && a.scores == b.scores,
             // Simple reference equality for Arc<dyn Array> for tests,
             // or just false if we don't need strict equality on Arrays
@@ -488,6 +490,68 @@ impl VM {
                 self.stack.push(Value::ArrowArray(Arc::new(
                     arrow::array::Float32Array::from(scores),
                 )));
+            }
+            OpCode::LoadColbertQuery(_) => {
+                // Mock creating a 10x128 query token embedding matrix
+                use ndarray::Array2;
+                let query_tokens = Array2::from_elem((10, crate::arrow::COLBERT_DIM), 0.1f32);
+                self.stack.push(Value::Tensor2D(query_tokens));
+            }
+            OpCode::ColbertMaxSim => {
+                let query_val = self.stack.pop().ok_or("Stack underflow")?;
+                let query_tokens = match query_val {
+                    Value::Tensor2D(t) => t,
+                    _ => return Err("Expected Tensor2D for ColBERT query".to_string()),
+                };
+
+                // Clean up previous scores from docs plan
+                self.stack.pop();
+
+                // Get doc tokens from batch
+                let batch = self.batch.as_ref().ok_or("No record batch loaded")?;
+                let colbert_col = batch.column_by_name("colbert_tokens").ok_or("Missing colbert_tokens column")?;
+
+                let list_arr = colbert_col.as_any().downcast_ref::<arrow::array::ListArray>().ok_or("colbert_tokens is not a ListArray")?;
+                let num_docs = list_arr.len();
+                let mut maxsim_scores = ndarray::Array1::<f32>::zeros(num_docs);
+
+                for doc_idx in 0..num_docs {
+                    if list_arr.is_null(doc_idx) {
+                        continue;
+                    }
+                    let doc_arr = list_arr.value(doc_idx);
+                    let doc_fixed = doc_arr.as_any().downcast_ref::<arrow::array::FixedSizeListArray>().ok_or("Not FixedSizeListArray")?;
+                    let doc_inner = doc_fixed.values();
+                    let doc_flat = doc_inner.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+                    let offset = doc_fixed.value_offset(0) as usize; // Get offset for first token in this document
+
+                    let num_doc_tokens = doc_fixed.len();
+                    if num_doc_tokens == 0 {
+                        continue;
+                    }
+
+                    let mut doc_score = 0.0f32;
+                    let num_query_tokens = query_tokens.shape()[0];
+
+                    for q in 0..num_query_tokens {
+                        let mut max_sim = f32::NEG_INFINITY;
+                        for d in 0..num_doc_tokens {
+                            let mut sim = 0.0f32;
+                            for i in 0..crate::arrow::COLBERT_DIM {
+                                let q_val = query_tokens[[q, i]];
+                                let d_val = doc_flat.value(offset + d * crate::arrow::COLBERT_DIM + i);
+                                sim += q_val * d_val;
+                            }
+                            if sim > max_sim {
+                                max_sim = sim;
+                            }
+                        }
+                        doc_score += max_sim;
+                    }
+                    maxsim_scores[doc_idx] = doc_score;
+                }
+
+                self.stack.push(Value::Tensor1D(maxsim_scores));
             }
             OpCode::RetrieveQdrant { .. }
             | OpCode::RetrievePostgres

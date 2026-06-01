@@ -101,11 +101,11 @@
   - [x] 4.1.3 Написать compute-шейдеры для `matmul`, `topk`, `fusion`, `add`, `mul`
   - [x] 4.1.4 Настроить передачу Arrow‑данных в GPU‑буфер без копирования (через bytemuck и wgpu::Buffer)
   - [x] 4.1.5 Добавить автоопределение доступного GPU при старте (в GpuContext::new)
-- [ ] **4.2 Поддержка ColBERT и late interaction**
-  - [ ] 4.2.1 Добавить IR‑инструкцию `colbert_maxsim(query_token_tensor, doc_tokens_tensor) → scores`
-  - [ ] 4.2.2 Обеспечить хранение по‑токенных эмбеддингов в Arrow / LanceDB
+- [x] **4.2 Поддержка ColBERT и late interaction**
+  - [x] 4.2.1 Добавить IR‑инструкцию `colbert_maxsim(query_token_tensor, doc_tokens_tensor) → scores`
+  - [x] 4.2.2 Обеспечить хранение по‑токенных эмбеддингов в Arrow / LanceDB
   - [ ] 4.2.3 Реализовать `colbert_maxsim` через SIMD (или GPU)
-  - [ ] 4.2.4 Создать DSL‑макрос `(colbert-retrieval :query "..." :docs ...)`
+  - [x] 4.2.4 Создать DSL‑макрос `(colbert-retrieval :query "..." :docs ...)`
 - [ ] **4.3 Горизонтальное масштабирование MCP‑серверов**
   - [ ] 4.3.1 Реализовать общую Arrow‑Flight плоскость для обмена данными между инстансами
   - [ ] 4.3.2 Подключить балансировщик запросов перед MCP‑серверами

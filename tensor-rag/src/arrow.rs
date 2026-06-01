@@ -1,5 +1,5 @@
 use arrow::{
-    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, StringArray},
+    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, StringArray, ListArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -9,6 +9,7 @@ use arrow::ipc::writer::FileWriter;
 use arrow::ipc::reader::FileReader;
 
 pub const VECTOR_DIM: usize = 768;
+pub const COLBERT_DIM: usize = 128;
 
 /// Defines the schema of our RecordBatch
 /// Columns:
@@ -26,10 +27,42 @@ pub fn build_schema() -> Arc<Schema> {
         ),
         Field::new("bm25_score", DataType::Float32, false),
         Field::new("text", DataType::Utf8, false),
+        Field::new(
+            "colbert_tokens",
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), COLBERT_DIM as i32),
+                true,
+            ))),
+            true,
+        ),
     ]))
 }
 
 /// Converts Qdrant results (ids, vectors) to a RecordBatch.
+
+fn empty_colbert_array(len: usize) -> ArrayRef {
+    let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(vec![0; len]);
+    let flat_colbert = Float32Array::from(vec![0.0f32; 0]);
+    let colbert_fixed = FixedSizeListArray::new(
+        Arc::new(Field::new("item", DataType::Float32, true)),
+        COLBERT_DIM as i32,
+        Arc::new(flat_colbert) as ArrayRef,
+        None,
+    );
+    let colbert_array = ListArray::new(
+        Arc::new(Field::new(
+            "item",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), COLBERT_DIM as i32),
+            true,
+        )),
+        offsets,
+        Arc::new(colbert_fixed) as ArrayRef,
+        None,
+    );
+    Arc::new(colbert_array) as ArrayRef
+}
+
 pub fn qdrant_to_record_batch(
     ids: &[usize],
     vectors: &[Array1<f32>],
@@ -74,6 +107,7 @@ pub fn qdrant_to_record_batch(
             Arc::new(vector_array) as ArrayRef,
             Arc::new(bm25_array) as ArrayRef,
             Arc::new(text_array) as ArrayRef,
+            empty_colbert_array(ids.len()),
         ],
     )
 }
@@ -139,6 +173,7 @@ pub fn postgres_to_record_batch(
             Arc::new(vector_array) as ArrayRef,
             Arc::new(bm25_array) as ArrayRef,
             Arc::new(text_array) as ArrayRef,
+            empty_colbert_array(ids.len()),
         ],
     )
 }
@@ -190,7 +225,7 @@ mod tests {
         let vectors = vec![Array1::from_elem(VECTOR_DIM, 0.1), Array1::from_elem(VECTOR_DIM, 0.2)];
 
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
-        assert_eq!(batch.num_columns(), 4);
+        assert_eq!(batch.num_columns(), 5);
         assert_eq!(batch.num_rows(), 2);
     }
 
@@ -201,7 +236,7 @@ mod tests {
         let texts = vec!["text1".to_string(), "text2".to_string()];
 
         let batch = postgres_to_record_batch(&ids, &scores, &texts).unwrap();
-        assert_eq!(batch.num_columns(), 4);
+        assert_eq!(batch.num_columns(), 5);
         assert_eq!(batch.num_rows(), 2);
     }
 

@@ -55,6 +55,11 @@ pub enum AstNode {
         query: String,
         fallback_query: String,
     },
+    ColbertRetrieval {
+        query: String,
+        docs: Box<AstNode>,
+    },
+
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +104,11 @@ pub enum OpCode {
     Matmul,
     /// Call a dynamic strategy registered at runtime
     CallDynamic(String, serde_json::Value),
+    /// Compute ColBERT MaxSim scores
+    ColbertMaxSim,
+    /// Mock load query tokens (M x 128)
+    LoadColbertQuery(String),
+
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -227,6 +237,20 @@ impl Planner {
                     top_k: 10,
                 });
                 program.push(OpCode::ComputeSemantic);
+                program.push(OpCode::TopK(10));
+                program.push(OpCode::Emit);
+            }
+            AstNode::ColbertRetrieval { query, docs } => {
+                let mut docs_prog = Planner::compile(*docs);
+                // Remove the last Emit if there is one
+                if let Some(last) = docs_prog.instructions.last() {
+                    if last.op == OpCode::Emit {
+                        docs_prog.instructions.pop();
+                    }
+                }
+                program.instructions.extend(docs_prog.instructions);
+                program.push(OpCode::LoadColbertQuery(query));
+                program.push(OpCode::ColbertMaxSim);
                 program.push(OpCode::TopK(10));
                 program.push(OpCode::Emit);
             }
