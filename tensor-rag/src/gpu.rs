@@ -92,9 +92,55 @@ fn topk_sort_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 }
+
+struct ColbertParams {
+    num_query_tokens: u32,
+    num_doc_tokens: u32,
+    dim: u32,
+}
+@group(0) @binding(8) var<uniform> colbert_params: ColbertParams;
+
+@compute @workgroup_size(64)
+fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let doc_idx = global_id.x;
+    let num_docs = arrayLength(&result);
+    if (doc_idx >= num_docs) {
+        return;
+    }
+
+    let dim = colbert_params.dim;
+    let num_q = colbert_params.num_query_tokens;
+    let num_d = colbert_params.num_doc_tokens;
+
+    var total_maxsim = 0.0;
+
+    for (var q = 0u; q < num_q; q = q + 1u) {
+        var max_sim = -1e10;
+        for (var d = 0u; d < num_d; d = d + 1u) {
+            var sim = 0.0;
+            for (var i = 0u; i < dim; i = i + 1u) {
+                let q_val = a[q * dim + i];
+                let d_val = b[(doc_idx * num_d + d) * dim + i];
+                sim = sim + q_val * d_val;
+            }
+            if (sim > max_sim) {
+                max_sim = sim;
+            }
+        }
+        total_maxsim = total_maxsim + max_sim;
+    }
+    result[doc_idx] = total_maxsim;
+}
 "#;
 
-
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ColbertParams {
+    num_query_tokens: u32,
+    num_doc_tokens: u32,
+    dim: u32,
+    _padding: u32,
+}
 
 impl GpuContext {
     pub async fn new() -> Option<Self> {
@@ -519,6 +565,70 @@ impl GpuContext {
 
         Some((final_indices, final_scores))
     }
+
+    pub fn colbert_maxsim(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, num_d: u32, dim: u32) -> Option<Vec<f32>> {
+        let size_q = (query_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let size_d = (doc_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let size_res = (num_docs as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+
+        let buffer_q = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_q"),
+            size: size_q,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_d = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_d"),
+            size: size_d,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_result = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_result"),
+            size: size_res,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let buffer_params = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_params"),
+            size: std::mem::size_of::<ColbertParams>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.queue.write_buffer(&buffer_q, 0, bytemuck::cast_slice(query_tokens));
+        self.queue.write_buffer(&buffer_d, 0, bytemuck::cast_slice(doc_tokens));
+        let params = ColbertParams {
+            num_query_tokens: num_q,
+            num_doc_tokens: num_d,
+            dim,
+            _padding: 0,
+        };
+        self.queue.write_buffer(&buffer_params, 0, bytemuck::bytes_of(&params));
+
+        let bind_groups = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer_q.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffer_d.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer_result.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: buffer_params.as_entire_binding(),
+            },
+        ];
+
+        let workgroup_count = (num_docs + 63) / 64;
+        let result = self.run_compute_shader("colbert_maxsim_main", &bind_groups, workgroup_count, &buffer_result, size_res)?;
+        Some(bytemuck::cast_slice(&result).to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +695,61 @@ mod tests {
                 let (indices, scores) = gpu.topk(&data, 3).unwrap();
                 assert_eq!(indices, vec![3, 1, 2]);
                 assert_eq!(scores, vec![9.0, 5.0, 3.0]);
+            }
+        });
+    }
+
+    #[test]
+    fn test_gpu_colbert_maxsim() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Some(gpu) = GpuContext::new().await {
+                let dim = 128;
+                let num_q = 10;
+                let num_d = 20;
+                let num_docs = 2;
+
+                let mut q_tokens = vec![0.1f32; num_q * dim];
+                // Make first q-token special
+                for i in 0..dim { q_tokens[i] = 1.0; }
+
+                let mut d_tokens = vec![0.0f32; num_docs * num_d * dim];
+                // Doc 0, first d-token matches q-token 0 perfectly
+                for i in 0..dim { d_tokens[i] = 1.0; }
+
+                // Doc 1, first d-token matches q-token 0 partially
+                for i in 0..dim { d_tokens[num_d * dim + i] = 0.5; }
+
+                let result = gpu.colbert_maxsim(&q_tokens, &d_tokens, num_docs as u32, num_q as u32, num_d as u32, dim as u32).unwrap();
+
+                assert_eq!(result.len(), num_docs);
+                assert!(result[0] > result[1]);
+
+                // CPU Reference implementation
+                let mut cpu_results = vec![0.0f32; num_docs];
+                for doc_idx in 0..num_docs {
+                    let mut doc_score = 0.0f32;
+                    for q in 0..num_q {
+                        let mut max_sim = -1e10f32;
+                        for d in 0..num_d {
+                            let mut sim = 0.0f32;
+                            for i in 0..dim {
+                                let q_val = q_tokens[q * dim + i];
+                                let d_val = d_tokens[(doc_idx * num_d + d) * dim + i];
+                                sim += q_val * d_val;
+                            }
+                            if sim > max_sim {
+                                max_sim = sim;
+                            }
+                        }
+                        doc_score += max_sim;
+                    }
+                    cpu_results[doc_idx] = doc_score;
+                }
+
+                for i in 0..num_docs {
+                    assert!((result[i] - cpu_results[i]).abs() < 1e-4);
+                }
             }
         });
     }

@@ -1,0 +1,8 @@
+{
+  "topic": "Padding Rust structs for WGSL uniforms",
+  "principle": "Ensure Rust structs used as WGPU uniforms have 16-byte alignment and explicit padding to match WGSL layout expectations. Uniform address space in WGSL requires that all struct members align to 16-byte boundaries — the Rust struct must add explicit padding fields and derive bytemuck::Pod + Zeroable so the byte representation is identical.",
+  "instruction": "How should I define a Rust struct to be passed as a uniform to a WGSL compute shader?",
+  "bad_example": "#[repr(C)]\n#[derive(Clone, Copy)]\nstruct PushConstants {\n    a: u32,\n    b: u32,\n    c: u32,\n}\n// Size = 12 bytes. WGSL expects 16-byte alignment per member in\n// uniform address space. wgpu will not catch this at creation time,\n// but the GPU will read shifted values, causing silent corruption.",
+  "good_example": "#[repr(C)]\n#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]\nstruct PushConstants {\n    a: u32,\n    b: u32,\n    c: u32,\n    _padding: u32,  // explicit pad to reach 16 bytes\n}\n// Size = 16 bytes. Matches WGSL uniform layout expectations.\n// bytemuck::Pod + Zeroable zero-initializes padding, avoiding\n// undefined bits reaching the GPU.",
+  "tags": ["wgpu", "wgsl", "uniform-buffer", "alignment", "padding", "bytemuck", "gpu-compute", "reproducible-builds"]
+}

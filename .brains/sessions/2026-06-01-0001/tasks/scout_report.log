@@ -1,0 +1,38 @@
+Performing one time database migration, may take a few minutes...
+sqlite-migration:done
+Database migration complete.
+[0m
+> build · big-pickle
+[0m
+[0m→ [0mRead dev_docs/todo.md
+[0m→ [0mRead .
+[0m• [0mScout ColBERT SIMD/GPU status[90m Explore Agent[0m
+[0m✓ [0mScout ColBERT SIMD/GPU status[90m Explore Agent[0m
+## Progress Summary
+
+### Completed
+- **Phase 1-3**: Fully complete (MVP core, DSL, Zero-Copy via Arrow/FlatBuffer)
+- **Phase 4.1**: GPU backend (WGPU) — complete with compute shaders for `matmul`, `topk`, `fusion`, `add`, `mul`
+- **Phase 4.2.1/4.2.2/4.2.4**: ColBERT IR instruction, Arrow schema for per-token embeddings, DSL macro — all done
+- **Phase 4.5**: Security (rate limiting, graceful shutdown, circuit breaker, instruction limit) — done
+
+### Incomplete Phase 4 Items
+
+| Item | State | Effort |
+|------|-------|--------|
+| **4.2.3** ColBERT MaxSim via SIMD/GPU | Scaffolding exists, core is **naive scalar triple loop** (`vm.rs:500-555`) | **Medium** — single self-contained function |
+| **4.3.1-4** Horizontal scaling (Arrow Flight, LB, sticky sessions, stress test) | **Not started** | Very large |
+| **4.4.1-4** Monitoring (Prometheus, OTel, JSON logs, health endpoint) | **Not started** (zero deps, no HTTP listener, only `println!`) | **Large cross-cutting** |
+| **3.4.3** VM in separate process via mmap | **Optional** ("опционально") | Medium |
+
+### Recommendation
+
+**Priority: 4.2.3 (ColBERT MaxSim via SIMD/GPU).**
+
+Rationale:
+- The infrastructure (IR opcode, planner, DSL parser, Arrow schema) is fully in place — only the `vm.rs:500-555` kernel needs optimization.
+- Unlike the `Add`/`Mul`/`Fusion`/`TopK` instructions, `ColbertMaxSim` has **no GPU fallback** and uses zero SIMD. It's a scalar triple-nested loop when the rest of the VM already has working WGPU compute shaders and SIMD support.
+- The GPU backend (`gpu.rs`) already has `wgpu::Buffer` transfer infrastructure and `bytemuck` casting — adding a MaxSim compute shader is consistent with the existing pattern.
+- Monitoring (4.4) is important but more invasive: it requires adding HTTP deps (axum/actix), Prometheus/OTel crates, and instrumenting every subsystem. It should follow after 4.2.3.
+
+Phase 3.4.3 is explicitly marked optional and should not block anything. Phase 4.3 (horizontal scaling) is premature without observability first.
