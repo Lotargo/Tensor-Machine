@@ -513,6 +513,58 @@ impl VM {
 
                 let list_arr = colbert_col.as_any().downcast_ref::<arrow::array::ListArray>().ok_or("colbert_tokens is not a ListArray")?;
                 let num_docs = list_arr.len();
+
+                if let Some(gpu) = &self.gpu_context {
+                    // Collect all doc tokens into a single flat buffer
+                    let mut all_doc_tokens = Vec::new();
+                    let mut max_tokens_per_doc = 0;
+
+                    // First pass: find max tokens per doc and validate
+                    for i in 0..num_docs {
+                         if list_arr.is_null(i) { continue; }
+                         let doc_arr = list_arr.value(i);
+                         let doc_fixed = doc_arr.as_any().downcast_ref::<arrow::array::FixedSizeListArray>().ok_or("Not FixedSizeListArray")?;
+                         if doc_fixed.len() > max_tokens_per_doc {
+                             max_tokens_per_doc = doc_fixed.len();
+                         }
+                    }
+
+                    // Second pass: flatten and pad to uniform size for the current simple shader implementation
+                    // Real implementation should probably use offsets/lengths or more advanced tiling
+                    for i in 0..num_docs {
+                         if list_arr.is_null(i) {
+                             all_doc_tokens.extend(vec![0.0f32; max_tokens_per_doc * crate::arrow::COLBERT_DIM]);
+                             continue;
+                         }
+                         let doc_arr = list_arr.value(i);
+                         let doc_fixed = doc_arr.as_any().downcast_ref::<arrow::array::FixedSizeListArray>().ok_or("Not FixedSizeListArray")?;
+                         let doc_inner = doc_fixed.values();
+                         let doc_flat = doc_inner.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+                         let offset = doc_fixed.value_offset(0) as usize;
+                         let len = doc_fixed.len() * crate::arrow::COLBERT_DIM;
+                         all_doc_tokens.extend_from_slice(&doc_flat.values()[offset..offset+len]);
+
+                         // Padding if needed (though with FixedSizeListArray it shouldn't be strictly necessary if all are same,
+                         // but ListArray of FixedSizeList allows varying number of tokens)
+                         let padding_needed = (max_tokens_per_doc - doc_fixed.len()) * crate::arrow::COLBERT_DIM;
+                         if padding_needed > 0 {
+                             all_doc_tokens.extend(vec![0.0f32; padding_needed]);
+                         }
+                    }
+
+                    if let Some(res) = gpu.colbert_maxsim(
+                        query_tokens.as_standard_layout().as_slice().unwrap(),
+                        &all_doc_tokens,
+                        num_docs as u32,
+                        query_tokens.shape()[0] as u32,
+                        max_tokens_per_doc as u32,
+                        crate::arrow::COLBERT_DIM as u32
+                    ) {
+                        self.stack.push(Value::Tensor1D(ndarray::Array1::from(res)));
+                        return Ok(None);
+                    }
+                }
+
                 let mut maxsim_scores = ndarray::Array1::<f32>::zeros(num_docs);
 
                 for doc_idx in 0..num_docs {
