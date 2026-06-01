@@ -243,9 +243,9 @@ If opencode disagrees with local evidence, local evidence wins.
 
 ## 10. Model Selection
 
-**All opencode invocations must use `mimo-v2.5-free` (model ID: `opencode/mimo-v2.5-free`).** No exceptions. Do not switch models based on task type, role, or availability of alternatives. This model has proven to be the most effective and valuable across all task categories — documentation, code analysis, debugging, scaffolding, research, and review.
+**All opencode invocations must use `Big Pickle` (model ID: `opencode/big-pickle`).** No exceptions. Do not switch models based on task type, role, or availability of alternatives. This model has proven to be the most effective and valuable across all task categories — documentation, code analysis, debugging, scaffolding, research, and review.
 
-If `mimo-v2.5-free` is unavailable, **stop and report the issue** rather than silently substituting another model.
+If `Big Pickle` is unavailable, **stop and report the issue** rather than silently substituting another model.
 
 ## 11. Platform Notes
 
