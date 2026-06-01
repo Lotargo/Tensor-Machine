@@ -18,8 +18,9 @@ pub fn parse_dsl(input: &str) -> Result<AstNode, String> {
                 Some("multi-hop") => parse_multi_hop_args(cdr),
                 Some("self-rag") => parse_self_rag_args(cdr),
                 Some("corrective-rag") => parse_corrective_rag_args(cdr),
+                Some("colbert-retrieval") => parse_colbert_retrieval_args(cdr),
                 _ => Err(
-                    "Expected a 'search', 'multi-hop', 'self-rag', or 'corrective-rag' expression"
+                    "Expected a 'search', 'multi-hop', 'self-rag', 'corrective-rag', or 'colbert-retrieval' expression"
                         .to_string(),
                 ),
             }
@@ -131,6 +132,7 @@ fn parse_inner_node(val: &Value) -> Result<AstNode, String> {
                 Some("multi-hop") => parse_multi_hop_args(cdr),
                 Some("self-rag") => parse_self_rag_args(cdr),
                 Some("corrective-rag") => parse_corrective_rag_args(cdr),
+                Some("colbert-retrieval") => parse_colbert_retrieval_args(cdr),
                 _ => {
                     Err("Expected an inner expression list starting with known keyword".to_string())
                 }
@@ -499,4 +501,32 @@ fn test_parse_dynamic() {
         },
         _ => panic!("Expected Search AST Node"),
     }
+}
+
+fn parse_colbert_retrieval_args(args: &Value) -> Result<AstNode, String> {
+    let mut query = String::new();
+    let mut docs_plan = None;
+
+    let mut current = args;
+    while let Value::Cons(cell) = current {
+        let key = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key))?;
+        let value = next_cell.car();
+
+        match key {
+            ":query" => query = value.as_str().ok_or("Query must be a string")?.to_string(),
+            ":docs" => docs_plan = Some(Box::new(parse_inner_node(value)?)),
+            _ => return Err(format!("Unknown parameter: {}", key)),
+        }
+
+        current = next_cell.cdr();
+    }
+
+    Ok(AstNode::ColbertRetrieval {
+        query,
+        docs: docs_plan.ok_or("Missing :docs parameter")?,
+    })
 }
