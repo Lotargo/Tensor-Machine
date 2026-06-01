@@ -4,6 +4,7 @@ use std::sync::Arc;
 pub struct GpuContext {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
+    pub shader: Arc<wgpu::ShaderModule>,
 }
 
 pub const SHADER_SRC: &str = r#"
@@ -12,13 +13,88 @@ pub const SHADER_SRC: &str = r#"
 @group(0) @binding(2) var<storage, read_write> result: array<f32>;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+fn add_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x;
     if (index < arrayLength(&a)) {
         result[index] = a[index] + b[index];
     }
 }
+
+struct ScalarUniform {
+    val: f32,
+}
+@group(0) @binding(3) var<uniform> scalar: ScalarUniform;
+
+@compute @workgroup_size(64)
+fn mul_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let index = global_id.x;
+    if (index < arrayLength(&a)) {
+        result[index] = a[index] * scalar.val;
+    }
+}
+
+struct FusionWeights {
+    w1: f32,
+    w2: f32,
+}
+
+@group(0) @binding(4) var<uniform> weights: FusionWeights;
+
+@compute @workgroup_size(64)
+fn fusion_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let index = global_id.x;
+    if (index < arrayLength(&a)) {
+        result[index] = (a[index] * weights.w1) + (b[index] * weights.w2);
+    }
+}
+
+@compute @workgroup_size(64)
+fn matmul_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let index = global_id.x;
+    if (index < arrayLength(&a)) {
+        result[index] = a[index] * b[index];
+    }
+}
+
+// Single-dispatch partial selection sort for Top-K
+@group(0) @binding(5) var<storage, read_write> data: array<f32>;
+@group(0) @binding(6) var<storage, read_write> indices: array<u32>;
+struct KUniform {
+    val: u32,
+}
+@group(0) @binding(7) var<uniform> k_val: KUniform;
+
+@compute @workgroup_size(1)
+fn topk_sort_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let n = arrayLength(&data);
+    let k = min(k_val.val, n);
+
+    // Perform selection sort for the first k elements
+    for (var i = 0u; i < k; i = i + 1u) {
+        var max_idx = i;
+        var max_val = data[i];
+
+        for (var j = i + 1u; j < n; j = j + 1u) {
+            if (data[j] > max_val) {
+                max_val = data[j];
+                max_idx = j;
+            }
+        }
+
+        if (max_idx != i) {
+            let tmp_val = data[i];
+            data[i] = data[max_idx];
+            data[max_idx] = tmp_val;
+
+            let tmp_idx = indices[i];
+            indices[i] = indices[max_idx];
+            indices[max_idx] = tmp_idx;
+        }
+    }
+}
 "#;
+
+
 
 impl GpuContext {
     pub async fn new() -> Option<Self> {
@@ -37,10 +113,79 @@ impl GpuContext {
             .await
             .ok()?;
 
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Global Shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+        });
+
         Some(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
+            shader: Arc::new(shader),
         })
+    }
+
+    fn run_compute_shader(
+        &self,
+        entry_point: &str,
+        bind_groups: &[wgpu::BindGroupEntry],
+        workgroup_count: u32,
+        result_buffer: &wgpu::Buffer,
+        size: wgpu::BufferAddress,
+    ) -> Option<Vec<u8>> {
+        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(entry_point),
+            layout: None,
+            module: &self.shader,
+            entry_point: Some(entry_point),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(entry_point),
+            layout: &bind_group_layout,
+            entries: bind_groups,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&compute_pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_buffer"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        encoder.copy_buffer_to_buffer(result_buffer, 0, &staging_buffer, 0, size);
+        self.queue.submit(Some(encoder.finish()));
+
+        let buffer_slice = staging_buffer.slice(..);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender.send(v).unwrap();
+        });
+
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().ok()?.ok()?;
+
+        let data = buffer_slice.get_mapped_range();
+        let result: Vec<u8> = data.to_vec();
+        drop(data);
+        staging_buffer.unmap();
+
+        Some(result)
     }
 
     pub fn add(&self, a: &[f32], b: &[f32]) -> Option<Vec<f32>> {
@@ -55,14 +200,12 @@ impl GpuContext {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
         let buffer_b = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("buffer_b"),
             size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
         let buffer_result = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("buffer_result"),
             size,
@@ -70,46 +213,245 @@ impl GpuContext {
             mapped_at_creation: false,
         });
 
-        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_buffer"),
+        self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
+        self.queue.write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
+
+        let bind_groups = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffer_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer_result.as_entire_binding(),
+            },
+        ];
+
+        let workgroup_count = (a.len() as u32 + 63) / 64;
+        let result = self.run_compute_shader("add_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+        Some(bytemuck::cast_slice(&result).to_vec())
+    }
+
+    pub fn mul(&self, a: &[f32], scalar: f32) -> Option<Vec<f32>> {
+        let size = (a.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+
+        let buffer_a = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_a"),
             size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_result = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_result"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let buffer_scalar = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_scalar"),
+            size: std::mem::size_of::<f32>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
+        self.queue.write_buffer(&buffer_scalar, 0, bytemuck::bytes_of(&scalar));
+
+        let bind_groups = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer_result.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: buffer_scalar.as_entire_binding(),
+            },
+        ];
+
+        let workgroup_count = (a.len() as u32 + 63) / 64;
+        let result = self.run_compute_shader("mul_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+        Some(bytemuck::cast_slice(&result).to_vec())
+    }
+
+    pub fn fusion(&self, a: &[f32], b: &[f32], w1: f32, w2: f32) -> Option<Vec<f32>> {
+        if a.len() != b.len() {
+            return None;
+        }
+        let size = (a.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+
+        let buffer_a = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_a"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_b = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_b"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_result = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_result"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let buffer_weights = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_weights"),
+            size: (2 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
+        self.queue.write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
+        self.queue.write_buffer(&buffer_weights, 0, bytemuck::cast_slice(&[w1, w2]));
+
+        let bind_groups = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffer_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer_result.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: buffer_weights.as_entire_binding(),
+            },
+        ];
+
+        let workgroup_count = (a.len() as u32 + 63) / 64;
+        let result = self.run_compute_shader("fusion_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+        Some(bytemuck::cast_slice(&result).to_vec())
+    }
+
+    pub fn matmul(&self, a: &[f32], b: &[f32]) -> Option<f32> {
+        if a.len() != b.len() {
+            return None;
+        }
+        let size = (a.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+
+        let buffer_a = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_a"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_b = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_b"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buffer_result = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_result"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
         self.queue.write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
 
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Add Shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+        let bind_groups = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffer_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer_result.as_entire_binding(),
+            },
+        ];
+
+        let workgroup_count = (a.len() as u32 + 63) / 64;
+        let result = self.run_compute_shader("matmul_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+
+        let multiplied: &[f32] = bytemuck::cast_slice(&result);
+        let sum = multiplied.iter().sum();
+        Some(sum)
+    }
+
+    pub fn topk(&self, data: &[f32], k: usize) -> Option<(Vec<usize>, Vec<f32>)> {
+        let n = data.len();
+        if n == 0 {
+            return Some((vec![], vec![]));
+        }
+
+        let size = (n * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let index_size = (n * std::mem::size_of::<u32>()) as wgpu::BufferAddress;
+
+        let buffer_data = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_data"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
 
+        let buffer_indices = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_indices"),
+            size: index_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let buffer_k_val = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_k_val"),
+            size: std::mem::size_of::<u32>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let indices: Vec<u32> = (0..n as u32).collect();
+        self.queue.write_buffer(&buffer_data, 0, bytemuck::cast_slice(data));
+        self.queue.write_buffer(&buffer_indices, 0, bytemuck::cast_slice(&indices));
+        let k_u32 = k as u32;
+        self.queue.write_buffer(&buffer_k_val, 0, bytemuck::bytes_of(&k_u32));
+
         let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Add Pipeline"),
+            label: Some("TopK Pipeline"),
             layout: None,
-            module: &shader,
-            entry_point: Some("main"),
+            module: &self.shader,
+            entry_point: Some("topk_sort_main"),
             compilation_options: Default::default(),
             cache: None,
         });
 
         let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Add Bind Group"),
+            label: Some("TopK Bind Group"),
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer_a.as_entire_binding(),
+                    binding: 5,
+                    resource: buffer_data.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: buffer_b.as_entire_binding(),
+                    binding: 6,
+                    resource: buffer_indices.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: buffer_result.as_entire_binding(),
+                    binding: 7,
+                    resource: buffer_k_val.as_entire_binding(),
                 },
             ],
         });
@@ -122,29 +464,60 @@ impl GpuContext {
             });
             cpass.set_pipeline(&compute_pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
-            let workgroup_count = (a.len() as u32 + 63) / 64;
-            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+            cpass.dispatch_workgroups(1, 1, 1);
         }
-
-        encoder.copy_buffer_to_buffer(&buffer_result, 0, &staging_buffer, 0, size);
         self.queue.submit(Some(encoder.finish()));
 
-        let buffer_slice = staging_buffer.slice(..);
+        let staging_buffer_data = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_buffer_data"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
-        let (sender, receiver) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
-            sender.send(v).unwrap();
+        let staging_buffer_indices = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_buffer_indices"),
+            size: index_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(&buffer_data, 0, &staging_buffer_data, 0, size);
+        encoder.copy_buffer_to_buffer(&buffer_indices, 0, &staging_buffer_indices, 0, index_size);
+        self.queue.submit(Some(encoder.finish()));
+
+        let (sender1, receiver1) = std::sync::mpsc::channel();
+        let buffer_slice_data = staging_buffer_data.slice(..);
+        buffer_slice_data.map_async(wgpu::MapMode::Read, move |v| {
+            sender1.send(v).unwrap();
+        });
+
+        let (sender2, receiver2) = std::sync::mpsc::channel();
+        let buffer_slice_indices = staging_buffer_indices.slice(..);
+        buffer_slice_indices.map_async(wgpu::MapMode::Read, move |v| {
+            sender2.send(v).unwrap();
         });
 
         self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        receiver.recv().ok()?.ok()?;
+        receiver1.recv().ok()?.ok()?;
+        receiver2.recv().ok()?.ok()?;
 
-        let data = buffer_slice.get_mapped_range();
-        let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
-        drop(data);
-        staging_buffer.unmap();
+        let mapped_data = buffer_slice_data.get_mapped_range();
+        let sorted_data: Vec<f32> = bytemuck::cast_slice(&mapped_data).to_vec();
+        drop(mapped_data);
+        staging_buffer_data.unmap();
 
-        Some(result)
+        let mapped_indices = buffer_slice_indices.get_mapped_range();
+        let sorted_indices: Vec<u32> = bytemuck::cast_slice(&mapped_indices).to_vec();
+        drop(mapped_indices);
+        staging_buffer_indices.unmap();
+
+        let k = k.min(n);
+        let final_scores = sorted_data.into_iter().take(k).collect();
+        let final_indices = sorted_indices.into_iter().take(k).map(|x| x as usize).collect();
+
+        Some((final_indices, final_scores))
     }
 }
 
@@ -159,11 +532,59 @@ mod tests {
             if let Some(gpu) = GpuContext::new().await {
                 let a = vec![1.0, 2.0, 3.0, 4.0];
                 let b = vec![5.0, 6.0, 7.0, 8.0];
-
                 let result = gpu.add(&a, &b).unwrap();
                 assert_eq!(result, vec![6.0, 8.0, 10.0, 12.0]);
-            } else {
-                println!("Skipping GPU test: no compatible GPU found.");
+            }
+        });
+    }
+
+    #[test]
+    fn test_gpu_mul() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Some(gpu) = GpuContext::new().await {
+                let a = vec![1.0, 2.0, 3.0, 4.0];
+                let result = gpu.mul(&a, 2.0).unwrap();
+                assert_eq!(result, vec![2.0, 4.0, 6.0, 8.0]);
+            }
+        });
+    }
+
+    #[test]
+    fn test_gpu_fusion() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Some(gpu) = GpuContext::new().await {
+                let a = vec![1.0, 1.0, 1.0];
+                let b = vec![2.0, 2.0, 2.0];
+                let result = gpu.fusion(&a, &b, 0.5, 0.5).unwrap();
+                assert_eq!(result, vec![1.5, 1.5, 1.5]);
+            }
+        });
+    }
+
+    #[test]
+    fn test_gpu_matmul() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Some(gpu) = GpuContext::new().await {
+                let a = vec![1.0, 2.0, 3.0];
+                let b = vec![4.0, 5.0, 6.0];
+                let result = gpu.matmul(&a, &b).unwrap();
+                assert_eq!(result, 32.0);
+            }
+        });
+    }
+
+    #[test]
+    fn test_gpu_topk() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Some(gpu) = GpuContext::new().await {
+                let data = vec![1.0, 5.0, 3.0, 9.0, 2.0];
+                let (indices, scores) = gpu.topk(&data, 3).unwrap();
+                assert_eq!(indices, vec![3, 1, 2]);
+                assert_eq!(scores, vec![9.0, 5.0, 3.0]);
             }
         });
     }

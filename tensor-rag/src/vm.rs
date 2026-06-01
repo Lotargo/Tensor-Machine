@@ -73,7 +73,7 @@ impl VM {
                 match (a, b) {
                     (Value::Tensor1D(t1), Value::Tensor1D(t2)) => {
                         if let Some(gpu) = &self.gpu_context {
-                            if let Some(res) = gpu.add(t1.as_slice().unwrap(), t2.as_slice().unwrap()) {
+                            if let Some(res) = gpu.add(t1.as_standard_layout().as_slice().unwrap(), t2.as_standard_layout().as_slice().unwrap()) {
                                 self.stack.push(Value::Tensor1D(Array1::from(res)));
                                 return Ok(None);
                             }
@@ -115,9 +115,28 @@ impl VM {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
                 match (a, b) {
                     (Value::Tensor1D(t), Value::Scalar(s)) => {
+                        if let Some(gpu) = &self.gpu_context {
+                            if let Some(res) = gpu.mul(t.as_standard_layout().as_slice().unwrap(), s) {
+                                self.stack.push(Value::Tensor1D(Array1::from(res)));
+                                return Ok(None);
+                            }
+                        }
                         self.stack.push(Value::Tensor1D(t * s));
                     }
                     (Value::ArrowArray(arr), Value::Scalar(s)) => {
+                        if let Some(gpu) = &self.gpu_context {
+                            let t_f32 = arr
+                                .as_any()
+                                .downcast_ref::<arrow::array::Float32Array>()
+                                .ok_or("Not Float32Array")?;
+
+                            let s_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
+                            if let Some(res) = gpu.mul(&s_vec, s) {
+                                self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(res))));
+                                return Ok(None);
+                            }
+                        }
+
                         let s_arr = arrow::array::Float32Array::from(vec![s; arr.len()]);
                         let result = arrow::compute::kernels::numeric::mul(
                             &arr as &dyn arrow::array::Datum,
@@ -142,6 +161,12 @@ impl VM {
                         Value::Scalar(sw1),
                         Value::Scalar(sw2),
                     ) => {
+                        if let Some(gpu) = &self.gpu_context {
+                            if let Some(res) = gpu.fusion(t1.as_standard_layout().as_slice().unwrap(), t2.as_standard_layout().as_slice().unwrap(), sw1, sw2) {
+                                self.stack.push(Value::Tensor1D(Array1::from(res)));
+                                return Ok(None);
+                            }
+                        }
                         let res = (&t1 * sw1) + (&t2 * sw2);
                         self.stack.push(Value::Tensor1D(res));
                     }
@@ -151,6 +176,19 @@ impl VM {
                         Value::Scalar(sw1),
                         Value::Scalar(sw2),
                     ) => {
+                        if let Some(gpu) = &self.gpu_context {
+                            let t1_f32 = arr1.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+                            let t2_f32 = arr2.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+
+                            let s1: Vec<f32> = t1_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
+                            let s2: Vec<f32> = t2_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
+
+                            if let Some(res) = gpu.fusion(&s1, &s2, sw1, sw2) {
+                                self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(res))));
+                                return Ok(None);
+                            }
+                        }
+
                         let sw1_arr = arrow::array::Float32Array::from(vec![sw1; arr1.len()]);
                         let sw2_arr = arrow::array::Float32Array::from(vec![sw2; arr2.len()]);
 
@@ -228,7 +266,7 @@ impl VM {
             OpCode::Sort => {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
                 match a {
-                    Value::Tensor1D(mut t) => {
+                    Value::Tensor1D(t) => {
                         let mut vec = t.into_raw_vec_and_offset().0;
                         vec.sort_by(|x, y| y.partial_cmp(x).unwrap_or(std::cmp::Ordering::Equal));
                         self.stack.push(Value::Tensor1D(Array1::from(vec)));
@@ -266,6 +304,12 @@ impl VM {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
                 match (a, b) {
                     (Value::Tensor1D(t1), Value::Tensor1D(t2)) => {
+                        if let Some(gpu) = &self.gpu_context {
+                            if let Some(res) = gpu.matmul(t1.as_standard_layout().as_slice().unwrap(), t2.as_standard_layout().as_slice().unwrap()) {
+                                self.stack.push(Value::Scalar(res));
+                                return Ok(None);
+                            }
+                        }
                         let res = t1.dot(&t2);
                         self.stack.push(Value::Scalar(res));
                     }
@@ -279,6 +323,16 @@ impl VM {
                             .as_any()
                             .downcast_ref::<arrow::array::Float32Array>()
                             .ok_or("Not Float32Array")?;
+
+                        if let Some(gpu) = &self.gpu_context {
+                            let s1: Vec<f32> = t1_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
+                            let s2: Vec<f32> = t2_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
+                            if let Some(res) = gpu.matmul(&s1, &s2) {
+                                self.stack.push(Value::Scalar(res));
+                                return Ok(None);
+                            }
+                        }
+
                         let mut sum = 0.0;
                         for (v1, v2) in t1_f32.iter().zip(t2_f32.iter()) {
                             sum += v1.unwrap_or(0.0) * v2.unwrap_or(0.0);
@@ -293,6 +347,12 @@ impl VM {
 
                 let (indices, scores) = match a {
                     Value::Tensor1D(t) => {
+                        if let Some(gpu) = &self.gpu_context {
+                            if let Some(res) = gpu.topk(t.as_standard_layout().as_slice().unwrap(), *k) {
+                                self.stack.push(Value::Result(TopKResult { indices: res.0, scores: res.1 }));
+                                return Ok(None);
+                            }
+                        }
                         let mut indexed: Vec<(usize, f32)> = t.into_iter().enumerate().collect();
                         indexed.sort_by(|x, y| {
                             y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal)
@@ -307,6 +367,15 @@ impl VM {
                             .as_any()
                             .downcast_ref::<arrow::array::Float32Array>()
                             .ok_or("Not Float32Array")?;
+
+                        if let Some(gpu) = &self.gpu_context {
+                            let s: Vec<f32> = t_f32.iter().map(|v| v.unwrap_or(f32::MIN)).collect();
+                            if let Some(res) = gpu.topk(&s, *k) {
+                                self.stack.push(Value::Result(TopKResult { indices: res.0, scores: res.1 }));
+                                return Ok(None);
+                            }
+                        }
+
                         let mut indexed: Vec<(usize, f32)> = t_f32
                             .iter()
                             .enumerate()
