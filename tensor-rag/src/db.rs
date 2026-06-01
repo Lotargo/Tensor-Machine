@@ -1,3 +1,48 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::RwLock;
+use std::time::Instant;
+use std::sync::Arc;
+
+pub struct CircuitBreaker {
+    failures: AtomicU32,
+    last_failure: RwLock<Option<Instant>>,
+    threshold: u32,
+    reset_timeout_secs: u64,
+}
+
+impl CircuitBreaker {
+    pub fn new(threshold: u32, reset_timeout_secs: u64) -> Self {
+        Self {
+            failures: AtomicU32::new(0),
+            last_failure: RwLock::new(None),
+            threshold,
+            reset_timeout_secs,
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        if self.failures.load(Ordering::SeqCst) >= self.threshold {
+            let last = *self.last_failure.read().unwrap();
+            if let Some(time) = last {
+                return time.elapsed().as_secs() < self.reset_timeout_secs
+            }
+            return true;
+        }
+        false
+    }
+
+    pub fn record_failure(&self) {
+        self.failures.fetch_add(1, Ordering::SeqCst);
+        let mut last = self.last_failure.write().unwrap();
+        *last = Some(Instant::now());
+    }
+
+    pub fn record_success(&self) {
+        let mut last = self.last_failure.write().unwrap();
+        *last = None;
+        self.failures.store(0, Ordering::SeqCst);
+    }
+}
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     Condition, FieldCondition, Filter as QFilter, Match, PointId, Range, SearchPoints,
@@ -14,6 +59,9 @@ pub struct DbPools {
     pub postgres: Option<PgPool>,
     pub qdrant_clients: HashMap<String, Qdrant>,
     pub ml_servers: HashMap<String, Channel>,
+    pub qdrant_cb: Arc<CircuitBreaker>,
+    pub postgres_cb: Arc<CircuitBreaker>,
+    pub ml_cb: Arc<CircuitBreaker>,
 }
 
 impl DbPools {
@@ -22,6 +70,9 @@ impl DbPools {
             postgres: None,
             qdrant_clients: HashMap::new(),
             ml_servers: HashMap::new(),
+            qdrant_cb: Arc::new(CircuitBreaker::new(5, 30)),
+            postgres_cb: Arc::new(CircuitBreaker::new(5, 30)),
+            ml_cb: Arc::new(CircuitBreaker::new(5, 30)),
         }
     }
 
@@ -60,11 +111,16 @@ impl DbPools {
 
     /// Fetches an embedding vector for the given text from the ML server
     pub async fn get_embedding(&self, text: &str) -> ndarray::Array1<f32> {
+        if self.ml_cb.is_open() {
+            return ndarray::Array1::from_elem(768, 0.1);
+        }
+
         // In a real application, this would make a gRPC call to the configured
         // ML server (e.g. self.ml_servers.get("embedding")) to generate the vector.
         // For the scope of this project without a real ML server running,
         // we return a deterministic dummy embedding for tests.
         let _ = text;
+        self.ml_cb.record_success();
         ndarray::Array1::from_elem(768, 0.1)
     }
 
@@ -75,6 +131,9 @@ impl DbPools {
         filters: &Option<Vec<crate::ir::Filter>>,
         top_k: usize,
     ) -> Result<(Vec<usize>, Vec<ndarray::Array1<f32>>), String> {
+        if self.qdrant_cb.is_open() {
+            return Err("Circuit breaker is open for Qdrant".to_string());
+        }
         let client_opt = self.qdrant_clients.get("default");
 
         if let Some(client) = client_opt {
@@ -199,10 +258,13 @@ impl DbPools {
                 });
             }
 
-            let response = client
-                .search_points(search_points)
-                .await
-                .map_err(|e| e.to_string())?;
+            let response = match client.search_points(search_points).await {
+                Ok(res) => res,
+                Err(e) => {
+                    self.qdrant_cb.record_failure();
+                    return Err(e.to_string());
+                }
+            };
 
             let mut ids = Vec::new();
             let mut vectors = Vec::new();
@@ -224,6 +286,7 @@ impl DbPools {
                     vectors.push(ndarray::Array1::from_elem(768, 0.1));
                 }
             }
+            self.qdrant_cb.record_success();
             Ok((ids, vectors))
         } else {
             // Mock fallback
@@ -233,12 +296,16 @@ impl DbPools {
                 ids.push(i);
                 vectors.push(ndarray::Array1::from_elem(768, 0.1));
             }
+            self.qdrant_cb.record_success();
             Ok((ids, vectors))
         }
     }
 
     /// Fetches bm25_scores from Postgres for the given ids
     pub async fn fetch_bm25_scores(&self, ids: &[usize]) -> Vec<f32> {
+        if self.postgres_cb.is_open() {
+            return vec![1.0; ids.len()]; // Fallback
+        }
         if let Some(pool) = &self.postgres {
             use sqlx::Row;
             let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
@@ -254,10 +321,13 @@ impl DbPools {
                     let score: f32 = row.try_get("bm25_score").unwrap_or(1.0);
                     map.insert(id, score);
                 }
+                self.postgres_cb.record_success();
                 return ids_i64
                     .iter()
                     .map(|&id| *map.get(&id).unwrap_or(&1.0))
                     .collect();
+            } else {
+                self.postgres_cb.record_failure();
             }
         }
         vec![1.0; ids.len()]
@@ -265,6 +335,9 @@ impl DbPools {
 
     /// Fetches metadata from Postgres for the given ids
     pub async fn fetch_metadata(&self, ids: &[usize]) -> Vec<String> {
+        if self.postgres_cb.is_open() {
+            return ids.iter().map(|id| format!("Metadata for doc {}", id)).collect();
+        }
         if let Some(pool) = &self.postgres {
             use sqlx::Row;
             let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
@@ -280,6 +353,7 @@ impl DbPools {
                     let text: String = row.try_get("text").unwrap_or_default();
                     map.insert(id, text);
                 }
+                self.postgres_cb.record_success();
                 return ids_i64
                     .iter()
                     .map(|&id| {
@@ -288,6 +362,8 @@ impl DbPools {
                             .unwrap_or_else(|| format!("Metadata for doc {}", id))
                     })
                     .collect();
+            } else {
+                self.postgres_cb.record_failure();
             }
         }
         ids.iter()

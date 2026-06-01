@@ -118,9 +118,9 @@
   - [ ] 4.4.4 Реализовать health/readiness endpoint для Kubernetes
 - [ ] **4.5 Безопасность и надежность**
   - [x] 4.5.1 Ограничить время выполнения IR‑программы (instruction limit / watchdog)
-  - [ ] 4.5.2 Внедрить rate‑limiting на MCP‑сервере
-  - [ ] 4.5.3 Добавить Graceful Shutdown: завершение активных запросов перед остановкой
-  - [ ] 4.5.4 Реализовать circuit breaker для внешних зависимостей (Qdrant, PostgreSQL, ML‑серверы)
+  - [x] 4.5.2 Внедрить rate‑limiting на MCP‑сервере
+  - [x] 4.5.3 Добавить Graceful Shutdown: завершение активных запросов перед остановкой
+  - [x] 4.5.4 Реализовать circuit breaker для внешних зависимостей (Qdrant, PostgreSQL, ML‑серверы)
 
 ---
 
