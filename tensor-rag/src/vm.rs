@@ -582,24 +582,28 @@ impl VM {
                         continue;
                     }
 
-                    let mut doc_score = 0.0f32;
-                    let num_query_tokens = query_tokens.shape()[0];
+                    // SIMD-optimized dot product using ndarray
+                    // Extract the document's flat slice
+                    let doc_slice_start = offset;
+                    let doc_slice_end = offset + num_doc_tokens * crate::arrow::COLBERT_DIM;
+                    let doc_slice = &doc_flat.values()[doc_slice_start..doc_slice_end];
 
-                    for q in 0..num_query_tokens {
-                        let mut max_sim = f32::NEG_INFINITY;
-                        for d in 0..num_doc_tokens {
-                            let mut sim = 0.0f32;
-                            for i in 0..crate::arrow::COLBERT_DIM {
-                                let q_val = query_tokens[[q, i]];
-                                let d_val = doc_flat.value(offset + d * crate::arrow::COLBERT_DIM + i);
-                                sim += q_val * d_val;
-                            }
-                            if sim > max_sim {
-                                max_sim = sim;
-                            }
-                        }
-                        doc_score += max_sim;
-                    }
+                    // Create a 2D view: [num_doc_tokens, COLBERT_DIM]
+                    let doc_view = ndarray::ArrayView2::from_shape(
+                        (num_doc_tokens, crate::arrow::COLBERT_DIM),
+                        doc_slice
+                    ).unwrap();
+
+                    // Compute sim matrix: query_tokens @ doc_view.T -> shape [num_query_tokens, num_doc_tokens]
+                    // query_tokens shape is [num_query_tokens, COLBERT_DIM]
+                    let sim_matrix = query_tokens.dot(&doc_view.t());
+
+                    // Max pooling over the document tokens (axis 1), then sum over query tokens (axis 0)
+                    let maxsim_per_query = sim_matrix.fold_axis(ndarray::Axis(1), f32::NEG_INFINITY, |&max, &x| {
+                        if x > max { x } else { max }
+                    });
+
+                    let doc_score = maxsim_per_query.sum();
                     maxsim_scores[doc_idx] = doc_score;
                 }
 
