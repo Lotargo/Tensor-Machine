@@ -38,7 +38,7 @@ pub enum RerankStrategy {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AstNode {
     Search(QueryRequest),
     MultiHop {
@@ -62,7 +62,7 @@ pub enum AstNode {
 
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpCode {
     /// Retrieve candidate IDs and vectors from Qdrant
     RetrieveQdrant {
@@ -111,14 +111,14 @@ pub enum OpCode {
 
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Instruction {
     pub op: OpCode,
     // Add operands or register indices here in the future if needed for a register VM.
     // For now, assuming a stack-based VM for simplicity of representation.
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {
     pub instructions: Vec<Instruction>,
 }

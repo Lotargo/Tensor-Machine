@@ -95,10 +95,11 @@ fn topk_sort_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 struct ColbertParams {
     num_query_tokens: u32,
-    num_doc_tokens: u32,
     dim: u32,
 }
 @group(0) @binding(8) var<uniform> colbert_params: ColbertParams;
+
+@group(0) @binding(9) var<storage, read> offsets: array<vec2<u32>>;
 
 @compute @workgroup_size(64)
 fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -110,7 +111,8 @@ fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let dim = colbert_params.dim;
     let num_q = colbert_params.num_query_tokens;
-    let num_d = colbert_params.num_doc_tokens;
+    let offs = offsets[doc_idx];
+    let num_d = offs.y;
 
     var total_maxsim = 0.0;
 
@@ -120,7 +122,7 @@ fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             var sim = 0.0;
             for (var i = 0u; i < dim; i = i + 1u) {
                 let q_val = a[q * dim + i];
-                let d_val = b[(doc_idx * num_d + d) * dim + i];
+                let d_val = b[(offs.x + d) * dim + i];
                 sim = sim + q_val * d_val;
             }
             if (sim > max_sim) {
@@ -131,15 +133,128 @@ fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     result[doc_idx] = total_maxsim;
 }
+
+// Tile size constants (must be compile-time for WGSL var<workgroup>)
+const TILE_Q: u32 = 16u;
+const TILE_D: u32 = 16u;
+const DIM_MAX: u32 = 128u;
+
+var<workgroup> q_tile: array<array<f32, DIM_MAX>, TILE_Q>;
+var<workgroup> d_tile: array<array<f32, DIM_MAX>, TILE_D>;
+var<workgroup> partial_maxsim: array<array<f32, TILE_D>, TILE_Q>;
+var<workgroup> q_max: array<f32, TILE_Q>;
+
+@compute @workgroup_size(256)
+fn tiled_colbert_maxsim_main(
+    @builtin(workgroup_id) group_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+) {
+    let doc_idx = group_id.x;
+    let num_docs = arrayLength(&result);
+    if (doc_idx >= num_docs) {
+        return;
+    }
+
+    let dim = colbert_params.dim;
+    let num_q = colbert_params.num_query_tokens;
+
+    let offs = offsets[doc_idx];
+    let num_d = offs.y;
+    let doc_start = offs.x;
+
+    let tid = local_id.x;
+
+    // Total maxsim for this document, kept in registers for lane 0
+    var doc_score = 0.0;
+
+    for (var q_start = 0u; q_start < num_q; q_start = q_start + TILE_Q) {
+        let q_end = min(q_start + TILE_Q, num_q);
+        let current_q_tile = q_end - q_start;
+
+        // Initialize q_max for this query tile
+        if (tid < current_q_tile) {
+            q_max[tid] = -1e10;
+        }
+
+        // 1. Cooperative load of Q tile (hoisted outside D loop)
+        // 256 threads loading (current_q_tile * dim) elements
+        let total_q_elements = current_q_tile * dim;
+        for (var i = tid; i < total_q_elements; i = i + 256u) {
+            let q_row = i / dim;
+            let q_col = i % dim;
+            q_tile[q_row][q_col] = a[(q_start + q_row) * dim + q_col];
+        }
+        workgroupBarrier();
+
+        for (var d_start = 0u; d_start < num_d; d_start = d_start + TILE_D) {
+            let d_end = min(d_start + TILE_D, num_d);
+            let current_d_tile = d_end - d_start;
+
+            // 2. Cooperative load of D tile
+            let total_d_elements = current_d_tile * dim;
+            for (var i = tid; i < total_d_elements; i = i + 256u) {
+                let d_row = i / dim;
+                let d_col = i % dim;
+                d_tile[d_row][d_col] = b[(doc_start + d_start + d_row) * dim + d_col];
+            }
+            workgroupBarrier();
+
+            // 3. Compute dot products cooperatively
+            // We have current_q_tile * current_d_tile pairs to compute
+            let total_pairs = current_q_tile * current_d_tile;
+            for (var i = tid; i < total_pairs; i = i + 256u) {
+                let q_idx = i / current_d_tile;
+                let d_idx = i % current_d_tile;
+
+                var sim = 0.0;
+                for (var k = 0u; k < dim; k = k + 1u) {
+                    sim = sim + q_tile[q_idx][k] * d_tile[d_idx][k];
+                }
+                partial_maxsim[q_idx][d_idx] = sim;
+            }
+            workgroupBarrier();
+
+            // 4. Update q_max cooperatively
+            if (tid < current_q_tile) {
+                var local_max = q_max[tid];
+                for (var d_idx = 0u; d_idx < current_d_tile; d_idx = d_idx + 1u) {
+                    let sim = partial_maxsim[tid][d_idx];
+                    if (sim > local_max) {
+                        local_max = sim;
+                    }
+                }
+                q_max[tid] = local_max;
+            }
+            workgroupBarrier();
+        }
+
+        // 5. Accumulate total score for this document
+        if (tid == 0u) {
+            for (var i = 0u; i < current_q_tile; i = i + 1u) {
+                doc_score = doc_score + q_max[i];
+            }
+        }
+    }
+
+    if (tid == 0u) {
+        result[doc_idx] = doc_score;
+    }
+}
 "#;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ColbertOffsets {
+    pub doc_start: u32,
+    pub num_tokens: u32,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ColbertParams {
     num_query_tokens: u32,
-    num_doc_tokens: u32,
     dim: u32,
-    _padding: u32,
+    _padding: [u32; 2],
 }
 
 impl GpuContext {
@@ -566,10 +681,15 @@ impl GpuContext {
         Some((final_indices, final_scores))
     }
 
-    pub fn colbert_maxsim(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, num_d: u32, dim: u32) -> Option<Vec<f32>> {
+    pub fn colbert_maxsim(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, offsets: &[ColbertOffsets], dim: u32) -> Option<Vec<f32>> {
+        self.colbert_maxsim_variant(query_tokens, doc_tokens, num_docs, num_q, offsets, dim, true)
+    }
+
+    pub fn colbert_maxsim_variant(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, offsets: &[ColbertOffsets], dim: u32, use_tiled: bool) -> Option<Vec<f32>> {
         let size_q = (query_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
         let size_d = (doc_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
         let size_res = (num_docs as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let size_offsets = (offsets.len() * std::mem::size_of::<ColbertOffsets>()) as wgpu::BufferAddress;
 
         let buffer_q = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("buffer_q"),
@@ -595,14 +715,20 @@ impl GpuContext {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let buffer_offsets = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer_offsets"),
+            size: size_offsets,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         self.queue.write_buffer(&buffer_q, 0, bytemuck::cast_slice(query_tokens));
         self.queue.write_buffer(&buffer_d, 0, bytemuck::cast_slice(doc_tokens));
+        self.queue.write_buffer(&buffer_offsets, 0, bytemuck::cast_slice(offsets));
         let params = ColbertParams {
             num_query_tokens: num_q,
-            num_doc_tokens: num_d,
             dim,
-            _padding: 0,
+            _padding: [0; 2],
         };
         self.queue.write_buffer(&buffer_params, 0, bytemuck::bytes_of(&params));
 
@@ -623,10 +749,19 @@ impl GpuContext {
                 binding: 8,
                 resource: buffer_params.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: buffer_offsets.as_entire_binding(),
+            },
         ];
 
-        let workgroup_count = (num_docs + 63) / 64;
-        let result = self.run_compute_shader("colbert_maxsim_main", &bind_groups, workgroup_count, &buffer_result, size_res)?;
+        let (entry_point, workgroup_count) = if use_tiled {
+            ("tiled_colbert_maxsim_main", num_docs)
+        } else {
+            ("colbert_maxsim_main", (num_docs + 63) / 64)
+        };
+
+        let result = self.run_compute_shader(entry_point, &bind_groups, workgroup_count, &buffer_result, size_res)?;
         Some(bytemuck::cast_slice(&result).to_vec())
     }
 }
@@ -720,7 +855,12 @@ mod tests {
                 // Doc 1, first d-token matches q-token 0 partially
                 for i in 0..dim { d_tokens[num_d * dim + i] = 0.5; }
 
-                let result = gpu.colbert_maxsim(&q_tokens, &d_tokens, num_docs as u32, num_q as u32, num_d as u32, dim as u32).unwrap();
+                let offsets = vec![
+                    ColbertOffsets { doc_start: 0, num_tokens: num_d as u32 },
+                    ColbertOffsets { doc_start: num_d as u32, num_tokens: num_d as u32 },
+                ];
+
+                let result = gpu.colbert_maxsim(&q_tokens, &d_tokens, num_docs as u32, num_q as u32, &offsets, dim as u32).unwrap();
 
                 assert_eq!(result.len(), num_docs);
                 assert!(result[0] > result[1]);

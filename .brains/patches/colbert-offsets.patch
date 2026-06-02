@@ -1,0 +1,220 @@
+diff --git a/tensor-rag/src/gpu.rs b/tensor-rag/src/gpu.rs
+index 1c0682e..b3ee0cf 100644
+--- a/tensor-rag/src/gpu.rs
++++ b/tensor-rag/src/gpu.rs
+@@ -95,11 +95,12 @@ fn topk_sort_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+
+ struct ColbertParams {
+     num_query_tokens: u32,
+-    num_doc_tokens: u32,
+     dim: u32,
+ }
+ @group(0) @binding(8) var<uniform> colbert_params: ColbertParams;
+
++@group(0) @binding(9) var<storage, read> offsets: array<vec2<u32>>;
++
+ @compute @workgroup_size(64)
+ fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+     let doc_idx = global_id.x;
+@@ -110,7 +111,8 @@ fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+
+     let dim = colbert_params.dim;
+     let num_q = colbert_params.num_query_tokens;
+-    let num_d = colbert_params.num_doc_tokens;
++    let offs = offsets[doc_idx];
++    let num_d = offs.y;
+
+     var total_maxsim = 0.0;
+
+@@ -120,7 +122,7 @@ fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+             var sim = 0.0;
+             for (var i = 0u; i < dim; i = i + 1u) {
+                 let q_val = a[q * dim + i];
+-                let d_val = b[(doc_idx * num_d + d) * dim + i];
++                let d_val = b[(offs.x + d) * dim + i];
+                 sim = sim + q_val * d_val;
+             }
+             if (sim > max_sim) {
+@@ -133,13 +135,19 @@ fn colbert_maxsim_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+ }
+ "#;
+
++#[repr(C)]
++#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
++pub struct ColbertOffsets {
++    pub doc_start: u32,
++    pub num_tokens: u32,
++}
++
+ #[repr(C)]
+ #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+ struct ColbertParams {
+     num_query_tokens: u32,
+-    num_doc_tokens: u32,
+     dim: u32,
+-    _padding: u32,
++    _padding: [u32; 2],
+ }
+
+ impl GpuContext {
+@@ -566,10 +574,11 @@ impl GpuContext {
+         Some((final_indices, final_scores))
+     }
+
+-    pub fn colbert_maxsim(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, num_d: u32, dim: u32) -> Option<Vec<f32>> {
++    pub fn colbert_maxsim(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, offsets: &[ColbertOffsets], dim: u32) -> Option<Vec<f32>> {
+         let size_q = (query_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+         let size_d = (doc_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+         let size_res = (num_docs as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
++        let size_offsets = (offsets.len() * std::mem::size_of::<ColbertOffsets>()) as wgpu::BufferAddress;
+
+         let buffer_q = self.device.create_buffer(&wgpu::BufferDescriptor {
+             label: Some("buffer_q"),
+@@ -595,14 +604,20 @@ impl GpuContext {
+             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+             mapped_at_creation: false,
+         });
++        let buffer_offsets = self.device.create_buffer(&wgpu::BufferDescriptor {
++            label: Some("buffer_offsets"),
++            size: size_offsets,
++            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
++            mapped_at_creation: false,
++        });
+
+         self.queue.write_buffer(&buffer_q, 0, bytemuck::cast_slice(query_tokens));
+         self.queue.write_buffer(&buffer_d, 0, bytemuck::cast_slice(doc_tokens));
++        self.queue.write_buffer(&buffer_offsets, 0, bytemuck::cast_slice(offsets));
+         let params = ColbertParams {
+             num_query_tokens: num_q,
+-            num_doc_tokens: num_d,
+             dim,
+-            _padding: 0,
++            _padding: [0; 2],
+         };
+         self.queue.write_buffer(&buffer_params, 0, bytemuck::bytes_of(&params));
+
+@@ -623,6 +638,10 @@ impl GpuContext {
+                 binding: 8,
+                 resource: buffer_params.as_entire_binding(),
+             },
++            wgpu::BindGroupEntry {
++                binding: 9,
++                resource: buffer_offsets.as_entire_binding(),
++            },
+         ];
+
+         let workgroup_count = (num_docs + 63) / 64;
+@@ -720,7 +739,12 @@ mod tests {
+                 // Doc 1, first d-token matches q-token 0 partially
+                 for i in 0..dim { d_tokens[num_d * dim + i] = 0.5; }
+
+-                let result = gpu.colbert_maxsim(&q_tokens, &d_tokens, num_docs as u32, num_q as u32, num_d as u32, dim as u32).unwrap();
++                let offsets = vec![
++                    ColbertOffsets { doc_start: 0, num_tokens: num_d as u32 },
++                    ColbertOffsets { doc_start: num_d as u32, num_tokens: num_d as u32 },
++                ];
++
++                let result = gpu.colbert_maxsim(&q_tokens, &d_tokens, num_docs as u32, num_q as u32, &offsets, dim as u32).unwrap();
+
+                 assert_eq!(result.len(), num_docs);
+                 assert!(result[0] > result[1]);
+diff --git a/tensor-rag/src/vm.rs b/tensor-rag/src/vm.rs
+index 835764f..1de2cab 100644
+--- a/tensor-rag/src/vm.rs
++++ b/tensor-rag/src/vm.rs
+@@ -2,6 +2,7 @@ use crate::ir::{OpCode, Program};
+ use arrow::array::Array;
+ use ndarray::Array1;
+ use std::sync::Arc;
++use tracing::info;
+
+ #[derive(Debug, Clone)]
+ pub enum Value {
+@@ -515,25 +516,16 @@ impl VM {
+                 let num_docs = list_arr.len();
+
+                 if let Some(gpu) = &self.gpu_context {
+-                    // Collect all doc tokens into a single flat buffer
++                    // Collect all doc tokens into a single flat buffer and build offsets
+                     let mut all_doc_tokens = Vec::new();
+-                    let mut max_tokens_per_doc = 0;
++                    let mut colbert_offsets = Vec::new();
+
+-                    // First pass: find max tokens per doc and validate
+-                    for i in 0..num_docs {
+-                         if list_arr.is_null(i) { continue; }
+-                         let doc_arr = list_arr.value(i);
+-                         let doc_fixed = doc_arr.as_any().downcast_ref::<arrow::array::FixedSizeListArray>().ok_or("Not FixedSizeListArray")?;
+-                         if doc_fixed.len() > max_tokens_per_doc {
+-                             max_tokens_per_doc = doc_fixed.len();
+-                         }
+-                    }
+-
+-                    // Second pass: flatten and pad to uniform size for the current simple shader implementation
+-                    // Real implementation should probably use offsets/lengths or more advanced tiling
+                     for i in 0..num_docs {
+                          if list_arr.is_null(i) {
+-                             all_doc_tokens.extend(vec![0.0f32; max_tokens_per_doc * crate::arrow::COLBERT_DIM]);
++                             colbert_offsets.push(crate::gpu::ColbertOffsets {
++                                 doc_start: (all_doc_tokens.len() / crate::arrow::COLBERT_DIM) as u32,
++                                 num_tokens: 0,
++                             });
+                              continue;
+                          }
+                          let doc_arr = list_arr.value(i);
+@@ -542,14 +534,11 @@ impl VM {
+                          let doc_flat = doc_inner.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+                          let offset = doc_fixed.value_offset(0) as usize;
+                          let len = doc_fixed.len() * crate::arrow::COLBERT_DIM;
++                         colbert_offsets.push(crate::gpu::ColbertOffsets {
++                             doc_start: (all_doc_tokens.len() / crate::arrow::COLBERT_DIM) as u32,
++                             num_tokens: doc_fixed.len() as u32,
++                         });
+                          all_doc_tokens.extend_from_slice(&doc_flat.values()[offset..offset+len]);
+-
+-                         // Padding if needed (though with FixedSizeListArray it shouldn't be strictly necessary if all are same,
+-                         // but ListArray of FixedSizeList allows varying number of tokens)
+-                         let padding_needed = (max_tokens_per_doc - doc_fixed.len()) * crate::arrow::COLBERT_DIM;
+-                         if padding_needed > 0 {
+-                             all_doc_tokens.extend(vec![0.0f32; padding_needed]);
+-                         }
+                     }
+
+                     if let Some(res) = gpu.colbert_maxsim(
+@@ -557,7 +546,7 @@ impl VM {
+                         &all_doc_tokens,
+                         num_docs as u32,
+                         query_tokens.shape()[0] as u32,
+-                        max_tokens_per_doc as u32,
++                        &colbert_offsets,
+                         crate::arrow::COLBERT_DIM as u32
+                     ) {
+                         self.stack.push(Value::Tensor1D(ndarray::Array1::from(res)));
+@@ -622,6 +611,10 @@ impl VM {
+
+     /// Backwards compatibility run function for tests
+     pub fn run(&mut self, program: Program, instruction_count: &mut usize, max_instructions: usize) -> Result<Option<Value>, String> {
++        let _span = tracing::info_span!("vm_run", instructions = program.instructions.len()).entered();
++        let start = std::time::Instant::now();
++        let total = program.instructions.len();
++
+         for instruction in program.instructions {
+             if *instruction_count >= max_instructions {
+                 return Err(format!("Execution error: Instruction limit exceeded ({})", max_instructions));
+@@ -634,11 +627,16 @@ impl VM {
+                 }
+                 _ => {
+                     if let Some(res) = self.step(&instruction.op)? {
++                        let elapsed = start.elapsed();
++                        info!(elapsed = ?elapsed, total_instructions = total, "VM program completed");
+                         return Ok(Some(res));
+                     }
+                 }
+             }
+         }
++
++        let elapsed = start.elapsed();
++        info!(elapsed = ?elapsed, total_instructions = total, "VM program completed");
+         Ok(None)
+     }
+ }

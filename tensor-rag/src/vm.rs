@@ -2,6 +2,7 @@ use crate::ir::{OpCode, Program};
 use arrow::array::Array;
 use ndarray::Array1;
 use std::sync::Arc;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -515,25 +516,16 @@ impl VM {
                 let num_docs = list_arr.len();
 
                 if let Some(gpu) = &self.gpu_context {
-                    // Collect all doc tokens into a single flat buffer
+                    // Collect all doc tokens into a single flat buffer and build offsets
                     let mut all_doc_tokens = Vec::new();
-                    let mut max_tokens_per_doc = 0;
+                    let mut colbert_offsets = Vec::new();
 
-                    // First pass: find max tokens per doc and validate
-                    for i in 0..num_docs {
-                         if list_arr.is_null(i) { continue; }
-                         let doc_arr = list_arr.value(i);
-                         let doc_fixed = doc_arr.as_any().downcast_ref::<arrow::array::FixedSizeListArray>().ok_or("Not FixedSizeListArray")?;
-                         if doc_fixed.len() > max_tokens_per_doc {
-                             max_tokens_per_doc = doc_fixed.len();
-                         }
-                    }
-
-                    // Second pass: flatten and pad to uniform size for the current simple shader implementation
-                    // Real implementation should probably use offsets/lengths or more advanced tiling
                     for i in 0..num_docs {
                          if list_arr.is_null(i) {
-                             all_doc_tokens.extend(vec![0.0f32; max_tokens_per_doc * crate::arrow::COLBERT_DIM]);
+                             colbert_offsets.push(crate::gpu::ColbertOffsets {
+                                 doc_start: (all_doc_tokens.len() / crate::arrow::COLBERT_DIM) as u32,
+                                 num_tokens: 0,
+                             });
                              continue;
                          }
                          let doc_arr = list_arr.value(i);
@@ -542,14 +534,11 @@ impl VM {
                          let doc_flat = doc_inner.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
                          let offset = doc_fixed.value_offset(0) as usize;
                          let len = doc_fixed.len() * crate::arrow::COLBERT_DIM;
+                         colbert_offsets.push(crate::gpu::ColbertOffsets {
+                             doc_start: (all_doc_tokens.len() / crate::arrow::COLBERT_DIM) as u32,
+                             num_tokens: doc_fixed.len() as u32,
+                         });
                          all_doc_tokens.extend_from_slice(&doc_flat.values()[offset..offset+len]);
-
-                         // Padding if needed (though with FixedSizeListArray it shouldn't be strictly necessary if all are same,
-                         // but ListArray of FixedSizeList allows varying number of tokens)
-                         let padding_needed = (max_tokens_per_doc - doc_fixed.len()) * crate::arrow::COLBERT_DIM;
-                         if padding_needed > 0 {
-                             all_doc_tokens.extend(vec![0.0f32; padding_needed]);
-                         }
                     }
 
                     if let Some(res) = gpu.colbert_maxsim(
@@ -557,7 +546,7 @@ impl VM {
                         &all_doc_tokens,
                         num_docs as u32,
                         query_tokens.shape()[0] as u32,
-                        max_tokens_per_doc as u32,
+                        &colbert_offsets,
                         crate::arrow::COLBERT_DIM as u32
                     ) {
                         self.stack.push(Value::Tensor1D(ndarray::Array1::from(res)));
@@ -622,6 +611,10 @@ impl VM {
 
     /// Backwards compatibility run function for tests
     pub fn run(&mut self, program: Program, instruction_count: &mut usize, max_instructions: usize) -> Result<Option<Value>, String> {
+        let _span = tracing::info_span!("vm_run", instructions = program.instructions.len()).entered();
+        let start = std::time::Instant::now();
+        let total = program.instructions.len();
+
         for instruction in program.instructions {
             if *instruction_count >= max_instructions {
                 return Err(format!("Execution error: Instruction limit exceeded ({})", max_instructions));
@@ -634,11 +627,16 @@ impl VM {
                 }
                 _ => {
                     if let Some(res) = self.step(&instruction.op)? {
+                        let elapsed = start.elapsed();
+                        info!(elapsed = ?elapsed, total_instructions = total, "VM program completed");
                         return Ok(Some(res));
                     }
                 }
             }
         }
+
+        let elapsed = start.elapsed();
+        info!(elapsed = ?elapsed, total_instructions = total, "VM program completed");
         Ok(None)
     }
 }
