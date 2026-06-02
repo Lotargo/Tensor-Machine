@@ -40,8 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the DB pools
     let db_pools = Arc::new(DbPools::new());
 
-    // Create the MCP server
-
     // Start VM Worker process if TENSOR_VM_MODE is ipc
     let mut _vm_worker_process = None;
     if std::env::var("TENSOR_VM_MODE").unwrap_or_default() == "ipc" {
@@ -56,17 +54,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-let mut server = McpServer::new(db_pools, Some(metrics_clone));
+    let num_workers = 4;
+    let mut worker_senders = Vec::new();
 
-    // Create a channel for receiving requests (simulating network layer)
-    let (_tx, rx) = mpsc::channel::<McpRequest>(100);
+    info!("Starting {} MCP Server instances.", num_workers);
+    for i in 0..num_workers {
+        let (tx, rx) = mpsc::channel::<McpRequest>(100);
+        worker_senders.push(tx);
 
-    info!("Starting MCP Server. Press Ctrl-C to stop.");
+        let mut server = McpServer::new(db_pools.clone(), Some(metrics_clone.clone()));
+        // Ensure default tools are registered
+        tensor_rag::mcp::register_search_tool(&mut server);
 
-    // Run the server until the cancellation token is triggered
-    server.run_server(rx, cancel_token).await;
+        let token = cancel_token.clone();
+        tokio::spawn(async move {
+            info!("Worker {} starting", i);
+            server.run_server(rx, token).await;
+            info!("Worker {} shutdown", i);
+        });
+    }
+
+    // Initialize the Load Balancer Router
+    let app_state = Arc::new(tensor_rag::router::AppState {
+        sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        workers: worker_senders,
+        next_worker: std::sync::atomic::AtomicUsize::new(0),
+    });
+
+    let router = tensor_rag::router::mcp_router(app_state);
+
+    // Bind and serve the router
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8080));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    info!("Starting MCP Router on http://{}", addr);
+
+    let server = axum::serve(listener, router);
+
+    tokio::select! {
+        _ = server => {
+            info!("Router server exited.");
+        }
+        _ = cancel_token.cancelled() => {
+            info!("Router shutting down due to cancel token.");
+        }
+    }
 
     info!("Server shutdown complete.");
+
+    if let Some(mut child) = _vm_worker_process {
+        let _ = child.kill();
+    }
 
     Ok(())
 }

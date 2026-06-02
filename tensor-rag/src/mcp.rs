@@ -15,10 +15,24 @@ pub struct McpRequest {
     pub args: JsonValue,
     pub session_id: String,
     pub sequence_number: u64,
+    #[serde(skip)]
+    pub response_tx: Option<tokio::sync::oneshot::Sender<Result<McpResponse, String>>>,
+}
+
+impl Clone for McpRequest {
+    fn clone(&self) -> Self {
+        Self {
+            tool: self.tool.clone(),
+            args: self.args.clone(),
+            session_id: self.session_id.clone(),
+            sequence_number: self.sequence_number,
+            response_tx: None,
+        }
+    }
 }
 
 /// A response back to the LLM Agent.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct McpResponse {
     pub status: u32,
     pub body: Vec<u8>,
@@ -358,8 +372,13 @@ impl McpServer {
                 }
                 req = rx.recv() => {
                     match req {
-                        Some(request) => {
-                            match self.handle_request(request).await {
+                        Some(mut request) => {
+                            let response_tx = request.response_tx.take();
+                            let result = self.handle_request(request).await;
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(result.clone());
+                            }
+                            match result {
                                 Ok(_) => {},
                                 Err(e) => error!("Error handling request: {}", e),
                             }
