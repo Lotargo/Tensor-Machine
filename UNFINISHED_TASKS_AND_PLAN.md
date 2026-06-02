@@ -8,7 +8,7 @@ From `dev_docs/todo.md` and codebase analysis, here is the state of open tasks:
 
 | Task | Status | Summary |
 |------|--------|---------|
-| **3.4.3** (Opt.) — VM in separate process with mmap | ✅ D1 done (serde derives); D2/D3 remaining | Serde derives added to `OpCode`, `Instruction`, `Program`, `AstNode`. Subprocess spawn and IPC wiring (D2, D3) still pending. |
+| **3.4.3** (Opt.) — VM in separate process with mmap | ✅ Complete | VM now optionally runs in a separate process via `TENSOR_VM_MODE=ipc`, wired to an `mcp.rs` `VmIpcClient` and the `vm_worker` subprocess. |
 | **4.2.3** — colbert_maxsim via SIMD/GPU | ✅ Done | Tiled WGSL shader with workgroup-shared memory, offsets-based variable-length docs, GPU/CPU benchmark harness. |
 | **4.3.1** — Arrow Flight plane | 🔴 Not started | No arrow-flight dep, no network transport at all. |
 | **4.3.2** — Load balancer | 🔴 Not started | Single in-process mpsc channel only. |
@@ -81,8 +81,8 @@ From `dev_docs/todo.md` and codebase analysis, here is the state of open tasks:
 ### Phase D: VM Separate Process (Task 3.4.3) — Optional / Deferred
 **Goal:** Separate VM processing for fault isolation if required, without sacrificing latency.
 - [x] D1 — Add serde derives to `OpCode`, `Instruction`, `Program`, `AstNode`.
-- [ ] D2 — Write a VM worker binary that listens on a Unix socket / shared memory for incoming `Program` bytecode.
-- [ ] D3 — Wire the planner to dispatch via the IPC path instead of direct `execute_program()`.
+- [x] D2 — Write a VM worker binary that listens on a Unix socket / shared memory for incoming `Program` bytecode.
+- [x] D3 — Wire the planner to dispatch via the IPC path instead of direct `execute_program()`.
 
 ---
 

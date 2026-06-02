@@ -41,7 +41,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_pools = Arc::new(DbPools::new());
 
     // Create the MCP server
-    let mut server = McpServer::new(db_pools, Some(metrics_clone));
+
+    // Start VM Worker process if TENSOR_VM_MODE is ipc
+    let mut _vm_worker_process = None;
+    if std::env::var("TENSOR_VM_MODE").unwrap_or_default() == "ipc" {
+        info!("Starting VM Worker process in IPC mode...");
+        _vm_worker_process = Some(
+            std::process::Command::new("cargo")
+                .args(["run", "--bin", "vm_worker"])
+                .spawn()
+                .expect("Failed to spawn vm_worker process")
+        );
+        // Wait briefly for the socket to bind
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+let mut server = McpServer::new(db_pools, Some(metrics_clone));
 
     // Create a channel for receiving requests (simulating network layer)
     let (_tx, rx) = mpsc::channel::<McpRequest>(100);
