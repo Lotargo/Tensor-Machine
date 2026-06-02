@@ -134,6 +134,8 @@ mod tests {
 pub mod arrow;
 pub mod gpu;
 pub mod dsl;
+pub mod flight;
+pub mod router;
 pub mod metrics;
 pub mod shared_memory;
 #[allow(non_snake_case)]

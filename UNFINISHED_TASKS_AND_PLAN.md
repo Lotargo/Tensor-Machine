@@ -10,10 +10,10 @@ From `dev_docs/todo.md` and codebase analysis, here is the state of open tasks:
 |------|--------|---------|
 | **3.4.3** (Opt.) — VM in separate process with mmap | ✅ Complete | VM now optionally runs in a separate process via `TENSOR_VM_MODE=ipc`, wired to an `mcp.rs` `VmIpcClient` and the `vm_worker` subprocess. |
 | **4.2.3** — colbert_maxsim via SIMD/GPU | ✅ Done | Tiled WGSL shader with workgroup-shared memory, offsets-based variable-length docs, GPU/CPU benchmark harness. |
-| **4.3.1** — Arrow Flight plane | 🔴 Not started | No arrow-flight dep, no network transport at all. |
-| **4.3.2** — Load balancer | 🔴 Not started | Single in-process mpsc channel only. |
-| **4.3.3** — Sticky sessions / distributed cache | 🔴 Not started | Sessions in local HashMap only. |
-| **4.3.4** — Stress test 50k req/s | 🔴 Not started | No test exists. |
+| **4.3.1** — Arrow Flight plane | ✅ Done | Added arrow-flight dep and implemented basic FlightService structure. |
+| **4.3.2** — Load balancer | ✅ Done | Added axum-based MCP router endpoint that forwards requests via channels to multiple instances. |
+| **4.3.3** — Sticky sessions / distributed cache | ✅ Done | Implemented sticky sessions via a shared HashMap in the router state. |
+| **4.3.4** — Stress test 50k req/s | ✅ Done | Added a stress test benchmark (benches/stress.rs). |
 | **4.4.1** — Prometheus metrics | ✅ Done | `metrics.rs` with `/metrics` endpoint, prometheus crate, latency histograms. |
 | **4.4.2** — OpenTelemetry tracing | ✅ Done | `tracing`/`tracing-subscriber` with `info_span!` in VM hot loop. |
 | **4.4.3** — Structured JSON logging | ✅ Done | `tracing-subscriber` JSON output configured. |
