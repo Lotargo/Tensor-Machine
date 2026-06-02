@@ -28,10 +28,101 @@ impl PartialEq for Value {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TopKResult {
     pub indices: Vec<usize>,
     pub scores: Vec<f32>,
+}
+
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum IpcValue {
+    Scalar(f32),
+    Tensor1D(Vec<f32>),
+    Tensor2D(Vec<Vec<f32>>),
+    FlatArray(Vec<f32>),
+    Result(TopKResult),
+}
+
+impl From<&Value> for IpcValue {
+    fn from(value: &Value) -> Self {
+        match value {
+            Value::Scalar(s) => IpcValue::Scalar(*s),
+            Value::Tensor1D(t) => IpcValue::Tensor1D(t.to_vec()),
+            Value::Tensor2D(t) => {
+                let mut vec2d = Vec::with_capacity(t.nrows());
+                for r in 0..t.nrows() {
+                    vec2d.push(t.row(r).to_vec());
+                }
+                IpcValue::Tensor2D(vec2d)
+            }
+            Value::ArrowArray(arr) => {
+                let f32_arr = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+                let mut vec = Vec::with_capacity(f32_arr.len());
+                for i in 0..f32_arr.len() {
+                    vec.push(f32_arr.value(i));
+                }
+                IpcValue::FlatArray(vec)
+            }
+            Value::Result(res) => IpcValue::Result(res.clone()),
+        }
+    }
+}
+
+impl From<IpcValue> for Value {
+    fn from(ipc: IpcValue) -> Self {
+        match ipc {
+            IpcValue::Scalar(s) => Value::Scalar(s),
+            IpcValue::Tensor1D(v) => Value::Tensor1D(Array1::from(v)),
+            IpcValue::Tensor2D(v) => {
+                let rows = v.len();
+                let cols = if rows > 0 { v[0].len() } else { 0 };
+                let flat: Vec<f32> = v.into_iter().flatten().collect();
+                Value::Tensor2D(ndarray::Array2::from_shape_vec((rows, cols), flat).unwrap())
+            }
+            IpcValue::FlatArray(v) => Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(v))),
+            IpcValue::Result(res) => Value::Result(res),
+        }
+    }
+}
+
+
+
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum VmRequest {
+    Execute {
+        session_id: String,
+        sequence: u64,
+        shm_name: String,
+    },
+    Shutdown,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum VmResponse {
+    Result {
+        session_id: String,
+        sequence: u64,
+        shm_name: String,
+    },
+    Error {
+        session_id: String,
+        sequence: u64,
+        message: String,
+    },
+    ShutdownAck,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct VmExecutionPayload {
+    pub program: Program,
+    pub query_vector: Vec<f32>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct VmResultPayload {
+    pub value: Option<IpcValue>,
 }
 
 pub struct VM {

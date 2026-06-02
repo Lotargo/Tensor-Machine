@@ -34,3 +34,10 @@ harness = false
 [[bench]]
 name = "colbert"
 harness = false
+
+[[bin]]
+name = "vm_worker"
+path = "src/bin/vm_worker.rs"
+
+[dependencies.bincode]
+version = "1.3"
