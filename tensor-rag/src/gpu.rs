@@ -1,5 +1,5 @@
-use wgpu::{Device, Queue, Instance, RequestAdapterOptions};
 use std::sync::Arc;
+use wgpu::{Device, Instance, Queue, RequestAdapterOptions};
 
 pub struct GpuContext {
     pub device: Arc<Device>,
@@ -267,12 +267,10 @@ impl GpuContext {
                 force_fallback_adapter: false,
                 compatible_surface: None,
             })
-            .await.ok()?;
-
-        let (device, queue) = adapter
-            .request_device(&Default::default())
             .await
             .ok()?;
+
+        let (device, queue) = adapter.request_device(&Default::default()).await.ok()?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Global Shader"),
@@ -294,14 +292,16 @@ impl GpuContext {
         result_buffer: &wgpu::Buffer,
         size: wgpu::BufferAddress,
     ) -> Option<Vec<u8>> {
-        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(entry_point),
-            layout: None,
-            module: &self.shader,
-            entry_point: Some(entry_point),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let compute_pipeline =
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry_point),
+                    layout: None,
+                    module: &self.shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
 
         let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -310,7 +310,9 @@ impl GpuContext {
             entries: bind_groups,
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -338,7 +340,9 @@ impl GpuContext {
             sender.send(v).unwrap();
         });
 
-        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         receiver.recv().ok()?.ok()?;
 
         let data = buffer_slice.get_mapped_range();
@@ -374,8 +378,10 @@ impl GpuContext {
             mapped_at_creation: false,
         });
 
-        self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
-        self.queue.write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
+        self.queue
+            .write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
+        self.queue
+            .write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
 
         let bind_groups = [
             wgpu::BindGroupEntry {
@@ -393,7 +399,13 @@ impl GpuContext {
         ];
 
         let workgroup_count = (a.len() as u32 + 63) / 64;
-        let result = self.run_compute_shader("add_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+        let result = self.run_compute_shader(
+            "add_main",
+            &bind_groups,
+            workgroup_count,
+            &buffer_result,
+            size,
+        )?;
         Some(bytemuck::cast_slice(&result).to_vec())
     }
 
@@ -419,8 +431,10 @@ impl GpuContext {
             mapped_at_creation: false,
         });
 
-        self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
-        self.queue.write_buffer(&buffer_scalar, 0, bytemuck::bytes_of(&scalar));
+        self.queue
+            .write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
+        self.queue
+            .write_buffer(&buffer_scalar, 0, bytemuck::bytes_of(&scalar));
 
         let bind_groups = [
             wgpu::BindGroupEntry {
@@ -438,7 +452,13 @@ impl GpuContext {
         ];
 
         let workgroup_count = (a.len() as u32 + 63) / 64;
-        let result = self.run_compute_shader("mul_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+        let result = self.run_compute_shader(
+            "mul_main",
+            &bind_groups,
+            workgroup_count,
+            &buffer_result,
+            size,
+        )?;
         Some(bytemuck::cast_slice(&result).to_vec())
     }
 
@@ -473,9 +493,12 @@ impl GpuContext {
             mapped_at_creation: false,
         });
 
-        self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
-        self.queue.write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
-        self.queue.write_buffer(&buffer_weights, 0, bytemuck::cast_slice(&[w1, w2]));
+        self.queue
+            .write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
+        self.queue
+            .write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
+        self.queue
+            .write_buffer(&buffer_weights, 0, bytemuck::cast_slice(&[w1, w2]));
 
         let bind_groups = [
             wgpu::BindGroupEntry {
@@ -497,7 +520,13 @@ impl GpuContext {
         ];
 
         let workgroup_count = (a.len() as u32 + 63) / 64;
-        let result = self.run_compute_shader("fusion_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+        let result = self.run_compute_shader(
+            "fusion_main",
+            &bind_groups,
+            workgroup_count,
+            &buffer_result,
+            size,
+        )?;
         Some(bytemuck::cast_slice(&result).to_vec())
     }
 
@@ -526,8 +555,10 @@ impl GpuContext {
             mapped_at_creation: false,
         });
 
-        self.queue.write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
-        self.queue.write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
+        self.queue
+            .write_buffer(&buffer_a, 0, bytemuck::cast_slice(a));
+        self.queue
+            .write_buffer(&buffer_b, 0, bytemuck::cast_slice(b));
 
         let bind_groups = [
             wgpu::BindGroupEntry {
@@ -545,7 +576,13 @@ impl GpuContext {
         ];
 
         let workgroup_count = (a.len() as u32 + 63) / 64;
-        let result = self.run_compute_shader("matmul_main", &bind_groups, workgroup_count, &buffer_result, size)?;
+        let result = self.run_compute_shader(
+            "matmul_main",
+            &bind_groups,
+            workgroup_count,
+            &buffer_result,
+            size,
+        )?;
 
         let multiplied: &[f32] = bytemuck::cast_slice(&result);
         let sum = multiplied.iter().sum();
@@ -564,14 +601,18 @@ impl GpuContext {
         let buffer_data = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("buffer_data"),
             size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let buffer_indices = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("buffer_indices"),
             size: index_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -583,19 +624,24 @@ impl GpuContext {
         });
 
         let indices: Vec<u32> = (0..n as u32).collect();
-        self.queue.write_buffer(&buffer_data, 0, bytemuck::cast_slice(data));
-        self.queue.write_buffer(&buffer_indices, 0, bytemuck::cast_slice(&indices));
+        self.queue
+            .write_buffer(&buffer_data, 0, bytemuck::cast_slice(data));
+        self.queue
+            .write_buffer(&buffer_indices, 0, bytemuck::cast_slice(&indices));
         let k_u32 = k as u32;
-        self.queue.write_buffer(&buffer_k_val, 0, bytemuck::bytes_of(&k_u32));
+        self.queue
+            .write_buffer(&buffer_k_val, 0, bytemuck::bytes_of(&k_u32));
 
-        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("TopK Pipeline"),
-            layout: None,
-            module: &self.shader,
-            entry_point: Some("topk_sort_main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let compute_pipeline =
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("TopK Pipeline"),
+                    layout: None,
+                    module: &self.shader,
+                    entry_point: Some("topk_sort_main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
 
         let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -617,7 +663,9 @@ impl GpuContext {
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -643,7 +691,9 @@ impl GpuContext {
             mapped_at_creation: false,
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(&buffer_data, 0, &staging_buffer_data, 0, size);
         encoder.copy_buffer_to_buffer(&buffer_indices, 0, &staging_buffer_indices, 0, index_size);
         self.queue.submit(Some(encoder.finish()));
@@ -660,7 +710,9 @@ impl GpuContext {
             sender2.send(v).unwrap();
         });
 
-        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         receiver1.recv().ok()?.ok()?;
         receiver2.recv().ok()?.ok()?;
 
@@ -676,20 +728,50 @@ impl GpuContext {
 
         let k = k.min(n);
         let final_scores = sorted_data.into_iter().take(k).collect();
-        let final_indices = sorted_indices.into_iter().take(k).map(|x| x as usize).collect();
+        let final_indices = sorted_indices
+            .into_iter()
+            .take(k)
+            .map(|x| x as usize)
+            .collect();
 
         Some((final_indices, final_scores))
     }
 
-    pub fn colbert_maxsim(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, offsets: &[ColbertOffsets], dim: u32) -> Option<Vec<f32>> {
-        self.colbert_maxsim_variant(query_tokens, doc_tokens, num_docs, num_q, offsets, dim, true)
+    pub fn colbert_maxsim(
+        &self,
+        query_tokens: &[f32],
+        doc_tokens: &[f32],
+        num_docs: u32,
+        num_q: u32,
+        offsets: &[ColbertOffsets],
+        dim: u32,
+    ) -> Option<Vec<f32>> {
+        self.colbert_maxsim_variant(
+            query_tokens,
+            doc_tokens,
+            num_docs,
+            num_q,
+            offsets,
+            dim,
+            true,
+        )
     }
 
-    pub fn colbert_maxsim_variant(&self, query_tokens: &[f32], doc_tokens: &[f32], num_docs: u32, num_q: u32, offsets: &[ColbertOffsets], dim: u32, use_tiled: bool) -> Option<Vec<f32>> {
+    pub fn colbert_maxsim_variant(
+        &self,
+        query_tokens: &[f32],
+        doc_tokens: &[f32],
+        num_docs: u32,
+        num_q: u32,
+        offsets: &[ColbertOffsets],
+        dim: u32,
+        use_tiled: bool,
+    ) -> Option<Vec<f32>> {
         let size_q = (query_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
         let size_d = (doc_tokens.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
         let size_res = (num_docs as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
-        let size_offsets = (offsets.len() * std::mem::size_of::<ColbertOffsets>()) as wgpu::BufferAddress;
+        let size_offsets =
+            (offsets.len() * std::mem::size_of::<ColbertOffsets>()) as wgpu::BufferAddress;
 
         let buffer_q = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("buffer_q"),
@@ -722,15 +804,19 @@ impl GpuContext {
             mapped_at_creation: false,
         });
 
-        self.queue.write_buffer(&buffer_q, 0, bytemuck::cast_slice(query_tokens));
-        self.queue.write_buffer(&buffer_d, 0, bytemuck::cast_slice(doc_tokens));
-        self.queue.write_buffer(&buffer_offsets, 0, bytemuck::cast_slice(offsets));
+        self.queue
+            .write_buffer(&buffer_q, 0, bytemuck::cast_slice(query_tokens));
+        self.queue
+            .write_buffer(&buffer_d, 0, bytemuck::cast_slice(doc_tokens));
+        self.queue
+            .write_buffer(&buffer_offsets, 0, bytemuck::cast_slice(offsets));
         let params = ColbertParams {
             num_query_tokens: num_q,
             dim,
             _padding: [0; 2],
         };
-        self.queue.write_buffer(&buffer_params, 0, bytemuck::bytes_of(&params));
+        self.queue
+            .write_buffer(&buffer_params, 0, bytemuck::bytes_of(&params));
 
         let bind_groups = [
             wgpu::BindGroupEntry {
@@ -761,7 +847,13 @@ impl GpuContext {
             ("colbert_maxsim_main", (num_docs + 63) / 64)
         };
 
-        let result = self.run_compute_shader(entry_point, &bind_groups, workgroup_count, &buffer_result, size_res)?;
+        let result = self.run_compute_shader(
+            entry_point,
+            &bind_groups,
+            workgroup_count,
+            &buffer_result,
+            size_res,
+        )?;
         Some(bytemuck::cast_slice(&result).to_vec())
     }
 }
@@ -846,21 +938,42 @@ mod tests {
 
                 let mut q_tokens = vec![0.1f32; num_q * dim];
                 // Make first q-token special
-                for i in 0..dim { q_tokens[i] = 1.0; }
+                for i in 0..dim {
+                    q_tokens[i] = 1.0;
+                }
 
                 let mut d_tokens = vec![0.0f32; num_docs * num_d * dim];
                 // Doc 0, first d-token matches q-token 0 perfectly
-                for i in 0..dim { d_tokens[i] = 1.0; }
+                for i in 0..dim {
+                    d_tokens[i] = 1.0;
+                }
 
                 // Doc 1, first d-token matches q-token 0 partially
-                for i in 0..dim { d_tokens[num_d * dim + i] = 0.5; }
+                for i in 0..dim {
+                    d_tokens[num_d * dim + i] = 0.5;
+                }
 
                 let offsets = vec![
-                    ColbertOffsets { doc_start: 0, num_tokens: num_d as u32 },
-                    ColbertOffsets { doc_start: num_d as u32, num_tokens: num_d as u32 },
+                    ColbertOffsets {
+                        doc_start: 0,
+                        num_tokens: num_d as u32,
+                    },
+                    ColbertOffsets {
+                        doc_start: num_d as u32,
+                        num_tokens: num_d as u32,
+                    },
                 ];
 
-                let result = gpu.colbert_maxsim(&q_tokens, &d_tokens, num_docs as u32, num_q as u32, &offsets, dim as u32).unwrap();
+                let result = gpu
+                    .colbert_maxsim(
+                        &q_tokens,
+                        &d_tokens,
+                        num_docs as u32,
+                        num_q as u32,
+                        &offsets,
+                        dim as u32,
+                    )
+                    .unwrap();
 
                 assert_eq!(result.len(), num_docs);
                 assert!(result[0] > result[1]);

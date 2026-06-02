@@ -1,9 +1,9 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BatchSize};
-use tensor_rag::ir::OpCode;
-use tensor_rag::vm::{Value, VM};
-use arrow::array::{Float32Array, Array};
-use std::sync::Arc;
+use arrow::array::{Array, Float32Array};
+use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use ndarray::Array1;
+use std::sync::Arc;
+use tensor_rag::ir::OpCode;
+use tensor_rag::vm::{VM, Value};
 
 fn create_arrow_array(size: usize, val: f32) -> Value {
     let arr = Float32Array::from(vec![val; size]);
@@ -141,7 +141,8 @@ fn bench_vm_topk(c: &mut Criterion) {
                 vals[10] = 5.0;
                 vals[20] = 10.0;
                 let arr = Float32Array::from(vals);
-                vm.stack.push(Value::ArrowArray(Arc::new(arr) as Arc<dyn Array>));
+                vm.stack
+                    .push(Value::ArrowArray(Arc::new(arr) as Arc<dyn Array>));
                 vm
             },
             |mut vm| {
@@ -173,5 +174,11 @@ fn bench_vm_topk(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_vm_add, bench_vm_mul, bench_vm_fusion, bench_vm_topk);
+criterion_group!(
+    benches,
+    bench_vm_add,
+    bench_vm_mul,
+    bench_vm_fusion,
+    bench_vm_topk
+);
 criterion_main!(benches);

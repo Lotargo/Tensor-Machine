@@ -25,6 +25,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 arrow-flight = "53.0.0"
 futures = "0.3"
+tokio-stream = { version = "0.1.18", features = ["sync"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }

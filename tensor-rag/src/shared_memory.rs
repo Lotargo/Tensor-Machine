@@ -1,8 +1,8 @@
-use std::sync::Mutex;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 /// Represents a named shared memory region mapped via temporary files.
 /// In a Linux environment, temp files are typically backed by tmpfs.
@@ -128,12 +128,17 @@ mod tests {
         let manager = SharedMemoryManager::new();
         let region_name = "test_shm_region_1";
 
-        let region = manager.allocate(region_name).expect("Failed to allocate region");
+        let region = manager
+            .allocate(region_name)
+            .expect("Failed to allocate region");
 
         // Write to the file
         {
-            let mut file = region.get_file_for_write().expect("Failed to open for write");
-            file.write_all(b"hello world").expect("Failed to write data");
+            let mut file = region
+                .get_file_for_write()
+                .expect("Failed to open for write");
+            file.write_all(b"hello world")
+                .expect("Failed to write data");
         }
 
         // Read from the file via the same region

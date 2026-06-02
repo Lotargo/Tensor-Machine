@@ -4,6 +4,23 @@ use ndarray::Array1;
 use std::sync::Arc;
 use tracing::info;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendSelector {
+    Cpu,
+    Simd,
+    Gpu,
+}
+
+impl BackendSelector {
+    pub fn all() -> [BackendSelector; 3] {
+        [
+            BackendSelector::Cpu,
+            BackendSelector::Simd,
+            BackendSelector::Gpu,
+        ]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Scalar(f32),
@@ -34,7 +51,6 @@ pub struct TopKResult {
     pub scores: Vec<f32>,
 }
 
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum IpcValue {
     Scalar(f32),
@@ -57,7 +73,10 @@ impl From<&Value> for IpcValue {
                 IpcValue::Tensor2D(vec2d)
             }
             Value::ArrowArray(arr) => {
-                let f32_arr = arr.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+                let f32_arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow::array::Float32Array>()
+                    .unwrap();
                 let mut vec = Vec::with_capacity(f32_arr.len());
                 for i in 0..f32_arr.len() {
                     vec.push(f32_arr.value(i));
@@ -80,14 +99,13 @@ impl From<IpcValue> for Value {
                 let flat: Vec<f32> = v.into_iter().flatten().collect();
                 Value::Tensor2D(ndarray::Array2::from_shape_vec((rows, cols), flat).unwrap())
             }
-            IpcValue::FlatArray(v) => Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(v))),
+            IpcValue::FlatArray(v) => {
+                Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(v)))
+            }
             IpcValue::Result(res) => Value::Result(res),
         }
     }
 }
-
-
-
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum VmRequest {
@@ -130,6 +148,7 @@ pub struct VM {
     pub batch: Option<Arc<arrow::record_batch::RecordBatch>>,
     pub query_vector: Array1<f32>,
     pub gpu_context: Option<Arc<crate::gpu::GpuContext>>,
+    pub backend: BackendSelector,
 }
 
 impl Default for VM {
@@ -145,6 +164,7 @@ impl VM {
             batch: None,
             query_vector: Array1::zeros(768), // Default initialization, could be populated externally
             gpu_context: None,
+            backend: BackendSelector::Simd,
         }
     }
 
@@ -167,7 +187,10 @@ impl VM {
                 match (a, b) {
                     (Value::Tensor1D(t1), Value::Tensor1D(t2)) => {
                         if let Some(gpu) = &self.gpu_context {
-                            if let Some(res) = gpu.add(t1.as_standard_layout().as_slice().unwrap(), t2.as_standard_layout().as_slice().unwrap()) {
+                            if let Some(res) = gpu.add(
+                                t1.as_standard_layout().as_slice().unwrap(),
+                                t2.as_standard_layout().as_slice().unwrap(),
+                            ) {
                                 self.stack.push(Value::Tensor1D(Array1::from(res)));
                                 return Ok(None);
                             }
@@ -189,7 +212,9 @@ impl VM {
                             let s2: Vec<f32> = t2_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
 
                             if let Some(res) = gpu.add(&s1, &s2) {
-                                self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(res))));
+                                self.stack.push(Value::ArrowArray(Arc::new(
+                                    arrow::array::Float32Array::from(res),
+                                )));
                                 return Ok(None);
                             }
                         }
@@ -210,7 +235,9 @@ impl VM {
                 match (a, b) {
                     (Value::Tensor1D(t), Value::Scalar(s)) => {
                         if let Some(gpu) = &self.gpu_context {
-                            if let Some(res) = gpu.mul(t.as_standard_layout().as_slice().unwrap(), s) {
+                            if let Some(res) =
+                                gpu.mul(t.as_standard_layout().as_slice().unwrap(), s)
+                            {
                                 self.stack.push(Value::Tensor1D(Array1::from(res)));
                                 return Ok(None);
                             }
@@ -226,7 +253,9 @@ impl VM {
 
                             let s_vec: Vec<f32> = t_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
                             if let Some(res) = gpu.mul(&s_vec, s) {
-                                self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(res))));
+                                self.stack.push(Value::ArrowArray(Arc::new(
+                                    arrow::array::Float32Array::from(res),
+                                )));
                                 return Ok(None);
                             }
                         }
@@ -256,7 +285,12 @@ impl VM {
                         Value::Scalar(sw2),
                     ) => {
                         if let Some(gpu) = &self.gpu_context {
-                            if let Some(res) = gpu.fusion(t1.as_standard_layout().as_slice().unwrap(), t2.as_standard_layout().as_slice().unwrap(), sw1, sw2) {
+                            if let Some(res) = gpu.fusion(
+                                t1.as_standard_layout().as_slice().unwrap(),
+                                t2.as_standard_layout().as_slice().unwrap(),
+                                sw1,
+                                sw2,
+                            ) {
                                 self.stack.push(Value::Tensor1D(Array1::from(res)));
                                 return Ok(None);
                             }
@@ -271,14 +305,22 @@ impl VM {
                         Value::Scalar(sw2),
                     ) => {
                         if let Some(gpu) = &self.gpu_context {
-                            let t1_f32 = arr1.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
-                            let t2_f32 = arr2.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
+                            let t1_f32 = arr1
+                                .as_any()
+                                .downcast_ref::<arrow::array::Float32Array>()
+                                .ok_or("Not Float32Array")?;
+                            let t2_f32 = arr2
+                                .as_any()
+                                .downcast_ref::<arrow::array::Float32Array>()
+                                .ok_or("Not Float32Array")?;
 
                             let s1: Vec<f32> = t1_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
                             let s2: Vec<f32> = t2_f32.iter().map(|v| v.unwrap_or(0.0)).collect();
 
                             if let Some(res) = gpu.fusion(&s1, &s2, sw1, sw2) {
-                                self.stack.push(Value::ArrowArray(Arc::new(arrow::array::Float32Array::from(res))));
+                                self.stack.push(Value::ArrowArray(Arc::new(
+                                    arrow::array::Float32Array::from(res),
+                                )));
                                 return Ok(None);
                             }
                         }
@@ -343,11 +385,7 @@ impl VM {
                             .iter()
                             .map(|v| {
                                 let val = v.unwrap_or(0.0);
-                                if val < *thresh {
-                                    0.0
-                                } else {
-                                    val
-                                }
+                                if val < *thresh { 0.0 } else { val }
                             })
                             .collect();
                         self.stack.push(Value::ArrowArray(Arc::new(
@@ -399,7 +437,10 @@ impl VM {
                 match (a, b) {
                     (Value::Tensor1D(t1), Value::Tensor1D(t2)) => {
                         if let Some(gpu) = &self.gpu_context {
-                            if let Some(res) = gpu.matmul(t1.as_standard_layout().as_slice().unwrap(), t2.as_standard_layout().as_slice().unwrap()) {
+                            if let Some(res) = gpu.matmul(
+                                t1.as_standard_layout().as_slice().unwrap(),
+                                t2.as_standard_layout().as_slice().unwrap(),
+                            ) {
                                 self.stack.push(Value::Scalar(res));
                                 return Ok(None);
                             }
@@ -442,8 +483,13 @@ impl VM {
                 let (indices, scores) = match a {
                     Value::Tensor1D(t) => {
                         if let Some(gpu) = &self.gpu_context {
-                            if let Some(res) = gpu.topk(t.as_standard_layout().as_slice().unwrap(), *k) {
-                                self.stack.push(Value::Result(TopKResult { indices: res.0, scores: res.1 }));
+                            if let Some(res) =
+                                gpu.topk(t.as_standard_layout().as_slice().unwrap(), *k)
+                            {
+                                self.stack.push(Value::Result(TopKResult {
+                                    indices: res.0,
+                                    scores: res.1,
+                                }));
                                 return Ok(None);
                             }
                         }
@@ -465,7 +511,10 @@ impl VM {
                         if let Some(gpu) = &self.gpu_context {
                             let s: Vec<f32> = t_f32.iter().map(|v| v.unwrap_or(f32::MIN)).collect();
                             if let Some(res) = gpu.topk(&s, *k) {
-                                self.stack.push(Value::Result(TopKResult { indices: res.0, scores: res.1 }));
+                                self.stack.push(Value::Result(TopKResult {
+                                    indices: res.0,
+                                    scores: res.1,
+                                }));
                                 return Ok(None);
                             }
                         }
@@ -486,7 +535,8 @@ impl VM {
                     _ => return Err("Invalid type for TopK".into()),
                 };
 
-                self.stack.push(Value::Result(TopKResult { indices, scores }));
+                self.stack
+                    .push(Value::Result(TopKResult { indices, scores }));
             }
             OpCode::Mmr(diversity) => {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
@@ -513,7 +563,8 @@ impl VM {
                     }
                     _ => return Err("Invalid type for MMR".into()),
                 };
-                self.stack.push(Value::Result(TopKResult { indices, scores }));
+                self.stack
+                    .push(Value::Result(TopKResult { indices, scores }));
             }
             OpCode::Rrf(k) => {
                 let _b = self.stack.pop().ok_or("Stack underflow")?;
@@ -526,13 +577,15 @@ impl VM {
                     1.0 / (61.0 + *k as f32),
                     1.0 / (62.0 + *k as f32),
                 ];
-                self.stack.push(Value::Result(TopKResult { indices, scores }));
+                self.stack
+                    .push(Value::Result(TopKResult { indices, scores }));
             }
             OpCode::CallDynamic(name, _args) => {
                 if name == "mock_dynamic" {
                     let indices = vec![100];
                     let scores = vec![0.99];
-                    self.stack.push(Value::Result(TopKResult { indices, scores }));
+                    self.stack
+                        .push(Value::Result(TopKResult { indices, scores }));
                 } else {
                     return Err(format!("Unknown dynamic strategy: {}", name));
                 }
@@ -596,102 +649,85 @@ impl VM {
                     _ => return Err("Expected Tensor2D for ColBERT query".to_string()),
                 };
 
-                // Clean up previous scores from docs plan
                 self.stack.pop();
 
-                // Get doc tokens from batch
                 let batch = self.batch.as_ref().ok_or("No record batch loaded")?;
-                let colbert_col = batch.column_by_name("colbert_tokens").ok_or("Missing colbert_tokens column")?;
-
-                let list_arr = colbert_col.as_any().downcast_ref::<arrow::array::ListArray>().ok_or("colbert_tokens is not a ListArray")?;
+                let colbert_col = batch
+                    .column_by_name("colbert_tokens")
+                    .ok_or("Missing colbert_tokens column")?;
+                let list_arr = colbert_col
+                    .as_any()
+                    .downcast_ref::<arrow::array::ListArray>()
+                    .ok_or("colbert_tokens is not a ListArray")?;
                 let num_docs = list_arr.len();
+                let dim = crate::arrow::COLBERT_DIM;
+                let num_q = query_tokens.shape()[0];
+                let query_std = query_tokens.as_standard_layout().to_owned();
+                let query_slice = query_std.as_slice().ok_or("Query not contiguous")?;
 
-                if let Some(gpu) = &self.gpu_context {
-                    // Collect all doc tokens into a single flat buffer and build offsets
-                    let mut all_doc_tokens = Vec::new();
-                    let mut colbert_offsets = Vec::new();
+                let mut doc_tokens = Vec::new();
+                let mut offsets = Vec::with_capacity(num_docs);
 
-                    for i in 0..num_docs {
-                         if list_arr.is_null(i) {
-                             colbert_offsets.push(crate::gpu::ColbertOffsets {
-                                 doc_start: (all_doc_tokens.len() / crate::arrow::COLBERT_DIM) as u32,
-                                 num_tokens: 0,
-                             });
-                             continue;
-                         }
-                         let doc_arr = list_arr.value(i);
-                         let doc_fixed = doc_arr.as_any().downcast_ref::<arrow::array::FixedSizeListArray>().ok_or("Not FixedSizeListArray")?;
-                         let doc_inner = doc_fixed.values();
-                         let doc_flat = doc_inner.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
-                         let offset = doc_fixed.value_offset(0) as usize;
-                         let len = doc_fixed.len() * crate::arrow::COLBERT_DIM;
-                         colbert_offsets.push(crate::gpu::ColbertOffsets {
-                             doc_start: (all_doc_tokens.len() / crate::arrow::COLBERT_DIM) as u32,
-                             num_tokens: doc_fixed.len() as u32,
-                         });
-                         all_doc_tokens.extend_from_slice(&doc_flat.values()[offset..offset+len]);
-                    }
-
-                    if let Some(res) = gpu.colbert_maxsim(
-                        query_tokens.as_standard_layout().as_slice().unwrap(),
-                        &all_doc_tokens,
-                        num_docs as u32,
-                        query_tokens.shape()[0] as u32,
-                        &colbert_offsets,
-                        crate::arrow::COLBERT_DIM as u32
-                    ) {
-                        self.stack.push(Value::Tensor1D(ndarray::Array1::from(res)));
-                        return Ok(None);
-                    }
-                }
-
-                let mut maxsim_scores = ndarray::Array1::<f32>::zeros(num_docs);
-
-                for doc_idx in 0..num_docs {
-                    if list_arr.is_null(doc_idx) {
+                for i in 0..num_docs {
+                    if list_arr.is_null(i) {
+                        offsets.push(crate::gpu::ColbertOffsets {
+                            doc_start: (doc_tokens.len() / dim) as u32,
+                            num_tokens: 0,
+                        });
                         continue;
                     }
-                    let doc_arr = list_arr.value(doc_idx);
-                    let doc_fixed = doc_arr.as_any().downcast_ref::<arrow::array::FixedSizeListArray>().ok_or("Not FixedSizeListArray")?;
-                    let doc_inner = doc_fixed.values();
-                    let doc_flat = doc_inner.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
-                    let offset = doc_fixed.value_offset(0) as usize; // Get offset for first token in this document
-
-                    let num_doc_tokens = doc_fixed.len();
-                    if num_doc_tokens == 0 {
-                        continue;
-                    }
-
-                    // SIMD-optimized dot product using ndarray
-                    // Extract the document's flat slice
-                    let doc_slice_start = offset;
-                    let doc_slice_end = offset + num_doc_tokens * crate::arrow::COLBERT_DIM;
-                    let doc_slice = &doc_flat.values()[doc_slice_start..doc_slice_end];
-
-                    // Create a 2D view: [num_doc_tokens, COLBERT_DIM]
-                    let doc_view = ndarray::ArrayView2::from_shape(
-                        (num_doc_tokens, crate::arrow::COLBERT_DIM),
-                        doc_slice
-                    ).unwrap();
-
-                    // Compute sim matrix: query_tokens @ doc_view.T -> shape [num_query_tokens, num_doc_tokens]
-                    // query_tokens shape is [num_query_tokens, COLBERT_DIM]
-                    let sim_matrix = query_tokens.dot(&doc_view.t());
-
-                    // Max pooling over the document tokens (axis 1), then sum over query tokens (axis 0)
-                    let maxsim_per_query = sim_matrix.fold_axis(ndarray::Axis(1), f32::NEG_INFINITY, |&max, &x| {
-                        if x > max { x } else { max }
+                    let doc_arr = list_arr.value(i);
+                    let doc_fixed = doc_arr
+                        .as_any()
+                        .downcast_ref::<arrow::array::FixedSizeListArray>()
+                        .ok_or("Not FixedSizeListArray")?;
+                    let doc_flat = doc_fixed
+                        .values()
+                        .as_any()
+                        .downcast_ref::<arrow::array::Float32Array>()
+                        .ok_or("Not Float32Array")?;
+                    let offset = doc_fixed.value_offset(0) as usize;
+                    let len = doc_fixed.len() * dim;
+                    offsets.push(crate::gpu::ColbertOffsets {
+                        doc_start: (doc_tokens.len() / dim) as u32,
+                        num_tokens: doc_fixed.len() as u32,
                     });
-
-                    let doc_score = maxsim_per_query.sum();
-                    maxsim_scores[doc_idx] = doc_score;
+                    doc_tokens.extend_from_slice(&doc_flat.values()[offset..offset + len]);
                 }
 
-                self.stack.push(Value::Tensor1D(maxsim_scores));
+                let scores = match self.backend {
+                    BackendSelector::Gpu => {
+                        if let Some(gpu) = &self.gpu_context {
+                            gpu.colbert_maxsim(
+                                query_slice,
+                                &doc_tokens,
+                                num_docs as u32,
+                                num_q as u32,
+                                &offsets,
+                                dim as u32,
+                            )
+                            .ok_or("GPU colbert_maxsim failed")?
+                        } else {
+                            return Err("Gpu backend selected but no GPU context available".into());
+                        }
+                    }
+                    BackendSelector::Simd => colbert_maxsim_simd(
+                        query_slice,
+                        &doc_tokens,
+                        &offsets,
+                        num_q,
+                        num_docs,
+                        dim,
+                    ),
+                    BackendSelector::Cpu => {
+                        colbert_maxsim_cpu(query_slice, &doc_tokens, &offsets, num_q, num_docs, dim)
+                    }
+                };
+
+                self.stack
+                    .push(Value::Tensor1D(ndarray::Array1::from(scores)));
             }
-            OpCode::RetrieveQdrant { .. }
-            | OpCode::RetrievePostgres
-            | OpCode::IfConfidence(..) => {
+            OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres | OpCode::IfConfidence(..) => {
                 return Err(
                     "I/O operations and branching must be handled by the orchestrator".into(),
                 );
@@ -701,20 +737,33 @@ impl VM {
     }
 
     /// Backwards compatibility run function for tests
-    pub fn run(&mut self, program: Program, instruction_count: &mut usize, max_instructions: usize) -> Result<Option<Value>, String> {
-        let _span = tracing::info_span!("vm_run", instructions = program.instructions.len()).entered();
+    pub fn run(
+        &mut self,
+        program: Program,
+        instruction_count: &mut usize,
+        max_instructions: usize,
+    ) -> Result<Option<Value>, String> {
+        let _span =
+            tracing::info_span!("vm_run", instructions = program.instructions.len()).entered();
         let start = std::time::Instant::now();
         let total = program.instructions.len();
 
         for instruction in program.instructions {
             if *instruction_count >= max_instructions {
-                return Err(format!("Execution error: Instruction limit exceeded ({})", max_instructions));
+                return Err(format!(
+                    "Execution error: Instruction limit exceeded ({})",
+                    max_instructions
+                ));
             }
             *instruction_count += 1;
 
             match instruction.op {
-                OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres | OpCode::IfConfidence(..) => {
-                    return Err("I/O operations and branching must be handled by the orchestrator".into());
+                OpCode::RetrieveQdrant { .. }
+                | OpCode::RetrievePostgres
+                | OpCode::IfConfidence(..) => {
+                    return Err(
+                        "I/O operations and branching must be handled by the orchestrator".into(),
+                    );
                 }
                 _ => {
                     if let Some(res) = self.step(&instruction.op)? {
@@ -730,6 +779,93 @@ impl VM {
         info!(elapsed = ?elapsed, total_instructions = total, "VM program completed");
         Ok(None)
     }
+}
+
+fn simd_dot_product(a: &[f32], b: &[f32]) -> f32 {
+    let len = a.len().min(b.len());
+    let mut sum = 0.0f32;
+    let mut i = 0;
+    while i + 4 <= len {
+        sum += a[i] * b[i] + a[i + 1] * b[i + 1] + a[i + 2] * b[i + 2] + a[i + 3] * b[i + 3];
+        i += 4;
+    }
+    while i < len {
+        sum += a[i] * b[i];
+        i += 1;
+    }
+    sum
+}
+
+pub fn colbert_maxsim_simd(
+    query_tokens: &[f32],
+    doc_tokens: &[f32],
+    offsets: &[crate::gpu::ColbertOffsets],
+    num_query_tokens: usize,
+    num_docs: usize,
+    dim: usize,
+) -> Vec<f32> {
+    let mut scores = vec![0.0f32; num_docs];
+    for doc_idx in 0..num_docs {
+        let offs = &offsets[doc_idx];
+        let num_doc_tokens = offs.num_tokens as usize;
+        if num_doc_tokens == 0 {
+            continue;
+        }
+        let doc_start = offs.doc_start as usize;
+        let mut doc_score = 0.0f32;
+        for q in 0..num_query_tokens {
+            let q_off = q * dim;
+            let mut max_sim = f32::NEG_INFINITY;
+            for d in 0..num_doc_tokens {
+                let d_off = (doc_start + d) * dim;
+                let sim = simd_dot_product(
+                    &query_tokens[q_off..q_off + dim],
+                    &doc_tokens[d_off..d_off + dim],
+                );
+                if sim > max_sim {
+                    max_sim = sim;
+                }
+            }
+            doc_score += max_sim;
+        }
+        scores[doc_idx] = doc_score;
+    }
+    scores
+}
+
+pub fn colbert_maxsim_cpu(
+    query_tokens: &[f32],
+    doc_tokens: &[f32],
+    offsets: &[crate::gpu::ColbertOffsets],
+    num_query_tokens: usize,
+    num_docs: usize,
+    dim: usize,
+) -> Vec<f32> {
+    let mut scores = vec![0.0f32; num_docs];
+    for doc_idx in 0..num_docs {
+        let offs = &offsets[doc_idx];
+        let num_doc_tokens = offs.num_tokens as usize;
+        if num_doc_tokens == 0 {
+            continue;
+        }
+        let doc_start = offs.doc_start as usize;
+        let mut doc_score = 0.0f32;
+        for q in 0..num_query_tokens {
+            let mut max_sim = -1e10f32;
+            for d in 0..num_doc_tokens {
+                let mut sim = 0.0f32;
+                for i in 0..dim {
+                    sim += query_tokens[q * dim + i] * doc_tokens[(doc_start + d) * dim + i];
+                }
+                if sim > max_sim {
+                    max_sim = sim;
+                }
+            }
+            doc_score += max_sim;
+        }
+        scores[doc_idx] = doc_score;
+    }
+    scores
 }
 
 #[cfg(test)]
@@ -987,7 +1123,10 @@ mod additional_tests {
 
         let res = vm.run(program, &mut instruction_count, max_instructions);
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err(), "Execution error: Instruction limit exceeded (5)");
+        assert_eq!(
+            res.unwrap_err(),
+            "Execution error: Instruction limit exceeded (5)"
+        );
         assert_eq!(instruction_count, 5);
     }
 }
@@ -1005,6 +1144,9 @@ mod io_rejection_tests {
 
         let res = vm.run(program, &mut 0, 10);
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err(), "I/O operations and branching must be handled by the orchestrator");
+        assert_eq!(
+            res.unwrap_err(),
+            "I/O operations and branching must be handled by the orchestrator"
+        );
     }
 }

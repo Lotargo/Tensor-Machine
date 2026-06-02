@@ -1,14 +1,12 @@
 use axum::{
-    extract::State,
-    http::{header, StatusCode},
-    routing::get,
     Router,
+    extract::State,
+    http::{StatusCode, header},
+    routing::get,
 };
-use prometheus::{
-    Encoder, Histogram, HistogramOpts, Opts, Registry, TextEncoder,
-};
-use std::sync::atomic::{AtomicBool, Ordering};
+use prometheus::{Encoder, Histogram, HistogramOpts, Opts, Registry, TextEncoder};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -30,9 +28,10 @@ impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
 
-        let request_counter = prometheus::Counter::with_opts(
-            Opts::new("tensor_rag_requests_total", "Total number of search requests"),
-        )
+        let request_counter = prometheus::Counter::with_opts(Opts::new(
+            "tensor_rag_requests_total",
+            "Total number of search requests",
+        ))
         .expect("failed to create request counter");
 
         let request_duration_seconds = Histogram::with_opts(
@@ -46,19 +45,22 @@ impl Metrics {
         )
         .expect("failed to create latency histogram");
 
-        let active_requests = prometheus::Gauge::with_opts(
-            Opts::new("tensor_rag_active_requests", "Number of active requests"),
-        )
+        let active_requests = prometheus::Gauge::with_opts(Opts::new(
+            "tensor_rag_active_requests",
+            "Number of active requests",
+        ))
         .expect("failed to create active requests gauge");
 
-        let search_results_total = prometheus::Counter::with_opts(
-            Opts::new("tensor_rag_search_results_total", "Total number of results returned"),
-        )
+        let search_results_total = prometheus::Counter::with_opts(Opts::new(
+            "tensor_rag_search_results_total",
+            "Total number of results returned",
+        ))
         .expect("failed to create results counter");
 
-        let failed_requests_total = prometheus::Counter::with_opts(
-            Opts::new("tensor_rag_failed_requests_total", "Total number of failed requests"),
-        )
+        let failed_requests_total = prometheus::Counter::with_opts(Opts::new(
+            "tensor_rag_failed_requests_total",
+            "Total number of failed requests",
+        ))
         .expect("failed to create failure counter");
 
         registry
@@ -166,6 +168,8 @@ pub async fn serve(
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async move { cancel.cancelled().await; })
+        .with_graceful_shutdown(async move {
+            cancel.cancelled().await;
+        })
         .await
 }

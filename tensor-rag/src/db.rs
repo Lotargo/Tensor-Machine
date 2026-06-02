@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::RwLock;
-use std::time::Instant;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 pub struct CircuitBreaker {
     failures: AtomicU32,
@@ -24,7 +24,7 @@ impl CircuitBreaker {
         if self.failures.load(Ordering::SeqCst) >= self.threshold {
             let last = *self.last_failure.read().unwrap();
             if let Some(time) = last {
-                return time.elapsed().as_secs() < self.reset_timeout_secs
+                return time.elapsed().as_secs() < self.reset_timeout_secs;
             }
             return true;
         }
@@ -336,7 +336,10 @@ impl DbPools {
     /// Fetches metadata from Postgres for the given ids
     pub async fn fetch_metadata(&self, ids: &[usize]) -> Vec<String> {
         if self.postgres_cb.is_open() {
-            return ids.iter().map(|id| format!("Metadata for doc {}", id)).collect();
+            return ids
+                .iter()
+                .map(|id| format!("Metadata for doc {}", id))
+                .collect();
         }
         if let Some(pool) = &self.postgres {
             use sqlx::Row;

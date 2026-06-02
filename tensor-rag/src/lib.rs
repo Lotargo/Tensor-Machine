@@ -63,7 +63,15 @@ mod tests {
 
             let start = std::time::Instant::now();
             let mut instruction_count = 0;
-            let _ = mcp::execute_program(&program, &mut vm, &db_pools, &mut instruction_count, 100_000).await.unwrap();
+            let _ = mcp::execute_program(
+                &program,
+                &mut vm,
+                &db_pools,
+                &mut instruction_count,
+                100_000,
+            )
+            .await
+            .unwrap();
             latencies.push(start.elapsed().as_micros());
         }
 
@@ -132,11 +140,11 @@ mod tests {
 }
 
 pub mod arrow;
-pub mod gpu;
 pub mod dsl;
 pub mod flight;
-pub mod router;
+pub mod gpu;
 pub mod metrics;
-pub mod shared_memory;
 #[allow(non_snake_case)]
 pub mod result_generated;
+pub mod router;
+pub mod shared_memory;

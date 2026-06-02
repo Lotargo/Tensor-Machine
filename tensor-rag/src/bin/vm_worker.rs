@@ -5,8 +5,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::Arc;
 
 use tensor_rag::ir::Program;
-use tensor_rag::vm::{IpcValue, VmRequest, VmResponse, VmExecutionPayload, VmResultPayload, VM};
 use tensor_rag::shared_memory::SharedMemoryManager;
+use tensor_rag::vm::{IpcValue, VM, VmExecutionPayload, VmRequest, VmResponse, VmResultPayload};
 
 fn handle_client(mut stream: UnixStream) {
     loop {
@@ -38,7 +38,11 @@ fn handle_client(mut stream: UnixStream) {
         };
 
         match req {
-                        VmRequest::Execute { session_id, sequence, shm_name } => {
+            VmRequest::Execute {
+                session_id,
+                sequence,
+                shm_name,
+            } => {
                 let shm = SharedMemoryManager::new();
                 let payload: VmExecutionPayload = match shm.open(&shm_name) {
                     Ok(region) => {
@@ -48,7 +52,14 @@ fn handle_client(mut stream: UnixStream) {
                         bincode::deserialize(&buf).unwrap()
                     }
                     Err(e) => {
-                        send_response(&mut stream, &VmResponse::Error { session_id, sequence, message: e });
+                        send_response(
+                            &mut stream,
+                            &VmResponse::Error {
+                                session_id,
+                                sequence,
+                                message: e,
+                            },
+                        );
                         continue;
                     }
                 };
@@ -66,23 +77,37 @@ fn handle_client(mut stream: UnixStream) {
                     &mut vm,
                     &db_pools,
                     &mut instruction_count,
-                    max_instructions
+                    max_instructions,
                 ));
 
                 let resp = match result {
                     Ok(val) => {
-                        let res_payload = VmResultPayload { value: val.map(|v| IpcValue::from(&v)) };
+                        let res_payload = VmResultPayload {
+                            value: val.map(|v| IpcValue::from(&v)),
+                        };
                         let out_shm_name = format!("{}_out", shm_name);
                         if let Ok(region) = shm.allocate(&out_shm_name) {
                             let mut file = region.get_file_for_write().unwrap();
                             let encoded = bincode::serialize(&res_payload).unwrap();
                             file.write_all(&encoded).unwrap();
-                            VmResponse::Result { session_id, sequence, shm_name: out_shm_name }
+                            VmResponse::Result {
+                                session_id,
+                                sequence,
+                                shm_name: out_shm_name,
+                            }
                         } else {
-                            VmResponse::Error { session_id, sequence, message: "Failed to allocate SHM for result".into() }
+                            VmResponse::Error {
+                                session_id,
+                                sequence,
+                                message: "Failed to allocate SHM for result".into(),
+                            }
                         }
+                    }
+                    Err(e) => VmResponse::Error {
+                        session_id,
+                        sequence,
+                        message: e,
                     },
-                    Err(e) => VmResponse::Error { session_id, sequence, message: e }
                 };
 
                 send_response(&mut stream, &resp);

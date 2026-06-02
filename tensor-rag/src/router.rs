@@ -1,13 +1,13 @@
+use crate::mcp::{McpRequest, McpResponse};
 use axum::{
-    extract::{State, Json},
-    routing::post,
     Router,
+    extract::{Json, State},
+    routing::post,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use crate::mcp::{McpRequest, McpResponse};
-use tracing::{info, error};
+use tracing::{error, info};
 
 pub struct AppState {
     // Session sticky map: Maps session_id to the worker's Sender
@@ -43,7 +43,10 @@ async fn handle_mcp(
                 error!("No workers available");
                 return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
             }
-            let idx = state.next_worker.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % workers_len;
+            let idx = state
+                .next_worker
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                % workers_len;
             let new_sender = state.workers[idx].clone();
 
             // Store the sticky assignment
