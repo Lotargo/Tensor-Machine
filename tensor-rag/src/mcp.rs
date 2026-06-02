@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Instant;
+use tracing::{error, info};
 
 
 /// An incoming request from an LLM Agent using the Model Context Protocol.
@@ -34,6 +35,7 @@ pub trait ToolHandler: Send + Sync {
         &'a self,
         args: JsonValue,
         db_pools: &'a crate::db::DbPools,
+        metrics: Option<Arc<crate::metrics::Metrics>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 }
 
@@ -98,6 +100,7 @@ impl ToolHandler for SearchTool {
         &'a self,
         args: JsonValue,
         db_pools: &'a crate::db::DbPools,
+        metrics: Option<Arc<crate::metrics::Metrics>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
             let ast = if let Some(dsl_string) = args.get("dsl").and_then(|v| v.as_str()) {
@@ -127,7 +130,7 @@ impl ToolHandler for SearchTool {
                     // Note: The indices are cast to i32 to match the FlatBuffers schema ([int]).
                     // This is safe for now, but will silently truncate if the index exceeds 2^31-1.
                     let indices_i32: Vec<i32> =
-                        topk.indices.into_iter().map(|idx| idx as i32).collect();
+                        topk.indices.iter().map(|&idx| idx as i32).collect();
 
                     let top_indices_vec = fbb.create_vector(&indices_i32);
                     let top_scores_vec = fbb.create_vector(&topk.scores);
@@ -143,9 +146,18 @@ impl ToolHandler for SearchTool {
                         );
                     fbb.finish(result_offset, None);
 
+            if let Some(m) = &metrics {
+                m.inc_results(topk.indices.len() as u64);
+            }
+
                     Ok(fbb.finished_data().to_vec())
                 }
-                _ => Err("VM did not return a valid TopKResult".to_string()),
+        _ => {
+            if let Some(m) = &metrics {
+                m.inc_failures();
+            }
+            Err("VM did not return a valid TopKResult".to_string())
+        }
             }
         })
     }
@@ -161,21 +173,23 @@ pub struct McpServer {
     sessions: HashMap<String, McpSession>,
     pub db_pools: Arc<crate::db::DbPools>,
     pub rate_limiter: Arc<RateLimiter>,
+    pub metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
 impl Default for McpServer {
     fn default() -> Self {
-        Self::new(Arc::new(crate::db::DbPools::new()))
+        Self::new(Arc::new(crate::db::DbPools::new()), None)
     }
 }
 
 impl McpServer {
-    pub fn new(db_pools: Arc<crate::db::DbPools>) -> Self {
+    pub fn new(db_pools: Arc<crate::db::DbPools>, metrics: Option<Arc<crate::metrics::Metrics>>) -> Self {
         Self {
             tools: HashMap::new(),
             sessions: HashMap::new(),
             db_pools,
             rate_limiter: Arc::new(RateLimiter::new(100, 100.0)), // 100 req/sec
+            metrics,
         }
     }
 
@@ -219,13 +233,31 @@ impl McpServer {
         }
 
         if let Some(handler) = self.tools.get(&tool) {
-            match handler.handle(args, &self.db_pools).await {
+            let start = Instant::now();
+            if let Some(m) = &self.metrics {
+                m.inc_requests();
+                m.inc_active();
+            }
+
+            let result = handler.handle(args, &self.db_pools, self.metrics.clone()).await;
+
+            if let Some(m) = &self.metrics {
+                m.dec_active();
+                m.observe_latency(start.elapsed().as_secs_f64());
+            }
+
+            match result {
                 Ok(body) => Ok(McpResponse {
                     status: 200,
                     body,
                     sequence_number: seq_num,
                 }),
-                Err(err) => Err(err),
+                Err(err) => {
+                    if let Some(m) = &self.metrics {
+                        m.inc_failures();
+                    }
+                    Err(err)
+                }
             }
         } else {
             Err(format!("Tool not found: {}", tool))
@@ -235,7 +267,7 @@ impl McpServer {
         loop {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
-                    println!("Shutdown signal received, shutting down gracefully...");
+                    info!("Shutdown signal received, shutting down gracefully...");
                     // Graceful shutdown can wait for active connections here
                     break;
                 }
@@ -244,7 +276,7 @@ impl McpServer {
                         Some(request) => {
                             match self.handle_request(request).await {
                                 Ok(_) => {},
-                                Err(e) => println!("Error handling request: {}", e),
+                                Err(e) => error!("Error handling request: {}", e),
                             }
                         }
                         None => break, // Channel closed

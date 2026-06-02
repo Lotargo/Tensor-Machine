@@ -27,7 +27,7 @@ mod tests {
         let tool = mcp::SearchTool;
         let db_pools = crate::db::DbPools::new();
         let response_bytes = tool
-            .handle(request_json, &db_pools)
+            .handle(request_json, &db_pools, None)
             .await
             .expect("Tool handler failed");
 
@@ -99,7 +99,7 @@ mod tests {
     async fn test_10k_mcp_sessions() {
         // Task 1.5.4: Test memory footprint of 10k MCP sessions
         let db_pools = Arc::new(crate::db::DbPools::new());
-        let mut server = mcp::McpServer::new(db_pools);
+        let mut server = mcp::McpServer::new(db_pools, None);
 
         let initial_rss = get_rss_mb();
 
@@ -134,6 +134,7 @@ mod tests {
 pub mod arrow;
 pub mod gpu;
 pub mod dsl;
+pub mod metrics;
 pub mod shared_memory;
 #[allow(non_snake_case)]
 pub mod result_generated;

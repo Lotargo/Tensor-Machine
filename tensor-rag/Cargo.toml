@@ -19,10 +19,18 @@ qdrant-client = "1.13.0"
 tokio-util = { version = "0.7.18", features = ["full"] }
 wgpu = "29.0.3"
 bytemuck = "1.25.0"
+axum = "0.7"
+prometheus = { version = "0.13", features = ["process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 criterion = "0.5"
 
 [[bench]]
 name = "zero_copy"
+harness = false
+
+[[bench]]
+name = "colbert"
 harness = false
