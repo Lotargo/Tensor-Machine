@@ -1,7 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use reqwest::Client;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::Instant;
 
 // This stress test will start the mcp load balancer and send lots of requests
@@ -32,7 +32,9 @@ fn stress_test_router(c: &mut Criterion) {
             }
 
             let app_state = std::sync::Arc::new(tensor_rag::router::AppState {
-                sessions: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                sessions: std::sync::Arc::new(std::sync::RwLock::new(
+                    std::collections::HashMap::new(),
+                )),
                 workers: worker_senders,
                 next_worker: std::sync::atomic::AtomicUsize::new(0),
             });
@@ -83,7 +85,8 @@ fn stress_test_router(c: &mut Criterion) {
                             // Wait, if we start the server in `main.rs`, `cargo bench` won't run `main.rs`.
                             // So this bench function would fail connecting to 8080!
 
-                            let res = client.post("http://127.0.0.1:8080/mcp")
+                            let res = client
+                                .post("http://127.0.0.1:8080/mcp")
                                 .json(&req)
                                 .send()
                                 .await;

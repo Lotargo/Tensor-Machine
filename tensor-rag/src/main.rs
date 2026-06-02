@@ -1,8 +1,8 @@
 use std::sync::Arc;
+use tensor_rag::db::DbPools;
+use tensor_rag::mcp::{McpRequest, McpServer};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tensor_rag::mcp::{McpServer, McpRequest};
-use tensor_rag::db::DbPools;
 use tracing::info;
 
 #[tokio::main]
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::Command::new("cargo")
                 .args(["run", "--bin", "vm_worker"])
                 .spawn()
-                .expect("Failed to spawn vm_worker process")
+                .expect("Failed to spawn vm_worker process"),
         );
         // Wait briefly for the socket to bind
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -56,6 +56,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let num_workers = 4;
     let mut worker_senders = Vec::new();
+
+    // Start Arrow Flight Service
+    let flight_cancel = cancel_token.clone();
+    tokio::spawn(async move {
+        let flight_addr =
+            std::env::var("ARROW_FLIGHT_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
+        if let Ok(addr) = flight_addr.parse() {
+            tracing::info!("Starting Arrow Flight Service on {}", addr);
+            let service = tensor_rag::flight::TensorFlightService::new();
+            if let Err(e) = tonic::transport::Server::builder()
+                .add_service(arrow_flight::flight_service_server::FlightServiceServer::new(service))
+                .serve_with_shutdown(addr, async {
+                    flight_cancel.cancelled().await;
+                })
+                .await
+            {
+                tracing::error!("Flight server error: {}", e);
+            }
+        }
+    });
 
     info!("Starting {} MCP Server instances.", num_workers);
     for i in 0..num_workers {

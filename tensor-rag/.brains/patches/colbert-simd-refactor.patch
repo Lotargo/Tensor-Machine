@@ -1,0 +1,123 @@
+diff --git a/tensor-rag/benches/colbert.rs b/tensor-rag/benches/colbert.rs
+index 3f85f0a..cbc68b4 100644
+--- a/tensor-rag/benches/colbert.rs
++++ b/tensor-rag/benches/colbert.rs
+@@ -1,6 +1,6 @@
+ use criterion::{black_box, criterion_group, criterion_main, Criterion};
+ use tensor_rag::gpu::{ColbertOffsets, GpuContext};
+-use tensor_rag::vm::{colbert_maxsim_cpu, colbert_maxsim_simd};
++use tensor_rag::vm::colbert_maxsim_simd;
+
+ const DIM: u32 = 128;
+ const NUM_Q: u32 = 32;
+@@ -42,20 +42,7 @@ fn bench_colbert_maxsim(c: &mut Criterion) {
+
+     let mut group = c.benchmark_group("colbert_maxsim_100docs");
+
+-    group.bench_function("cpu_triple_loop", |b| {
+-        b.iter(|| {
+-            black_box(colbert_maxsim_cpu(
+-                black_box(&query_tokens),
+-                black_box(&doc_tokens),
+-                black_box(&offsets),
+-                black_box(NUM_Q as usize),
+-                black_box(NUM_DOCS as usize),
+-                black_box(DIM as usize),
+-            ))
+-        });
+-    });
+-
+-    group.bench_function("simd_ndarray", |b| {
++    group.bench_function("cpu_simd", |b| {
+         b.iter(|| {
+             black_box(colbert_maxsim_simd(
+                 black_box(&query_tokens),
+@@ -69,6 +56,7 @@ fn bench_colbert_maxsim(c: &mut Criterion) {
+     });
+
+     if let Some(ref gpu) = gpu {
++        // Warmup to ensure GPU buffers are initialized
+         let _ = gpu.colbert_maxsim_variant(&query_tokens, &doc_tokens, NUM_DOCS, NUM_Q, &offsets, DIM, true);
+         let _ = gpu.colbert_maxsim_variant(&query_tokens, &doc_tokens, NUM_DOCS, NUM_Q, &offsets, DIM, false);
+
+diff --git a/tensor-rag/src/vm.rs b/tensor-rag/src/vm.rs
+index b4b98e9..305e2b8 100644
+--- a/tensor-rag/src/vm.rs
++++ b/tensor-rag/src/vm.rs
+@@ -11,6 +11,12 @@ pub enum BackendSelector {
+     Gpu,
+ }
+
++impl BackendSelector {
++    pub fn all() -> [BackendSelector; 3] {
++        [BackendSelector::Cpu, BackendSelector::Simd, BackendSelector::Gpu]
++    }
++}
++
+ #[derive(Debug, Clone)]
+ pub enum Value {
+     Scalar(f32),
+@@ -708,6 +714,24 @@ impl VM {
+     }
+ }
+
++fn simd_dot_product(a: &[f32], b: &[f32]) -> f32 {
++    let len = a.len().min(b.len());
++    let mut sum = 0.0f32;
++    let mut i = 0;
++    while i + 4 <= len {
++        sum += a[i] * b[i]
++            + a[i + 1] * b[i + 1]
++            + a[i + 2] * b[i + 2]
++            + a[i + 3] * b[i + 3];
++        i += 4;
++    }
++    while i < len {
++        sum += a[i] * b[i];
++        i += 1;
++    }
++    sum
++}
++
+ pub fn colbert_maxsim_simd(
+     query_tokens: &[f32],
+     doc_tokens: &[f32],
+@@ -717,7 +741,6 @@ pub fn colbert_maxsim_simd(
+     dim: usize,
+ ) -> Vec<f32> {
+     let mut scores = vec![0.0f32; num_docs];
+-    let q_view = ndarray::ArrayView2::from_shape((num_query_tokens, dim), query_tokens).unwrap();
+     for doc_idx in 0..num_docs {
+         let offs = &offsets[doc_idx];
+         let num_doc_tokens = offs.num_tokens as usize;
+@@ -725,13 +748,23 @@ pub fn colbert_maxsim_simd(
+             continue;
+         }
+         let doc_start = offs.doc_start as usize;
+-        let doc_slice = &doc_tokens[doc_start * dim..(doc_start + num_doc_tokens) * dim];
+-        let d_view = ndarray::ArrayView2::from_shape((num_doc_tokens, dim), doc_slice).unwrap();
+-        let sim_matrix = q_view.dot(&d_view.t());
+-        let maxsim = sim_matrix.fold_axis(ndarray::Axis(1), f32::NEG_INFINITY, |&max, &x| {
+-            if x > max { x } else { max }
+-        });
+-        scores[doc_idx] = maxsim.sum();
++        let mut doc_score = 0.0f32;
++        for q in 0..num_query_tokens {
++            let q_off = q * dim;
++            let mut max_sim = f32::NEG_INFINITY;
++            for d in 0..num_doc_tokens {
++                let d_off = (doc_start + d) * dim;
++                let sim = simd_dot_product(
++                    &query_tokens[q_off..q_off + dim],
++                    &doc_tokens[d_off..d_off + dim],
++                );
++                if sim > max_sim {
++                    max_sim = sim;
++                }
++            }
++            doc_score += max_sim;
++        }
++        scores[doc_idx] = doc_score;
+     }
+     scores
+ }

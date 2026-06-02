@@ -146,38 +146,38 @@
 > **Статус:** Все фазы 1–5 завершены (скелеты работают). Фаза 6 заменяет синтетические заглушки реальной логикой и харденит конфигурацию для продакшна.
 > Детальный план: `dev_docs/next_phase_plan.md`
 
-- [ ] **6.1 Настоящий MMR-алгоритм**
-  - [ ] 6.1.1 Реализовать вычисление попарной косинусной близости через dot-произведение векторов
-  - [ ] 6.1.2 Реализовать жадный цикл отбора: `mmr = λ·rel(i) − (1−λ)·max_{j∈S} sim(i,j)`
-  - [ ] 6.1.3 Написать юнит-тест с 4 известными векторами: проверить диверсификацию
-- [ ] **6.2 Настоящий RRF-алгоритм**
-  - [ ] 6.2.1 Реализовать `rrf_fusion(rankings, k)`: `score = Σ 1/(k + rank_i(d))`
-  - [ ] 6.2.2 Поддержать N≥2 входных ранжирований (сейчас только 2)
-  - [ ] 6.2.3 Написать юнит-тест с известными ранжированиями
-- [ ] **6.3 Arrow Flight Service**
-  - [ ] 6.3.1 Реализовать `do_put`: приём `FlightData` → сборка `RecordBatch` → реестр
-  - [ ] 6.3.2 Реализовать `do_get`: `Ticket` → поиск в реестре → стрим `FlightData`
-  - [ ] 6.3.3 Реализовать `do_exchange`: двунаправленный стрим для обмена между инстансами
-  - [ ] 6.3.4 Реализовать `get_flight_info` / `get_schema` / `handshake`
-  - [ ] 6.3.5 Заглушить `list_flights` / `poll_flight_info` / `do_action` / `list_actions`
-  - [ ] 6.3.6 Подключить Flight-сервер (gRPC) в `main.rs` на отдельном порту
-  - [ ] 6.3.7 Интеграционный тест: `do_put` → `do_get` roundtrip
-- [ ] **6.4 Реальный ML-сервер эмбеддингов**
-  - [ ] 6.4.1 Определить интерфейс (OpenAI-compatible `/v1/embeddings` REST или gRPC proto)
-  - [ ] 6.4.2 Реализовать вызов ML-сервера в `get_embedding()` при наличии `ml_servers`
-  - [ ] 6.4.3 Добавить `embedding_dim: usize` в `DbPoolsConfig` (вместо хардкода 768)
-  - [ ] 6.4.4 Пробросить эмбеддинг в `SearchTool` (`mcp.rs`)
-  - [ ] 6.4.5 Юнит-тест с mock-сервером
-- [ ] **6.5 ColBERT SIMD-путь**
-  - [ ] 6.5.1 Выделить CPU ndarray-логику в `colbert_maxsim_simd()` как именованную функцию
-  - [ ] 6.5.2 Добавить `BackendSelector::Simd` в переключатель CPU/GPU
-  - [ ] 6.5.3 Написать criterion-бенчмарк (`benches/colbert.rs`) со сценариями sparse/medium/dense/mixed
-  - [ ] 6.5.4 Сравнить GPU naive vs GPU tiled vs CPU SIMD
-- [ ] **6.6 Конфигурация через переменные окружения**
-  - [ ] 6.6.1 `MCP_RATE_LIMIT` (env var, default 100) + per-session rate limiter
-  - [ ] 6.6.2 `CB_FAILURE_THRESHOLD` / `CB_COOLDOWN_SECS` для circuit breaker
-  - [ ] 6.6.3 `QDRANT_COLLECTION` (env var, default "default")
-  - [ ] 6.6.4 Экспозировать состояние circuit breaker как Prometheus-метрику
-- [ ] **6.7 Замена panic! на Err в DSL**
-  - [ ] 6.7.1 Заменить 13 `panic!(...)` в `dsl.rs` на `return Err(...)`
-  - [ ] 6.7.2 Проверить, что все существующие тесты проходят
+- [x] **6.1 Настоящий MMR-алгоритм**
+  - [x] 6.1.1 Реализовать вычисление попарной косинусной близости через dot-произведение векторов
+  - [x] 6.1.2 Реализовать жадный цикл отбора: `mmr = λ·rel(i) − (1−λ)·max_{j∈S} sim(i,j)`
+  - [x] 6.1.3 Написать юнит-тест с 4 известными векторами: проверить диверсификацию
+- [x] **6.2 Настоящий RRF-алгоритм**
+  - [x] 6.2.1 Реализовать `rrf_fusion(rankings, k)`: `score = Σ 1/(k + rank_i(d))`
+  - [x] 6.2.2 Поддержать N≥2 входных ранжирований (сейчас только 2)
+  - [x] 6.2.3 Написать юнит-тест с известными ранжированиями
+- [x] **6.3 Arrow Flight Service**
+  - [x] 6.3.1 Реализовать `do_put`: приём `FlightData` → сборка `RecordBatch` → реестр
+  - [x] 6.3.2 Реализовать `do_get`: `Ticket` → поиск в реестре → стрим `FlightData`
+  - [x] 6.3.3 Реализовать `do_exchange`: двунаправленный стрим для обмена между инстансами
+  - [x] 6.3.4 Реализовать `get_flight_info` / `get_schema` / `handshake`
+  - [x] 6.3.5 Заглушить `list_flights` / `poll_flight_info` / `do_action` / `list_actions`
+  - [x] 6.3.6 Подключить Flight-сервер (gRPC) в `main.rs` на отдельном порту
+  - [x] 6.3.7 Интеграционный тест: `do_put` → `do_get` roundtrip
+- [x] **6.4 Реальный ML-сервер эмбеддингов**
+  - [x] 6.4.1 Определить интерфейс (OpenAI-compatible `/v1/embeddings` REST или gRPC proto)
+  - [x] 6.4.2 Реализовать вызов ML-сервера в `get_embedding()` при наличии `ml_servers`
+  - [x] 6.4.3 Добавить `embedding_dim: usize` в `DbPoolsConfig` (вместо хардкода 768)
+  - [x] 6.4.4 Пробросить эмбеддинг в `SearchTool` (`mcp.rs`)
+  - [x] 6.4.5 Юнит-тест с mock-сервером
+- [x] **6.5 ColBERT SIMD-путь**
+  - [x] 6.5.1 Выделить CPU ndarray-логику в `colbert_maxsim_simd()` как именованную функцию
+  - [x] 6.5.2 Добавить `BackendSelector::Simd` в переключатель CPU/GPU
+  - [x] 6.5.3 Написать criterion-бенчмарк (`benches/colbert.rs`) со сценариями sparse/medium/dense/mixed
+  - [x] 6.5.4 Сравнить GPU naive vs GPU tiled vs CPU SIMD
+- [x] **6.6 Конфигурация через переменные окружения**
+  - [x] 6.6.1 `MCP_RATE_LIMIT` (env var, default 100) + per-session rate limiter
+  - [x] 6.6.2 `CB_FAILURE_THRESHOLD` / `CB_COOLDOWN_SECS` для circuit breaker
+  - [x] 6.6.3 `QDRANT_COLLECTION` (env var, default "default")
+  - [x] 6.6.4 Экспозировать состояние circuit breaker как Prometheus-метрику
+- [x] **6.7 Замена panic! на Err в DSL**
+  - [x] 6.7.1 Заменить 13 `panic!(...)` в `dsl.rs` на `return Err(...)`
+  - [x] 6.7.2 Проверить, что все существующие тесты проходят

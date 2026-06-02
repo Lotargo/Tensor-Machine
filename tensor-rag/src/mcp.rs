@@ -1,12 +1,11 @@
-use tokio_util::sync::CancellationToken;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Instant;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
 
 /// An incoming request from an LLM Agent using the Model Context Protocol.
 #[derive(Debug, Deserialize, Serialize)]
@@ -52,7 +51,6 @@ pub trait ToolHandler: Send + Sync {
         metrics: Option<Arc<crate::metrics::Metrics>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 }
-
 
 /// Simple Token Bucket Rate Limiter
 pub struct RateLimiter {
@@ -107,11 +105,10 @@ impl McpSession {
     }
 }
 
-
-use std::os::unix::net::UnixStream;
-use std::io::{Read, Write};
-use crate::vm::{VmRequest, VmResponse, IpcValue, VmExecutionPayload, VmResultPayload};
 use crate::shared_memory::SharedMemoryManager;
+use crate::vm::{IpcValue, VmExecutionPayload, VmRequest, VmResponse, VmResultPayload};
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 
 pub struct VmIpcClient {
     socket_path: String,
@@ -135,14 +132,18 @@ impl VmIpcClient {
         let shm_manager = SharedMemoryManager::new();
         let shm_name = format!("req_{}_{}", session_id, sequence);
 
-        let req_payload = VmExecutionPayload { program, query_vector };
-        let encoded = bincode::serialize(&req_payload)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let req_payload = VmExecutionPayload {
+            program,
+            query_vector,
+        };
+        let encoded =
+            bincode::serialize(&req_payload).map_err(|e| format!("Serialization error: {}", e))?;
 
         let region = shm_manager.allocate(&shm_name)?;
         {
             let mut file = region.get_file_for_write()?;
-            file.write_all(&encoded).map_err(|e| format!("Write error: {}", e))?;
+            file.write_all(&encoded)
+                .map_err(|e| format!("Write error: {}", e))?;
         }
 
         let req = VmRequest::Execute {
@@ -157,31 +158,37 @@ impl VmIpcClient {
         stream.write_all(&payload).unwrap();
 
         let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).map_err(|e| format!("Read len error: {}", e))?;
+        stream
+            .read_exact(&mut len_buf)
+            .map_err(|e| format!("Read len error: {}", e))?;
         let len = u32::from_le_bytes(len_buf) as usize;
 
         let mut resp_payload = vec![0u8; len];
-        stream.read_exact(&mut resp_payload).map_err(|e| format!("Read payload error: {}", e))?;
+        stream
+            .read_exact(&mut resp_payload)
+            .map_err(|e| format!("Read payload error: {}", e))?;
 
         let resp: VmResponse = bincode::deserialize(&resp_payload).unwrap();
 
         let _ = region.destroy();
 
         match resp {
-            VmResponse::Result { shm_name: out_shm, .. } => {
+            VmResponse::Result {
+                shm_name: out_shm, ..
+            } => {
                 let out_region = shm_manager.open(&out_shm)?;
                 let mut file = out_region.get_file_for_read()?;
                 let mut buf = Vec::new();
-                file.read_to_end(&mut buf).map_err(|e| format!("Read out error: {}", e))?;
+                file.read_to_end(&mut buf)
+                    .map_err(|e| format!("Read out error: {}", e))?;
 
-                let res_payload: VmResultPayload = bincode::deserialize(&buf).map_err(|e| format!("Deserialization error: {}", e))?;
+                let res_payload: VmResultPayload = bincode::deserialize(&buf)
+                    .map_err(|e| format!("Deserialization error: {}", e))?;
                 let _ = out_region.destroy();
 
                 Ok(res_payload.value.map(|v| crate::vm::Value::from(v)))
             }
-            VmResponse::Error { message, .. } => {
-                Err(message)
-            }
+            VmResponse::Error { message, .. } => Err(message),
             _ => Err("Unexpected response type".to_string()),
         }
     }
@@ -217,9 +224,15 @@ impl ToolHandler for SearchTool {
                 let client = VmIpcClient::new("/tmp/tensor_rag_vm.sock".to_string());
                 client.execute_program("default_session", 0, program, vm.query_vector.to_vec())
             } else {
-                execute_program(&program, &mut vm, db_pools, &mut instruction_count, max_instructions)
-                    .await
-                    .map_err(|e| format!("Execution error: {}", e))
+                execute_program(
+                    &program,
+                    &mut vm,
+                    db_pools,
+                    &mut instruction_count,
+                    max_instructions,
+                )
+                .await
+                .map_err(|e| format!("Execution error: {}", e))
             }?;
 
             match result {
@@ -245,18 +258,18 @@ impl ToolHandler for SearchTool {
                         );
                     fbb.finish(result_offset, None);
 
-            if let Some(m) = &metrics {
-                m.inc_results(topk.indices.len() as u64);
-            }
+                    if let Some(m) = &metrics {
+                        m.inc_results(topk.indices.len() as u64);
+                    }
 
                     Ok(fbb.finished_data().to_vec())
                 }
-        _ => {
-            if let Some(m) = &metrics {
-                m.inc_failures();
-            }
-            Err("VM did not return a valid TopKResult".to_string())
-        }
+                _ => {
+                    if let Some(m) = &metrics {
+                        m.inc_failures();
+                    }
+                    Err("VM did not return a valid TopKResult".to_string())
+                }
             }
         })
     }
@@ -282,7 +295,10 @@ impl Default for McpServer {
 }
 
 impl McpServer {
-    pub fn new(db_pools: Arc<crate::db::DbPools>, metrics: Option<Arc<crate::metrics::Metrics>>) -> Self {
+    pub fn new(
+        db_pools: Arc<crate::db::DbPools>,
+        metrics: Option<Arc<crate::metrics::Metrics>>,
+    ) -> Self {
         Self {
             tools: HashMap::new(),
             sessions: HashMap::new(),
@@ -338,7 +354,9 @@ impl McpServer {
                 m.inc_active();
             }
 
-            let result = handler.handle(args, &self.db_pools, self.metrics.clone()).await;
+            let result = handler
+                .handle(args, &self.db_pools, self.metrics.clone())
+                .await;
 
             if let Some(m) = &self.metrics {
                 m.dec_active();
@@ -362,7 +380,11 @@ impl McpServer {
             Err(format!("Tool not found: {}", tool))
         }
     }
-    pub async fn run_server(&mut self, mut rx: mpsc::Receiver<McpRequest>, cancel_token: CancellationToken) {
+    pub async fn run_server(
+        &mut self,
+        mut rx: mpsc::Receiver<McpRequest>,
+        cancel_token: CancellationToken,
+    ) {
         loop {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
@@ -402,7 +424,10 @@ pub fn execute_program<'a>(
     Box::pin(async move {
         for op in &program.instructions {
             if *instruction_count >= max_instructions {
-                return Err(format!("Execution error: Instruction limit exceeded ({})", max_instructions));
+                return Err(format!(
+                    "Execution error: Instruction limit exceeded ({})",
+                    max_instructions
+                ));
             }
             *instruction_count += 1;
 
@@ -476,7 +501,15 @@ pub fn execute_program<'a>(
                         low_plan
                     };
 
-                    if let Some(res) = execute_program(branch_plan, vm, db_pools, instruction_count, max_instructions).await? {
+                    if let Some(res) = execute_program(
+                        branch_plan,
+                        vm,
+                        db_pools,
+                        instruction_count,
+                        max_instructions,
+                    )
+                    .await?
+                    {
                         return Ok(Some(res));
                     }
                 }

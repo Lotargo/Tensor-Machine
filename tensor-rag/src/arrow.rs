@@ -1,12 +1,12 @@
+use arrow::ipc::reader::FileReader;
+use arrow::ipc::writer::FileWriter;
 use arrow::{
-    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, StringArray, ListArray},
+    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, ListArray, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use ndarray::Array1;
 use std::sync::Arc;
-use arrow::ipc::writer::FileWriter;
-use arrow::ipc::reader::FileReader;
 
 pub const VECTOR_DIM: usize = 768;
 pub const COLBERT_DIM: usize = 128;
@@ -22,7 +22,10 @@ pub fn build_schema() -> Arc<Schema> {
         Field::new("id", DataType::Int64, false),
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), VECTOR_DIM as i32),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                VECTOR_DIM as i32,
+            ),
             false,
         ),
         Field::new("bm25_score", DataType::Float32, false),
@@ -31,7 +34,10 @@ pub fn build_schema() -> Arc<Schema> {
             "colbert_tokens",
             DataType::List(Arc::new(Field::new(
                 "item",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), COLBERT_DIM as i32),
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    COLBERT_DIM as i32,
+                ),
                 true,
             ))),
             true,
@@ -53,7 +59,10 @@ fn empty_colbert_array(len: usize) -> ArrayRef {
     let colbert_array = ListArray::new(
         Arc::new(Field::new(
             "item",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), COLBERT_DIM as i32),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                COLBERT_DIM as i32,
+            ),
             true,
         )),
         offsets,
@@ -78,9 +87,10 @@ pub fn qdrant_to_record_batch(
     let mut flat_vectors: Vec<f32> = Vec::with_capacity(ids.len() * VECTOR_DIM);
     for vec in vectors {
         if vec.len() != VECTOR_DIM {
-            return Err(arrow::error::ArrowError::InvalidArgumentError(
-                format!("Vector length must be exactly {}", VECTOR_DIM),
-            ));
+            return Err(arrow::error::ArrowError::InvalidArgumentError(format!(
+                "Vector length must be exactly {}",
+                VECTOR_DIM
+            )));
         }
         flat_vectors.extend(vec.iter().copied());
     }
@@ -189,9 +199,11 @@ pub fn write_batch_to_shm(
     let mut writer = FileWriter::try_new(file, &batch.schema())
         .map_err(|e| format!("Failed to create IPC writer: {}", e))?;
 
-    writer.write(batch)
+    writer
+        .write(batch)
         .map_err(|e| format!("Failed to write batch to IPC: {}", e))?;
-    writer.finish()
+    writer
+        .finish()
         .map_err(|e| format!("Failed to finish IPC writing: {}", e))?;
 
     Ok(region)
@@ -207,7 +219,8 @@ pub fn read_batch_from_shm(
     let mut reader = FileReader::try_new(file, None)
         .map_err(|e| format!("Failed to create IPC reader: {}", e))?;
 
-    let batch = reader.next()
+    let batch = reader
+        .next()
         .ok_or_else(|| "No batch found in IPC file".to_string())?
         .map_err(|e| format!("Failed to read batch from IPC: {}", e))?;
 
@@ -222,7 +235,10 @@ mod tests {
     #[test]
     fn test_qdrant_to_record_batch() {
         let ids = vec![1, 2];
-        let vectors = vec![Array1::from_elem(VECTOR_DIM, 0.1), Array1::from_elem(VECTOR_DIM, 0.2)];
+        let vectors = vec![
+            Array1::from_elem(VECTOR_DIM, 0.1),
+            Array1::from_elem(VECTOR_DIM, 0.2),
+        ];
 
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
         assert_eq!(batch.num_columns(), 5);
@@ -243,13 +259,17 @@ mod tests {
     #[test]
     fn test_ipc_roundtrip() {
         let ids = vec![10, 20];
-        let vectors = vec![Array1::from_elem(VECTOR_DIM, 0.5), Array1::from_elem(VECTOR_DIM, 0.8)];
+        let vectors = vec![
+            Array1::from_elem(VECTOR_DIM, 0.5),
+            Array1::from_elem(VECTOR_DIM, 0.8),
+        ];
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
 
         let manager = crate::shared_memory::SharedMemoryManager::new();
         let region = write_batch_to_shm(&manager, &batch).expect("Failed to write to shm");
 
-        let batch_read = read_batch_from_shm(&manager, &region.name).expect("Failed to read from shm");
+        let batch_read =
+            read_batch_from_shm(&manager, &region.name).expect("Failed to read from shm");
 
         assert_eq!(batch.num_columns(), batch_read.num_columns());
         assert_eq!(batch.num_rows(), batch_read.num_rows());

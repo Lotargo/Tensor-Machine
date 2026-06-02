@@ -3691,6 +3691,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tonic",
  "tracing",
@@ -3848,6 +3849,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

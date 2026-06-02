@@ -59,7 +59,6 @@ pub enum AstNode {
         query: String,
         docs: Box<AstNode>,
     },
-
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,7 +107,6 @@ pub enum OpCode {
     ColbertMaxSim,
     /// Mock load query tokens (M x 128)
     LoadColbertQuery(String),
-
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
