@@ -47,7 +47,7 @@ use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     Condition, FieldCondition, Filter as QFilter, Match, PointId, Range, SearchPoints,
     VectorsOutput, WithVectorsSelector, condition::ConditionOneOf, r#match::MatchValue,
-    point_id::PointIdOptions,
+    point_id::PointIdOptions, PointStruct, UpsertPoints,
 };
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::collections::HashMap;
@@ -93,6 +93,26 @@ impl DbPools {
         url: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let client = Qdrant::from_url(url).build()?;
+
+        if node_id == "default" {
+            if client.collection_info("default").await.is_err() {
+                tracing::info!("Creating Qdrant collection 'default'...");
+                let _ = client.create_collection(qdrant_client::qdrant::CreateCollection {
+                    collection_name: "default".to_string(),
+                    vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
+                        config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
+                            qdrant_client::qdrant::VectorParams {
+                                size: crate::arrow::VECTOR_DIM as u64,
+                                distance: qdrant_client::qdrant::Distance::Cosine.into(),
+                                ..Default::default()
+                            }
+                        ))
+                    }),
+                    ..Default::default()
+                }).await;
+            }
+        }
+
         self.qdrant_clients.insert(node_id.to_string(), client);
         Ok(())
     }
@@ -110,21 +130,119 @@ impl DbPools {
     }
 
     /// Fetches an embedding vector for the given text from the ML server
-    pub async fn get_embedding(&self, text: &str) -> ndarray::Array1<f32> {
-        if self.ml_cb.is_open() {
-            return ndarray::Array1::from_elem(768, 0.1);
+    pub async fn get_embedding(&self, text: &str, is_query: bool) -> ndarray::Array1<f32> {
+        if cfg!(test) {
+            return ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1);
         }
 
-        // In a real application, this would make a gRPC call to the configured
-        // ML server (e.g. self.ml_servers.get("embedding")) to generate the vector.
-        // For the scope of this project without a real ML server running,
-        // we return a deterministic dummy embedding for tests.
-        let _ = text;
-        self.ml_cb.record_success();
-        ndarray::Array1::from_elem(768, 0.1)
+        if self.ml_cb.is_open() {
+            return ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1);
+        }
+
+        // Configure E5 instructions dynamically (with fallback to default E5 format)
+        let formatted_text = if is_query {
+            let template = std::env::var("EMBEDDING_QUERY_PREFIX")
+                .unwrap_or_else(|_| "query: ".to_string());
+            if template.contains("{}") {
+                template.replace("{}", text)
+            } else {
+                format!("{}{}", template, text)
+            }
+        } else {
+            let template = std::env::var("EMBEDDING_PASSAGE_PREFIX")
+                .unwrap_or_else(|_| "passage: ".to_string());
+            if template.contains("{}") {
+                template.replace("{}", text)
+            } else {
+                format!("{}{}", template, text)
+            }
+        };
+
+        tracing::debug!("E5 model embedding input text: {:?}", formatted_text);
+
+        let url = std::env::var("EMBEDDING_SERVER_URL")
+            .unwrap_or_else(|_| "http://localhost:8080/v1/embeddings".to_string());
+
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "input": formatted_text
+        });
+
+        match client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                #[derive(serde::Deserialize)]
+                struct EmbeddingData {
+                    embedding: Vec<f32>,
+                }
+                #[derive(serde::Deserialize)]
+                struct EmbeddingResponse {
+                    data: Vec<EmbeddingData>,
+                }
+
+                if let Ok(res_body) = resp.json::<EmbeddingResponse>().await {
+                    if let Some(first) = res_body.data.first() {
+                        if first.embedding.len() == crate::arrow::VECTOR_DIM {
+                            self.ml_cb.record_success();
+                            return ndarray::Array1::from(first.embedding.clone());
+                        } else {
+                            tracing::error!(
+                                "Embedding dimension mismatch: expected {}, got {}",
+                                crate::arrow::VECTOR_DIM,
+                                first.embedding.len()
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to fetch embedding: {}", e);
+            }
+        }
+
+        self.ml_cb.record_failure();
+        ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1)
+    }
+
+    /// Inserts text into Postgres documents, gets the id, then upserts the vector + id to Qdrant.
+    pub async fn insert_document(&self, text: &str, vector: ndarray::Array1<f32>) -> Result<usize, String> {
+        // 1. Write to Postgres
+        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+
+        let row = sqlx::query("INSERT INTO documents (text, bm25_score) VALUES ($1, $2) RETURNING id")
+            .bind(text)
+            .bind(0.0f32)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
+
+        use sqlx::Row;
+        let id: i64 = row.try_get("id").map_err(|e| format!("Failed to get inserted id: {}", e))?;
+        let doc_id = id as usize;
+
+        // 2. Write vector to Qdrant
+        let client = self.qdrant_clients.get("default").ok_or("Qdrant client not initialized")?;
+
+        let point = PointStruct::new(
+            doc_id as u64,
+            vector.to_vec(),
+            std::collections::HashMap::<String, serde_json::Value>::new(),
+        );
+
+        let upsert_result = client.upsert_points(UpsertPoints {
+            collection_name: "default".to_string(),
+            points: vec![point],
+            wait: Some(true),
+            ..Default::default()
+        }).await;
+
+        match upsert_result {
+            Ok(_) => Ok(doc_id),
+            Err(e) => Err(format!("Qdrant upsert failed: {}", e)),
+        }
     }
 
     /// Mock method for ANN search in Qdrant (Task 1.4.1, 1.4.6)
+    #[allow(deprecated)]
     pub async fn search_qdrant(
         &self,
         query: &ndarray::Array1<f32>,
@@ -283,7 +401,7 @@ impl DbPools {
                 {
                     vectors.push(ndarray::Array1::from(v.data.clone()));
                 } else {
-                    vectors.push(ndarray::Array1::from_elem(768, 0.1));
+                    vectors.push(ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1));
                 }
             }
             self.qdrant_cb.record_success();
@@ -294,7 +412,7 @@ impl DbPools {
             let mut vectors = Vec::new();
             for i in 0..top_k {
                 ids.push(i);
-                vectors.push(ndarray::Array1::from_elem(768, 0.1));
+                vectors.push(ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1));
             }
             self.qdrant_cb.record_success();
             Ok((ids, vectors))

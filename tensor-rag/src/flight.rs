@@ -1,11 +1,10 @@
 use arrow_flight::encode::FlightDataEncoderBuilder;
-use arrow_flight::error::FlightError;
-use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
-    HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc, SchemaResult, Ticket,
+    HandshakeRequest, HandshakeResponse, PutResult, SchemaResult, Ticket,
     flight_service_server::FlightService,
 };
+use arrow::ipc::writer::DictionaryTracker;
 use futures::Stream;
 use futures::StreamExt;
 use std::pin::Pin;
@@ -78,8 +77,9 @@ impl FlightService for TensorFlightService {
         if let Some(batch) = registry.get(&path) {
             let schema = batch.schema();
             let options = arrow::ipc::writer::IpcWriteOptions::default();
+            let mut tracker = DictionaryTracker::new(false);
             let schema_bytes = arrow::ipc::writer::IpcDataGenerator::default()
-                .schema_to_bytes(&schema, &options)
+                .schema_to_bytes_with_dictionary_tracker(&schema, &mut tracker, &options)
                 .ipc_message;
 
             let ticket = Ticket {
@@ -122,8 +122,9 @@ impl FlightService for TensorFlightService {
         if let Some(batch) = registry.get(&path) {
             let schema = batch.schema();
             let options = arrow::ipc::writer::IpcWriteOptions::default();
+            let mut tracker = DictionaryTracker::new(false);
             let schema_bytes = arrow::ipc::writer::IpcDataGenerator::default()
-                .schema_to_bytes(&schema, &options)
+                .schema_to_bytes_with_dictionary_tracker(&schema, &mut tracker, &options)
                 .ipc_message;
             Ok(Response::new(SchemaResult {
                 schema: schema_bytes.into(),

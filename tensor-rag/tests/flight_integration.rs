@@ -64,7 +64,7 @@ async fn test_flight_put_get_roundtrip() {
     let ticket = Ticket {
         ticket: "test_dataset".as_bytes().to_vec().into(),
     };
-    let mut get_stream = client.do_get(ticket).await.expect("do_get failed").into_inner();
+    let get_stream = client.do_get(ticket).await.expect("do_get failed").into_inner();
 
     use arrow_flight::decode::FlightRecordBatchStream;
     let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(get_stream.map_err(|e: tonic::Status| e.into()));

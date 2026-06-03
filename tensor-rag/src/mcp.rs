@@ -106,9 +106,40 @@ impl McpSession {
 }
 
 use crate::shared_memory::SharedMemoryManager;
-use crate::vm::{IpcValue, VmExecutionPayload, VmRequest, VmResponse, VmResultPayload};
+use crate::vm::{VmExecutionPayload, VmRequest, VmResponse, VmResultPayload};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+
+#[cfg(not(unix))]
+pub struct UnixStream;
+
+#[cfg(not(unix))]
+impl UnixStream {
+    pub fn connect<P: AsRef<std::path::Path>>(_path: P) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Unix domain sockets are not supported on Windows",
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+impl std::io::Read for UnixStream {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+#[cfg(not(unix))]
+impl std::io::Write for UnixStream {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 pub struct VmIpcClient {
     socket_path: String,
@@ -332,20 +363,24 @@ impl McpServer {
         let tool = request.tool.clone();
         let args = request.args.clone();
 
-        if let Some(session) = self.sessions.get_mut(&request.session_id) {
-            if request.sequence_number != session.expected_sequence {
-                return Err(format!(
-                    "Out of order message. Expected sequence: {}, but got: {}",
-                    session.expected_sequence, request.sequence_number
-                ));
-            }
-            session.expected_sequence += 1;
-
-            // Forward request to session channel for any background workers listening
-            let _ = session.tx.send(request).await;
-        } else {
-            return Err(format!("Session not found: {}", request.session_id));
+        if !self.sessions.contains_key(&request.session_id) {
+            let (tx, _rx) = mpsc::channel(100);
+            let mut session = McpSession::new(request.session_id.clone(), tx);
+            session.expected_sequence = request.sequence_number;
+            self.sessions.insert(request.session_id.clone(), session);
         }
+
+        let session = self.sessions.get_mut(&request.session_id).unwrap();
+        if request.sequence_number != session.expected_sequence {
+            return Err(format!(
+                "Out of order message. Expected sequence: {}, but got: {}",
+                session.expected_sequence, request.sequence_number
+            ));
+        }
+        session.expected_sequence += 1;
+
+        // Forward request to session channel for any background workers listening
+        let _ = session.tx.send(request).await;
 
         if let Some(handler) = self.tools.get(&tool) {
             let start = Instant::now();
@@ -433,13 +468,12 @@ pub fn execute_program<'a>(
 
             match &op.op {
                 crate::ir::OpCode::RetrieveQdrant {
-                    query: _,
+                    query,
                     filters,
                     top_k,
                 } => {
-                    // Currently Mocking using db_pools method. Wait, DbPools expects ndarray.
-                    // Let's just create a dummy query vector for the mock I/O
-                    let query_vec = ndarray::Array1::from_elem(768, 0.1);
+                    // Generate real query embedding via local model server (with E5 "query: " prefixing)
+                    let query_vec = db_pools.get_embedding(query, true).await;
                     vm.query_vector = query_vec.clone();
 
                     let (ids, vectors) =

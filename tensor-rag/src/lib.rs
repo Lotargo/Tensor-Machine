@@ -140,6 +140,7 @@ mod tests {
 }
 
 pub mod arrow;
+pub mod chunker;
 pub mod dsl;
 pub mod flight;
 pub mod gpu;

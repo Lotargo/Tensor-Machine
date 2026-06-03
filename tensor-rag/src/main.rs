@@ -7,6 +7,8 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
@@ -38,7 +40,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Initialize the DB pools
-    let db_pools = Arc::new(DbPools::new());
+    let mut pools = DbPools::new();
+    if let Ok(url) = std::env::var("DATABASE_URL") {
+        info!("Initializing PostgreSQL pool with URL: {}", url);
+        if let Err(e) = pools.init_postgres(&url).await {
+            tracing::error!("Failed to initialize PostgreSQL pool: {}", e);
+        }
+    } else {
+        info!("DATABASE_URL not set, running PostgreSQL in mock mode.");
+    }
+
+    if let Ok(url) = std::env::var("QDRANT_URL") {
+        info!("Initializing Qdrant client with URL: {}", url);
+        if let Err(e) = pools.add_qdrant_node("default", &url).await {
+            tracing::error!("Failed to initialize Qdrant node: {}", e);
+        }
+    } else {
+        info!("QDRANT_URL not set, running Qdrant in mock mode.");
+    }
+    let db_pools = Arc::new(pools);
 
     // Start VM Worker process if TENSOR_VM_MODE is ipc
     let mut _vm_worker_process = None;
@@ -99,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         workers: worker_senders,
         next_worker: std::sync::atomic::AtomicUsize::new(0),
+        db_pools: db_pools.clone(),
     });
 
     let router = tensor_rag::router::mcp_router(app_state);

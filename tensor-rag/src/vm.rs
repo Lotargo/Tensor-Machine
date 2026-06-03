@@ -162,7 +162,7 @@ impl VM {
         Self {
             stack: Vec::new(),
             batch: None,
-            query_vector: Array1::zeros(768), // Default initialization, could be populated externally
+            query_vector: Array1::zeros(crate::arrow::VECTOR_DIM), // Default initialization, could be populated externally
             gpu_context: None,
             backend: BackendSelector::Simd,
         }
@@ -615,7 +615,7 @@ impl VM {
                     .downcast_ref::<arrow::array::Float32Array>()
                     .ok_or("Not Float32Array in list")?;
 
-                let dim = 768; // Based on setup
+                let dim = crate::arrow::VECTOR_DIM; // Based on setup
                 let mut scores = Vec::with_capacity(list_arr.len());
 
                 let query_slice = self.query_vector.as_slice().unwrap();

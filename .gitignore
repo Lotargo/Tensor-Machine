@@ -1,2 +1,4 @@
 tensor-rag/target/
 target/
+venv/
+.env

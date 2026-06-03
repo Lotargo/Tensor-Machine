@@ -1,10 +1,55 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::Arc;
 
-use tensor_rag::ir::Program;
+#[cfg(not(unix))]
+pub struct UnixStream;
+
+#[cfg(not(unix))]
+impl std::io::Read for UnixStream {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+#[cfg(not(unix))]
+impl std::io::Write for UnixStream {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+pub struct UnixListener;
+
+#[cfg(not(unix))]
+impl UnixListener {
+    pub fn bind<P: AsRef<std::path::Path>>(_path: P) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Unix domain sockets are not supported on Windows",
+        ))
+    }
+    pub fn incoming(&self) -> Incoming {
+        Incoming
+    }
+}
+
+#[cfg(not(unix))]
+pub struct Incoming;
+
+#[cfg(not(unix))]
+impl Iterator for Incoming {
+    type Item = std::io::Result<UnixStream>;
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
 use tensor_rag::shared_memory::SharedMemoryManager;
 use tensor_rag::vm::{IpcValue, VM, VmExecutionPayload, VmRequest, VmResponse, VmResultPayload};
 
