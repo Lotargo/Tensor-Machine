@@ -8,7 +8,6 @@ use arrow::{
 use ndarray::Array1;
 use std::sync::Arc;
 
-pub const VECTOR_DIM: usize = 768;
 pub const COLBERT_DIM: usize = 128;
 
 /// Defines the schema of our RecordBatch
@@ -18,13 +17,14 @@ pub const COLBERT_DIM: usize = 128;
 /// - bm25_score: Float32
 /// - text: Utf8
 pub fn build_schema() -> Arc<Schema> {
+    let embedding_dim = crate::config::get_embedding_dim();
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new(
             "vector",
             DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
-                VECTOR_DIM as i32,
+                embedding_dim as i32,
             ),
             false,
         ),
@@ -84,12 +84,13 @@ pub fn qdrant_to_record_batch(
 
     let id_array = Int64Array::from(ids.iter().map(|&id| id as i64).collect::<Vec<_>>());
 
-    let mut flat_vectors: Vec<f32> = Vec::with_capacity(ids.len() * VECTOR_DIM);
+    let embedding_dim = crate::config::get_embedding_dim();
+    let mut flat_vectors: Vec<f32> = Vec::with_capacity(ids.len() * embedding_dim);
     for vec in vectors {
-        if vec.len() != VECTOR_DIM {
+        if vec.len() != embedding_dim {
             return Err(arrow::error::ArrowError::InvalidArgumentError(format!(
                 "Vector length must be exactly {}",
-                VECTOR_DIM
+                embedding_dim
             )));
         }
         flat_vectors.extend(vec.iter().copied());
@@ -99,7 +100,7 @@ pub fn qdrant_to_record_batch(
 
     let vector_array = FixedSizeListArray::new(
         Arc::new(Field::new("item", DataType::Float32, true)),
-        VECTOR_DIM as i32,
+        embedding_dim as i32,
         Arc::new(inner_array) as ArrayRef,
         None,
     );
@@ -161,12 +162,13 @@ pub fn postgres_to_record_batch(
 
     let id_array = Int64Array::from(ids.iter().map(|&id| id as i64).collect::<Vec<_>>());
 
+    let embedding_dim = crate::config::get_embedding_dim();
     // Default vectors to zeros
-    let flat_vectors = vec![0.0f32; ids.len() * VECTOR_DIM];
+    let flat_vectors = vec![0.0f32; ids.len() * embedding_dim];
     let inner_array = Float32Array::from(flat_vectors);
     let vector_array = FixedSizeListArray::new(
         Arc::new(Field::new("item", DataType::Float32, true)),
-        VECTOR_DIM as i32,
+        embedding_dim as i32,
         Arc::new(inner_array) as ArrayRef,
         None,
     );
@@ -234,10 +236,11 @@ mod tests {
 
     #[test]
     fn test_qdrant_to_record_batch() {
+        let dim = crate::config::get_embedding_dim();
         let ids = vec![1, 2];
         let vectors = vec![
-            Array1::from_elem(VECTOR_DIM, 0.1),
-            Array1::from_elem(VECTOR_DIM, 0.2),
+            Array1::from_elem(dim, 0.1),
+            Array1::from_elem(dim, 0.2),
         ];
 
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
@@ -258,10 +261,11 @@ mod tests {
 
     #[test]
     fn test_ipc_roundtrip() {
+        let dim = crate::config::get_embedding_dim();
         let ids = vec![10, 20];
         let vectors = vec![
-            Array1::from_elem(VECTOR_DIM, 0.5),
-            Array1::from_elem(VECTOR_DIM, 0.8),
+            Array1::from_elem(dim, 0.5),
+            Array1::from_elem(dim, 0.8),
         ];
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
 
@@ -279,7 +283,7 @@ mod tests {
 
         assert_eq!(original_flat.len(), read_flat.len());
         assert_eq!(original_flat.value(0), read_flat.value(0));
-        assert_eq!(original_flat.value(VECTOR_DIM), read_flat.value(VECTOR_DIM));
+        assert_eq!(original_flat.value(dim), read_flat.value(dim));
 
         region.destroy().unwrap();
     }

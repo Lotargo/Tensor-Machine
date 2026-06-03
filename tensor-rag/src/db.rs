@@ -3,6 +3,10 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
+pub const CB_CLOSED: u8 = 0;
+pub const CB_OPEN: u8 = 1;
+pub const CB_HALF_OPEN: u8 = 2;
+
 pub struct CircuitBreaker {
     failures: AtomicU32,
     last_failure: RwLock<Option<Instant>>,
@@ -31,6 +35,18 @@ impl CircuitBreaker {
         false
     }
 
+    /// Returns the circuit breaker state: 0=Closed, 1=Open, 2=Half-Open.
+    pub fn state(&self) -> u8 {
+        if self.failures.load(Ordering::SeqCst) < self.threshold {
+            return CB_CLOSED;
+        }
+        let last = *self.last_failure.read().unwrap();
+        match last {
+            Some(time) if time.elapsed().as_secs() >= self.reset_timeout_secs => CB_HALF_OPEN,
+            _ => CB_OPEN,
+        }
+    }
+
     pub fn record_failure(&self) {
         self.failures.fetch_add(1, Ordering::SeqCst);
         let mut last = self.last_failure.write().unwrap();
@@ -53,6 +69,13 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::collections::HashMap;
 use tonic::transport::{Channel, Endpoint};
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoredDocument {
+    pub filename: String,
+    pub doc_uuid: String,
+    pub text: String,
+}
+
 /// A simple connection pool manager for various databases and external ML services.
 #[derive(Clone)]
 pub struct DbPools {
@@ -66,13 +89,15 @@ pub struct DbPools {
 
 impl DbPools {
     pub fn new() -> Self {
+        let threshold = crate::config::get_cb_failure_threshold();
+        let cooldown = crate::config::get_cb_cooldown_secs();
         Self {
             postgres: None,
             qdrant_clients: HashMap::new(),
             ml_servers: HashMap::new(),
-            qdrant_cb: Arc::new(CircuitBreaker::new(5, 30)),
-            postgres_cb: Arc::new(CircuitBreaker::new(5, 30)),
-            ml_cb: Arc::new(CircuitBreaker::new(5, 30)),
+            qdrant_cb: Arc::new(CircuitBreaker::new(threshold, cooldown)),
+            postgres_cb: Arc::new(CircuitBreaker::new(threshold, cooldown)),
+            ml_cb: Arc::new(CircuitBreaker::new(threshold, cooldown)),
         }
     }
 
@@ -82,6 +107,15 @@ impl DbPools {
             .max_connections(5)
             .connect(database_url)
             .await?;
+
+        // Ensure columns for document grouping exist
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS filename TEXT;")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_uuid TEXT;")
+            .execute(&pool)
+            .await;
+
         self.postgres = Some(pool);
         Ok(())
     }
@@ -93,16 +127,17 @@ impl DbPools {
         url: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let client = Qdrant::from_url(url).build()?;
+        let collection = crate::config::get_qdrant_collection();
 
         if node_id == "default" {
-            if client.collection_info("default").await.is_err() {
-                tracing::info!("Creating Qdrant collection 'default'...");
+            if client.collection_info(&collection).await.is_err() {
+                tracing::info!("Creating Qdrant collection '{}'...", collection);
                 let _ = client.create_collection(qdrant_client::qdrant::CreateCollection {
-                    collection_name: "default".to_string(),
+                    collection_name: collection.clone(),
                     vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
                         config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
                             qdrant_client::qdrant::VectorParams {
-                                size: crate::arrow::VECTOR_DIM as u64,
+                                size: crate::config::get_embedding_dim() as u64,
                                 distance: qdrant_client::qdrant::Distance::Cosine.into(),
                                 ..Default::default()
                             }
@@ -131,12 +166,13 @@ impl DbPools {
 
     /// Fetches an embedding vector for the given text from the ML server
     pub async fn get_embedding(&self, text: &str, is_query: bool) -> ndarray::Array1<f32> {
+        let dim = crate::config::get_embedding_dim();
         if cfg!(test) {
-            return ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1);
+            return ndarray::Array1::from_elem(dim, 0.1);
         }
 
         if self.ml_cb.is_open() {
-            return ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1);
+            return ndarray::Array1::from_elem(dim, 0.1);
         }
 
         // Configure E5 instructions dynamically (with fallback to default E5 format)
@@ -181,13 +217,13 @@ impl DbPools {
 
                 if let Ok(res_body) = resp.json::<EmbeddingResponse>().await {
                     if let Some(first) = res_body.data.first() {
-                        if first.embedding.len() == crate::arrow::VECTOR_DIM {
+                        if first.embedding.len() == dim {
                             self.ml_cb.record_success();
                             return ndarray::Array1::from(first.embedding.clone());
                         } else {
                             tracing::error!(
                                 "Embedding dimension mismatch: expected {}, got {}",
-                                crate::arrow::VECTOR_DIM,
+                                dim,
                                 first.embedding.len()
                             );
                         }
@@ -200,17 +236,25 @@ impl DbPools {
         }
 
         self.ml_cb.record_failure();
-        ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1)
+        ndarray::Array1::from_elem(dim, 0.1)
     }
 
     /// Inserts text into Postgres documents, gets the id, then upserts the vector + id to Qdrant.
-    pub async fn insert_document(&self, text: &str, vector: ndarray::Array1<f32>) -> Result<usize, String> {
+    pub async fn insert_document(
+        &self,
+        text: &str,
+        vector: ndarray::Array1<f32>,
+        filename: &str,
+        doc_uuid: &str,
+    ) -> Result<usize, String> {
         // 1. Write to Postgres
         let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
 
-        let row = sqlx::query("INSERT INTO documents (text, bm25_score) VALUES ($1, $2) RETURNING id")
+        let row = sqlx::query("INSERT INTO documents (text, bm25_score, filename, doc_uuid) VALUES ($1, $2, $3, $4) RETURNING id")
             .bind(text)
             .bind(0.0f32)
+            .bind(filename)
+            .bind(doc_uuid)
             .fetch_one(pool)
             .await
             .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
@@ -222,14 +266,19 @@ impl DbPools {
         // 2. Write vector to Qdrant
         let client = self.qdrant_clients.get("default").ok_or("Qdrant client not initialized")?;
 
+        let mut payload = std::collections::HashMap::new();
+        payload.insert("filename".to_string(), serde_json::Value::String(filename.to_string()));
+        payload.insert("doc_uuid".to_string(), serde_json::Value::String(doc_uuid.to_string()));
+
+        let collection = crate::config::get_qdrant_collection();
         let point = PointStruct::new(
             doc_id as u64,
             vector.to_vec(),
-            std::collections::HashMap::<String, serde_json::Value>::new(),
+            payload,
         );
 
         let upsert_result = client.upsert_points(UpsertPoints {
-            collection_name: "default".to_string(),
+            collection_name: collection.clone(),
             points: vec![point],
             wait: Some(true),
             ..Default::default()
@@ -239,6 +288,106 @@ impl DbPools {
             Ok(_) => Ok(doc_id),
             Err(e) => Err(format!("Qdrant upsert failed: {}", e)),
         }
+    }
+
+    /// Deletes a document (all chunks sharing the same doc_uuid) from PostgreSQL and Qdrant
+    pub async fn delete_document(&self, doc_id: usize) -> Result<(), String> {
+        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+
+        // 1. Find the doc_uuid for this doc_id
+        let row_opt = sqlx::query("SELECT doc_uuid FROM documents WHERE id = $1")
+            .bind(doc_id as i64)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Failed to find doc_uuid: {}", e))?;
+
+        let doc_uuid: Option<String> = match row_opt {
+            Some(row) => {
+                use sqlx::Row;
+                row.try_get("doc_uuid").ok()
+            }
+            None => None,
+        };
+
+        let ids_to_delete: Vec<i64> = if let Some(ref uuid_str) = doc_uuid {
+            if !uuid_str.is_empty() {
+                // Find all document IDs with the same doc_uuid
+                let rows = sqlx::query("SELECT id FROM documents WHERE doc_uuid = $1")
+                    .bind(uuid_str)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| format!("Failed to fetch doc IDs for uuid: {}", e))?;
+                use sqlx::Row;
+                rows.into_iter().map(|r| r.try_get::<i64, _>("id").unwrap_or(0)).collect()
+            } else {
+                vec![doc_id as i64]
+            }
+        } else {
+            vec![doc_id as i64]
+        };
+
+        // 2. Delete all from Postgres
+        sqlx::query("DELETE FROM documents WHERE id = ANY($1)")
+            .bind(&ids_to_delete[..])
+            .execute(pool)
+            .await
+            .map_err(|e| format!("PostgreSQL delete failed: {}", e))?;
+
+        // 3. Delete all from Qdrant
+        if let Some(client) = self.qdrant_clients.get("default") {
+            let collection = crate::config::get_qdrant_collection();
+            let points: Vec<PointId> = ids_to_delete.iter().map(|&id| PointId {
+                point_id_options: Some(PointIdOptions::Num(id as u64)),
+            }).collect();
+
+            let _ = client.delete_points(qdrant_client::qdrant::DeletePoints {
+                collection_name: collection.clone(),
+                points: Some(qdrant_client::qdrant::PointsSelector {
+                    points_selector_one_of: Some(
+                        qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Points(
+                            qdrant_client::qdrant::PointsIdsList {
+                                ids: points
+                            }
+                        )
+                    )
+                }),
+                ..Default::default()
+            }).await;
+        }
+
+        Ok(())
+    }
+
+    /// Clears all documents and collections from PostgreSQL and Qdrant
+    pub async fn clear_database(&self) -> Result<(), String> {
+        // 1. Truncate Postgres table
+        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        sqlx::query("TRUNCATE TABLE documents RESTART IDENTITY")
+            .execute(pool)
+            .await
+            .map_err(|e| format!("PostgreSQL truncate failed: {}", e))?;
+
+        // 2. Recreate Qdrant collection
+        if let Some(client) = self.qdrant_clients.get("default") {
+            let collection = crate::config::get_qdrant_collection();
+            let _ = client.delete_collection(&collection).await;
+            
+            client.create_collection(qdrant_client::qdrant::CreateCollection {
+                collection_name: collection.clone(),
+                vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
+                    config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
+                        qdrant_client::qdrant::VectorParams {
+                            size: crate::config::get_embedding_dim() as u64,
+                            distance: qdrant_client::qdrant::Distance::Cosine.into(),
+                            ..Default::default()
+                        }
+                    ))
+                }),
+                ..Default::default()
+            }).await.map_err(|e| format!("Qdrant collection recreate failed: {}", e))?;
+        }
+
+        Ok(())
     }
 
     /// Mock method for ANN search in Qdrant (Task 1.4.1, 1.4.6)
@@ -255,8 +404,9 @@ impl DbPools {
         let client_opt = self.qdrant_clients.get("default");
 
         if let Some(client) = client_opt {
+            let collection = crate::config::get_qdrant_collection();
             let mut search_points = SearchPoints {
-                collection_name: "default".to_string(), // In real app, this should be configurable
+                collection_name: collection.clone(),
                 vector: query.to_vec(),
                 limit: top_k as u64,
                 with_vectors: Some(WithVectorsSelector {
@@ -401,7 +551,7 @@ impl DbPools {
                 {
                     vectors.push(ndarray::Array1::from(v.data.clone()));
                 } else {
-                    vectors.push(ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1));
+                    vectors.push(ndarray::Array1::from_elem(crate::config::get_embedding_dim(), 0.1));
                 }
             }
             self.qdrant_cb.record_success();
@@ -412,7 +562,7 @@ impl DbPools {
             let mut vectors = Vec::new();
             for i in 0..top_k {
                 ids.push(i);
-                vectors.push(ndarray::Array1::from_elem(crate::arrow::VECTOR_DIM, 0.1));
+                vectors.push(ndarray::Array1::from_elem(crate::config::get_embedding_dim(), 0.1));
             }
             self.qdrant_cb.record_success();
             Ok((ids, vectors))
@@ -490,6 +640,47 @@ impl DbPools {
         ids.iter()
             .map(|id| format!("Metadata for doc {}", id))
             .collect()
+    }
+
+    pub async fn fetch_document_by_uuid(
+        &self,
+        doc_uuid: &str,
+    ) -> Result<Option<StoredDocument>, String> {
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized".to_string())?;
+
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "SELECT id, text, filename, doc_uuid
+             FROM documents
+             WHERE doc_uuid = $1
+             ORDER BY id ASC",
+        )
+        .bind(doc_uuid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Failed to fetch document by UUID: {}", e))?;
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let filename = rows[0]
+            .try_get::<String, _>("filename")
+            .unwrap_or_else(|_| "Unknown".to_string());
+        let joined_text = rows
+            .iter()
+            .map(|row| row.try_get::<String, _>("text").unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        Ok(Some(StoredDocument {
+            filename,
+            doc_uuid: doc_uuid.to_string(),
+            text: joined_text,
+        }))
     }
 }
 

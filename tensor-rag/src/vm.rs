@@ -159,12 +159,19 @@ impl Default for VM {
 
 impl VM {
     pub fn new() -> Self {
+        let dim = crate::config::get_embedding_dim();
+        let backend_str = crate::config::get_vm_backend();
+        let backend = match backend_str.as_str() {
+            "gpu" => BackendSelector::Gpu,
+            "cpu" => BackendSelector::Cpu,
+            _ => BackendSelector::Simd,
+        };
         Self {
             stack: Vec::new(),
             batch: None,
-            query_vector: Array1::zeros(crate::arrow::VECTOR_DIM), // Default initialization, could be populated externally
+            query_vector: Array1::zeros(dim),
             gpu_context: None,
-            backend: BackendSelector::Simd,
+            backend,
         }
     }
 
@@ -615,7 +622,7 @@ impl VM {
                     .downcast_ref::<arrow::array::Float32Array>()
                     .ok_or("Not Float32Array in list")?;
 
-                let dim = crate::arrow::VECTOR_DIM; // Based on setup
+                let dim = list_arr.value_length() as usize;
                 let mut scores = Vec::with_capacity(list_arr.len());
 
                 let query_slice = self.query_vector.as_slice().unwrap();

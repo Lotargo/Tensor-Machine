@@ -115,7 +115,7 @@ fn handle_client(mut stream: UnixStream) {
 
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let mut instruction_count = 0;
-                let max_instructions = 100_000;
+                let max_instructions = tensor_rag::config::get_vm_max_instructions();
 
                 let result = rt.block_on(tensor_rag::mcp::execute_program(
                     &payload.program,
@@ -175,7 +175,7 @@ fn send_response(stream: &mut UnixStream, resp: &VmResponse) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let mut socket_path = "/tmp/tensor_rag_vm.sock".to_string();
+    let mut socket_path = tensor_rag::config::get_vm_socket_path();
 
     for arg in args {
         if arg.starts_with("--socket=") {

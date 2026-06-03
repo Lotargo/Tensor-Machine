@@ -2,6 +2,21 @@ pub trait Chunker: Send + Sync {
     fn chunk(&self, text: &str) -> Vec<String>;
 }
 
+pub fn count_tokens(text: &str) -> usize {
+    if text.trim().is_empty() {
+        return 0;
+    }
+
+    let tokenizer_model = crate::config::get_tokenizer_model();
+    chunkedrs::chunk(text)
+        .max_tokens(usize::MAX)
+        .model(&tokenizer_model)
+        .split()
+        .iter()
+        .map(|chunk| chunk.token_count)
+        .sum()
+}
+
 pub struct ParagraphChunker {
     pub max_chars: usize,
     pub overlap_chars: usize,
@@ -49,5 +64,38 @@ impl Chunker for ParagraphChunker {
             chunks.push(current_chunk);
         }
         chunks
+    }
+}
+
+pub struct TokenChunker {
+    pub max_tokens: usize,
+    pub overlap: usize,
+    pub model: String,
+}
+
+impl TokenChunker {
+    pub fn new(max_tokens: usize, overlap: usize, model: &str) -> Self {
+        Self {
+            max_tokens,
+            overlap,
+            model: model.to_string(),
+        }
+    }
+}
+
+impl Default for TokenChunker {
+    fn default() -> Self {
+        Self::new(512, 64, "o200k_harmony")
+    }
+}
+
+impl Chunker for TokenChunker {
+    fn chunk(&self, text: &str) -> Vec<String> {
+        let chunks = chunkedrs::chunk(text)
+            .max_tokens(self.max_tokens)
+            .overlap(self.overlap)
+            .model(&self.model)
+            .split();
+        chunks.into_iter().map(|c| c.content).collect()
     }
 }

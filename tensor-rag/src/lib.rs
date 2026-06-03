@@ -2,6 +2,7 @@ pub mod db;
 pub mod ir;
 pub mod mcp;
 pub mod vm;
+pub mod config;
 
 #[cfg(test)]
 mod tests {
@@ -52,6 +53,8 @@ mod tests {
             filters: None,
             rerank_strategy: ir::RerankStrategy::SemanticOnly,
             final_top_k: 100, // 100 * 10 = 1000 initial candidates
+            doc_uuid: None,
+            alpha: None,
         };
 
         let mut latencies: Vec<u128> = Vec::with_capacity(100);

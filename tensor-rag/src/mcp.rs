@@ -146,6 +146,10 @@ pub struct VmIpcClient {
 }
 
 impl VmIpcClient {
+    pub fn from_config() -> Self {
+        Self::new(crate::config::get_vm_socket_path())
+    }
+
     pub fn new(socket_path: String) -> Self {
         Self { socket_path }
     }
@@ -227,6 +231,54 @@ impl VmIpcClient {
 
 pub struct SearchTool;
 
+fn trim_search_payload(
+    indices: Vec<usize>,
+    scores: Vec<f32>,
+    documents: Vec<String>,
+) -> serde_json::Value {
+    let token_limit = crate::config::get_search_max_response_tokens();
+    let total_results = indices.len().min(scores.len()).min(documents.len());
+    let mut kept_indices = Vec::new();
+    let mut kept_scores = Vec::new();
+    let mut kept_documents = Vec::new();
+    let mut consumed_tokens = 0usize;
+
+    for ((index, score), document) in indices
+        .into_iter()
+        .zip(scores.into_iter())
+        .zip(documents.into_iter())
+    {
+        let document_tokens = crate::chunker::count_tokens(&document);
+        if consumed_tokens + document_tokens > token_limit {
+            break;
+        }
+
+        consumed_tokens += document_tokens;
+        kept_indices.push(index);
+        kept_scores.push(score);
+        kept_documents.push(document);
+    }
+
+    let trimmed = kept_indices.len() < total_results;
+    let warning = if trimmed {
+        Some(format!(
+            "Search response was trimmed to {} tokens; trailing results were dropped.",
+            token_limit
+        ))
+    } else {
+        None
+    };
+
+    serde_json::json!({
+        "indices": kept_indices,
+        "scores": kept_scores,
+        "documents": kept_documents,
+        "token_limit": token_limit,
+        "returned_tokens": consumed_tokens,
+        "warning": warning
+    })
+}
+
 impl ToolHandler for SearchTool {
     fn handle<'a>(
         &'a self,
@@ -249,10 +301,10 @@ impl ToolHandler for SearchTool {
             let _ = vm.init_gpu().await;
 
             let mut instruction_count = 0;
-            let max_instructions = 100_000;
+            let max_instructions = crate::config::get_vm_max_instructions();
 
             let result = if std::env::var("TENSOR_VM_MODE").unwrap_or_default() == "ipc" {
-                let client = VmIpcClient::new("/tmp/tensor_rag_vm.sock".to_string());
+                let client = VmIpcClient::from_config();
                 client.execute_program("default_session", 0, program, vm.query_vector.to_vec())
             } else {
                 execute_program(
@@ -306,8 +358,238 @@ impl ToolHandler for SearchTool {
     }
 }
 
+pub struct SearchTextTool;
+
+impl ToolHandler for SearchTextTool {
+    fn handle<'a>(
+        &'a self,
+        args: JsonValue,
+        db_pools: &'a crate::db::DbPools,
+        metrics: Option<Arc<crate::metrics::Metrics>>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let ast = if let Some(dsl_string) = args.get("dsl").and_then(|v| v.as_str()) {
+                crate::dsl::parse_dsl(dsl_string)?
+            } else {
+                let req: crate::ir::QueryRequest = serde_json::from_value(args)
+                    .map_err(|e| format!("Failed to parse QueryRequest JSON: {}", e))?;
+                crate::ir::AstNode::Search(req)
+            };
+
+            let program = crate::ir::Planner::compile(ast);
+            let mut vm = crate::vm::VM::new();
+            let _ = vm.init_gpu().await;
+
+            let mut instruction_count = 0;
+            let max_instructions = crate::config::get_vm_max_instructions();
+
+            let result = if std::env::var("TENSOR_VM_MODE").unwrap_or_default() == "ipc" {
+                let client = VmIpcClient::from_config();
+                client.execute_program("default_session", 0, program, vm.query_vector.to_vec())
+            } else {
+                execute_program(
+                    &program,
+                    &mut vm,
+                    db_pools,
+                    &mut instruction_count,
+                    max_instructions,
+                )
+                .await
+                .map_err(|e| format!("Execution error: {}", e))
+            }?;
+
+            match result {
+                Some(crate::vm::Value::Result(topk)) => {
+                    let metadata = db_pools.fetch_metadata(&topk.indices).await;
+                    let response_json = trim_search_payload(topk.indices, topk.scores, metadata);
+
+                    if let Some(m) = &metrics {
+                        let count = response_json
+                            .get("indices")
+                            .and_then(|value| value.as_array())
+                            .map(|items| items.len())
+                            .unwrap_or(0);
+                        m.inc_results(count as u64);
+                    }
+
+                    Ok(serde_json::to_vec(&response_json).unwrap())
+                }
+                _ => {
+                    if let Some(m) = &metrics {
+                        m.inc_failures();
+                    }
+                    Err("VM did not return a valid TopKResult".to_string())
+                }
+            }
+        })
+    }
+}
+
+pub struct ReadDocumentTool;
+
+impl ToolHandler for ReadDocumentTool {
+    fn handle<'a>(
+        &'a self,
+        args: JsonValue,
+        db_pools: &'a crate::db::DbPools,
+        _metrics: Option<Arc<crate::metrics::Metrics>>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let doc_uuid = args
+                .get("doc_uuid")
+                .and_then(|value| value.as_str())
+                .ok_or("Missing required argument: doc_uuid")?;
+
+            let document = db_pools
+                .fetch_document_by_uuid(doc_uuid)
+                .await?
+                .ok_or_else(|| format!("Document not found for doc_uuid={}", doc_uuid))?;
+
+            let token_count = crate::chunker::count_tokens(&document.text);
+            let token_limit = crate::config::get_read_document_max_tokens();
+
+            let response_json = if token_count > token_limit {
+                serde_json::json!({
+                    "doc_uuid": document.doc_uuid,
+                    "filename": document.filename,
+                    "token_count": token_count,
+                    "token_limit": token_limit,
+                    "warning": format!(
+                        "Document exceeds the read limit: {} tokens > {} tokens. Full document read is blocked.",
+                        token_count,
+                        token_limit
+                    ),
+                    "content": serde_json::Value::Null
+                })
+            } else {
+                serde_json::json!({
+                    "doc_uuid": document.doc_uuid,
+                    "filename": document.filename,
+                    "token_count": token_count,
+                    "token_limit": token_limit,
+                    "warning": serde_json::Value::Null,
+                    "content": document.text
+                })
+            };
+
+            Ok(serde_json::to_vec(&response_json).unwrap())
+        })
+    }
+}
+
+pub struct ListDocumentsTool;
+
+impl ToolHandler for ListDocumentsTool {
+    fn handle<'a>(
+        &'a self,
+        _args: JsonValue,
+        db_pools: &'a crate::db::DbPools,
+        _metrics: Option<Arc<crate::metrics::Metrics>>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let pool = db_pools
+                .postgres
+                .as_ref()
+                .ok_or("PostgreSQL pool not initialized")?;
+
+            // Fetch distinct filename and doc_uuid from PostgreSQL
+            let rows = sqlx::query(
+                "SELECT DISTINCT filename, doc_uuid FROM documents WHERE doc_uuid IS NOT NULL AND doc_uuid <> '' ORDER BY filename"
+            )
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Database error: {}", e))?;
+
+            use sqlx::Row;
+            let mut docs = Vec::new();
+            for row in rows {
+                let filename: String = row.try_get("filename").unwrap_or_else(|_| "Unknown".to_string());
+                let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
+                docs.push(serde_json::json!({
+                    "filename": filename,
+                    "doc_uuid": doc_uuid
+                }));
+            }
+
+            let response_json = serde_json::json!({
+                "documents": docs
+            });
+
+            Ok(serde_json::to_vec(&response_json).unwrap())
+        })
+    }
+}
+
+pub struct HelpTool;
+
+impl ToolHandler for HelpTool {
+    fn handle<'a>(
+        &'a self,
+        _args: JsonValue,
+        _db_pools: &'a crate::db::DbPools,
+        _metrics: Option<Arc<crate::metrics::Metrics>>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let help_text = r#"
+# TENSOR MACHINE RAG HELP & DOCUMENTATION
+
+## 1. System Overview
+Tensor Machine is a hybrid search system combining vector search (dense embeddings) and keyword search (BM25 lexical scoring).
+It supports document ingestion, automatic chunking, dense vector generation using E5 models, and vector storage in Qdrant, alongside metadata storage in PostgreSQL.
+
+## 2. Tools Reference
+
+### search
+* **Purpose:** Queries the database using semantic search and lexical matching.
+* **Arguments:**
+  - `query` (string, required): The search text. DO NOT use search engine question words (such as 'what', 'how', 'why', 'что', 'как', 'почему', etc.). Always query using only descriptive search keywords or phrases. Example: "Arrow Flight vector VM transfer".
+  - `final_top_k` (integer, optional): The number of top documents/segments to return. Defaults to the configured `.env` value.
+  - `doc_uuid` (string, optional): Search only within the document with this UUID.
+  - `alpha` (number, optional): Hybrid weighting where `1.0` is semantic-only and `0.0` is BM25-only.
+  - `dsl` (string, optional): A query string written in S-expression DSL for advanced plans.
+* **Best Practices:**
+  - For general queries, use simple key phrases instead of long sentences. Do not use conversational filler or question words.
+  - Run the `list_documents` tool first to find the `doc_uuid` if you want to restrict search to a single document.
+  - Search responses are softly trimmed from the tail when they exceed the configured token budget.
+
+### read_document
+* **Purpose:** Reconstructs and returns the full text of one indexed document.
+* **Arguments:**
+  - `doc_uuid` (string, required): UUID of the target document returned by `list_documents`.
+* **Behavior:**
+  - If the document exceeds the configured full-read token limit, the tool returns a warning instead of the body.
+
+### list_documents
+* **Purpose:** Retrieves all indexed documents in the database.
+* **Output:** A JSON array containing the `filename` and `doc_uuid` for each document. Use these UUIDs to search within specific files.
+
+### help
+* **Purpose:** Returns this documentation guide.
+
+## 3. Query DSL (S-Expression)
+If you require complex query orchestration, you can use the `dsl` field. Supported forms:
+* Hybrid scoring: `(hybrid "query" semantic_weight bm25_weight)`
+* MMR diversity: `(mmr "query" diversity_factor)`
+* Reciprocal Rank Fusion: `(rrf "query" k)`
+* Self-RAG conditional: `(self_rag "query" threshold low_plan_ast high_plan_ast)`
+* Corrective RAG: `(corrective_rag "query" "fallback_query")`
+"#;
+
+            let response_json = serde_json::json!({
+                "help": help_text
+            });
+
+            Ok(serde_json::to_vec(&response_json).unwrap())
+        })
+    }
+}
+
 pub fn register_search_tool(server: &mut McpServer) {
     server.register_tool("search", Box::new(SearchTool));
+    server.register_tool("search_text", Box::new(SearchTextTool));
+    server.register_tool("read_document", Box::new(ReadDocumentTool));
+    server.register_tool("list_documents", Box::new(ListDocumentsTool));
+    server.register_tool("help", Box::new(HelpTool));
 }
 
 /// The core MCP server that maintains connections and routes tool calls.
@@ -334,7 +616,7 @@ impl McpServer {
             tools: HashMap::new(),
             sessions: HashMap::new(),
             db_pools,
-            rate_limiter: Arc::new(RateLimiter::new(100, 100.0)), // 100 req/sec
+            rate_limiter: Arc::new(RateLimiter::new(crate::config::get_mcp_rate_limit(), crate::config::get_mcp_rate_limit_refill())),
             metrics,
         }
     }
@@ -394,6 +676,10 @@ impl McpServer {
                 .await;
 
             if let Some(m) = &self.metrics {
+                let db = &self.db_pools;
+                m.set_cb_state("qdrant", db.qdrant_cb.state() as f64);
+                m.set_cb_state("postgres", db.postgres_cb.state() as f64);
+                m.set_cb_state("ml", db.ml_cb.state() as f64);
                 m.dec_active();
                 m.observe_latency(start.elapsed().as_secs_f64());
             }

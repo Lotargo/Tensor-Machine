@@ -4,7 +4,7 @@ use axum::{
     http::{StatusCode, header},
     routing::get,
 };
-use prometheus::{Encoder, Histogram, HistogramOpts, Opts, Registry, TextEncoder};
+use prometheus::{Encoder, GaugeVec, Histogram, HistogramOpts, Opts, Registry, TextEncoder};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
@@ -21,6 +21,7 @@ pub struct Metrics {
     active_requests: prometheus::Gauge,
     search_results_total: prometheus::Counter,
     failed_requests_total: prometheus::Counter,
+    circuit_breaker_state: GaugeVec,
     ready: AtomicBool,
 }
 
@@ -63,6 +64,12 @@ impl Metrics {
         ))
         .expect("failed to create failure counter");
 
+        let circuit_breaker_state = GaugeVec::new(
+            Opts::new("circuit_breaker_state", "Circuit breaker state per backend"),
+            &["backend"],
+        )
+        .expect("failed to create circuit_breaker_state gauge");
+
         registry
             .register(Box::new(request_counter.clone()))
             .expect("failed to register request counter");
@@ -78,6 +85,9 @@ impl Metrics {
         registry
             .register(Box::new(failed_requests_total.clone()))
             .expect("failed to register failure counter");
+        registry
+            .register(Box::new(circuit_breaker_state.clone()))
+            .expect("failed to register circuit breaker state gauge");
 
         Self {
             registry,
@@ -86,6 +96,7 @@ impl Metrics {
             active_requests,
             search_results_total,
             failed_requests_total,
+            circuit_breaker_state,
             ready: AtomicBool::new(true),
         }
     }
@@ -120,6 +131,12 @@ impl Metrics {
 
     pub fn is_ready(&self) -> bool {
         self.ready.load(Ordering::SeqCst)
+    }
+
+    pub fn set_cb_state(&self, backend: &str, state: f64) {
+        self.circuit_breaker_state
+            .with_label_values(&[backend])
+            .set(state);
     }
 }
 

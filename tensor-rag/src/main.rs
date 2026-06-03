@@ -64,9 +64,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut _vm_worker_process = None;
     if std::env::var("TENSOR_VM_MODE").unwrap_or_default() == "ipc" {
         info!("Starting VM Worker process in IPC mode...");
+        let socket_path = tensor_rag::config::get_vm_socket_path();
         _vm_worker_process = Some(
             std::process::Command::new("cargo")
-                .args(["run", "--bin", "vm_worker"])
+                .args(["run", "--bin", "vm_worker", "--", &format!("--socket={}", socket_path)])
                 .spawn()
                 .expect("Failed to spawn vm_worker process"),
         );
@@ -127,8 +128,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bind and serve the router
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let pg_status = if db_pools.postgres.is_some() { "ACTIVE (Pool)" } else { "MOCK MODE" };
+    let qdrant_status = if db_pools.qdrant_clients.contains_key("default") { "ACTIVE (Client)" } else { "MOCK MODE" };
+    let flight_addr = std::env::var("ARROW_FLIGHT_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
 
-    info!("Starting MCP Router on http://{}", addr);
+    println!("\n");
+    println!("+----------------------------------------------------------------------------+");
+    println!("|                   TENSOR MACHINE INITIALIZED SUCCESSFULLY                  |");
+    println!("+----------------------------------------------------------------------------+");
+    println!("|  [DATABASE]   PostgreSQL Connection status : {:<30} |", pg_status);
+    println!("|  [VECTOR DB]  Qdrant Vector DB status      : {:<30} |", qdrant_status);
+    println!("|  [FLIGHT API] Arrow Flight Plane listening : {:<30} |", flight_addr);
+    println!("|  [MCP SERVER] Active CPU Worker Instances  : {:<30} |", num_workers);
+    println!("|  [MCP ROUTER] Axum HTTP Router running on  : http://{:<26} |", addr);
+    println!("|  [PORTAL UI]  Document Portal URL          : http://localhost:8080        |");
+    println!("+----------------------------------------------------------------------------+");
+    println!("\n");
 
     let server = axum::serve(listener, router);
 

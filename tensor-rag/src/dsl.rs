@@ -181,6 +181,8 @@ fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
         filters,
         rerank_strategy,
         final_top_k,
+        doc_uuid: None,
+        alpha: None,
     })
 }
 
