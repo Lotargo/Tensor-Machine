@@ -1,8 +1,8 @@
-﻿# Clear host and set console settings
+# Clear host and set console settings
 Clear-Host
 
 $banner = @"
-  _______                               __  ___           __  _
+  _______                               __  ___           __ 
  /_  __/__  ____  _________  _____     /  |/  /___ ______/ /_  (_)___  ___
   / / / _ \/ __ \/ ___/ __ \/ ___/    / /|_/ / __ `/ ___/ __ \/ / __ \/ _ \
  / / /  __/ / / (__  ) /_/ / /       / /  / / /_/ / /__/ / / / / / / /  __/
@@ -15,7 +15,7 @@ function Show-Menu {
     Write-Host $banner -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  1. Install (Cargo Build)" -ForegroundColor Gray
-    Write-Host "  2. Start Server (Cargo Run)" -ForegroundColor Gray
+    Write-Host "  2. Start Server (Build + Launch Binary)" -ForegroundColor Gray
     Write-Host "  3. Run Tests (Cargo Test)" -ForegroundColor Gray
     Write-Host "  4. Exit" -ForegroundColor Gray
     Write-Host ""
@@ -38,14 +38,61 @@ while ($running) {
         "2" {
             Clear-Host
             Write-Host "=== Starting RAG Server ===" -ForegroundColor Cyan
-            $process = Start-Process cargo -ArgumentList "run --manifest-path tensor-rag/Cargo.toml --bin tensor-rag --ignore-rust-version" -PassThru -NoNewWindow
-            Write-Host "`nServer is running in background (PID: $($process.Id))." -ForegroundColor Green
-            Write-Host "Press [Enter] key to stop the server..." -ForegroundColor Yellow
-            Read-Host
-            Stop-Process -Id $process.Id -Force
-            Write-Host "Server stopped." -ForegroundColor Red
-            Write-Host "`nPress [Enter] to return to menu..." -ForegroundColor DarkGray
-            Read-Host
+            $env:TENSOR_RAG_LAUNCHER = "true"
+            $restart = $true
+            while ($restart) {
+                cargo build --manifest-path tensor-rag/Cargo.toml --bin tensor-rag --ignore-rust-version
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "`nBuild failed. Press [Enter] to return to menu..." -ForegroundColor Red
+                    Read-Host
+                    $restart = $false
+                    continue
+                }
+
+                $serverPath = Join-Path $PSScriptRoot "tensor-rag\\target\\debug\\tensor-rag.exe"
+                if (-not (Test-Path $serverPath)) {
+                    Write-Host "`nBuilt binary not found at $serverPath" -ForegroundColor Red
+                    Write-Host "Press [Enter] to return to menu..." -ForegroundColor DarkGray
+                    Read-Host
+                    $restart = $false
+                    continue
+                }
+
+                Write-Host "Server is running in a separate window." -ForegroundColor Green
+                Write-Host "To stop the server, close the server window or press [Enter] in this window." -ForegroundColor Cyan
+
+                $process = Start-Process $serverPath -WorkingDirectory $PSScriptRoot -PassThru
+
+                while (-not $process.HasExited) {
+                    try {
+                        if ([System.Console]::KeyAvailable) {
+                            $key = [System.Console]::ReadKey($true)
+                            if ($key.Key -eq 'Enter') {
+                                Write-Host "`nStopping server..." -ForegroundColor Yellow
+                                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                                break
+                            }
+                        }
+                    } catch {
+                        # Non-interactive environment or console not attached
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+
+                # Ensure process object has exited and capture exit code
+                $process.WaitForExit()
+                $exitCode = $process.ExitCode
+
+                if ($exitCode -eq 123) {
+                    Write-Host "`nServer requested restart (Exit Code 123). Rebuilding and restarting..." -ForegroundColor Cyan
+                    # loop continues
+                } else {
+                    $restart = $false
+                    Write-Host "`nServer stopped (Exit Code: $exitCode)." -ForegroundColor Red
+                    Write-Host "Press [Enter] to return to menu..." -ForegroundColor DarkGray
+                    Read-Host
+                }
+            }
         }
         "3" {
             Clear-Host

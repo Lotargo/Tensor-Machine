@@ -116,3 +116,12 @@ pub fn get_tokenizer_model() -> String {
         })
         .clone()
 }
+
+pub fn get_embedding_model_name() -> String {
+    static EMBEDDING_MODEL_NAME: OnceLock<String> = OnceLock::new();
+    EMBEDDING_MODEL_NAME
+        .get_or_init(|| {
+            std::env::var("EMBEDDING_MODEL_NAME").unwrap_or_else(|_| "nomic-embed-text".to_string())
+        })
+        .clone()
+}

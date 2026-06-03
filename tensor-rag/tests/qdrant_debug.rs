@@ -7,16 +7,40 @@ async fn test_qdrant_debug() {
     let mut pools = tensor_rag::db::DbPools::new();
     pools.add_qdrant_node("default", &qdrant_url).await.unwrap();
     
-    // Connect to Qdrant directly to search and print raw points
-    match pools.search_qdrant(&ndarray::Array1::from_elem(tensor_rag::config::get_embedding_dim(), 0.1), &None, 3).await {
-        Ok((ids, vectors)) => {
-            for (i, (id, vector)) in ids.iter().zip(vectors.iter()).enumerate() {
-                println!("Point {} ID: {:?}", i, id);
-                println!("Point {} vector length: {:?}", i, vector.len());
+    let client = pools.qdrant_clients.get("default").unwrap();
+    let collection = tensor_rag::config::get_qdrant_collection();
+    
+    let search_points = qdrant_client::qdrant::SearchPoints {
+        collection_name: collection,
+        vector: vec![0.1f32; 768],
+        limit: 2,
+        with_vectors: Some(qdrant_client::qdrant::WithVectorsSelector {
+            selector_options: Some(
+                qdrant_client::qdrant::with_vectors_selector::SelectorOptions::Enable(true),
+            ),
+        }),
+        ..Default::default()
+    };
+    
+    match client.search_points(search_points).await {
+        Ok(response) => {
+            for (i, point) in response.result.iter().enumerate() {
+                if let Some(ref vectors) = point.vectors {
+                    if let Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(ref v)) = vectors.vectors_options {
+                        #[allow(deprecated)]
+                        let vec_data = if let Some(qdrant_client::qdrant::vector_output::Vector::Dense(dense)) = &v.vector
+                        {
+                            dense.data.clone()
+                        } else {
+                            v.data.clone()
+                        };
+                        println!("Point {} vector data length: {}", i, vec_data.len());
+                    }
+                }
             }
         }
         Err(err) => {
-            println!("Qdrant debug search skipped due to external state mismatch: {}", err);
+            println!("Qdrant debug search failed: {}", err);
         }
     }
 }

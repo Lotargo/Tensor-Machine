@@ -50,13 +50,13 @@ function handleMessage(msg) {
         tools: [
           {
             name: "search",
-            description: "Perform a hybrid semantic (vector) and lexical (BM25) search on the document library. Best used to retrieve passages, documents, or answers to questions. DO NOT use search engine question words (such as 'what', 'how', 'why', 'что', 'как', 'почему', etc.). Always query using only descriptive search keywords or phrases. Example: 'Arrow Flight connection speed' or 'Rust concurrency safety'. You can optionally filter results to a specific document by providing its `doc_uuid`.",
+            description: "Perform a hybrid semantic (vector) and lexical (BM25) search on the document library. Best used to retrieve passages, documents, or answers to questions. Formulate the query in the SAME language as the user's message/question (e.g., Russian, English, Chinese, etc.). DO NOT use search engine question words (such as 'what', 'how', 'why', 'что', 'как', 'почему', etc.). Always query using only descriptive search keywords or phrases in the matching language. Examples: 'Arrow Flight connection speed' (English) or 'скорость подключения Arrow Flight' (Russian). You can optionally filter results to a specific document by providing its `doc_uuid`.",
             inputSchema: {
               type: "object",
               properties: {
                 query: {
                   type: "string",
-                  description: "Text search query. Do NOT include question words (like 'how', 'what', 'why', 'что', 'как', 'почему'). Example: 'ColBERT MaxSim algorithm'"
+                  description: "Text search query in the same language as the user's input. Do NOT include question words (like 'how', 'what', 'why', 'что', 'как', 'почему'). Examples: 'алгоритм ColBERT MaxSim' for Russian queries, or 'ColBERT MaxSim algorithm' for English queries."
                 },
                 final_top_k: {
                   type: "integer",

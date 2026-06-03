@@ -20,7 +20,7 @@ show_menu() {
   echo -e "$BANNER"
   echo ""
   echo -e "  1. Install (Cargo Build)"
-  echo -e "  2. Start Server (Cargo Run)"
+  echo -e "  2. Start Server (Build + Launch Binary)"
   echo -e "  3. Run Tests (Cargo Test)"
   echo -e "  4. Exit"
   echo ""
@@ -42,15 +42,39 @@ while true; do
     2)
       clear
       echo -e "${CYAN}=== Starting RAG Server ===${NC}"
-      cargo run --manifest-path tensor-rag/Cargo.toml --bin tensor-rag --ignore-rust-version &
-      SERVER_PID=$!
-      echo -e "\n${GREEN}Server is running in background (PID: $SERVER_PID).${NC}"
-      echo -e "${YELLOW}Press [Enter] key to stop the server...${NC}"
-      read -r
-      kill $SERVER_PID
-      echo -e "${RED}Server stopped.${NC}"
-      echo -e "\n${GRAY}Press [Enter] to return to menu...${NC}"
-      read -r
+      export TENSOR_RAG_LAUNCHER="true"
+      RESTART=true
+      while [ "$RESTART" = true ]; do
+        cargo build --manifest-path tensor-rag/Cargo.toml --bin tensor-rag --ignore-rust-version
+        if [ $? -ne 0 ]; then
+          echo -e "\n${RED}Build failed. Press [Enter] to return to menu...${NC}"
+          read -r
+          RESTART=false
+          continue
+        fi
+
+        SERVER_BIN="tensor-rag/target/debug/tensor-rag"
+        if [ ! -x "$SERVER_BIN" ]; then
+          echo -e "\n${RED}Built binary not found at $SERVER_BIN${NC}"
+          echo -e "${GRAY}Press [Enter] to return to menu...${NC}"
+          read -r
+          RESTART=false
+          continue
+        fi
+
+        echo -e "\n${GREEN}Server is running (waiting for exit/restart)...${NC}"
+        "$SERVER_BIN"
+        EXIT_CODE=$?
+
+        if [ $EXIT_CODE -eq 123 ]; then
+          echo -e "\n${CYAN}Server requested restart (Exit Code 123). Rebuilding and restarting...${NC}"
+        else
+          RESTART=false
+          echo -e "${RED}Server stopped (Exit Code: $EXIT_CODE).${NC}"
+          echo -e "\n${GRAY}Press [Enter] to return to menu...${NC}"
+          read -r
+        fi
+      done
       ;;
     3)
       clear

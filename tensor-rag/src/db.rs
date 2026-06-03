@@ -76,6 +76,16 @@ pub struct StoredDocument {
     pub text: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CollectionHealth {
+    pub collection_name: String,
+    pub exists: bool,
+    pub configured_dim: usize,
+    pub actual_dim: Option<usize>,
+    pub points_count: Option<u64>,
+    pub dimension_matches: bool,
+}
+
 /// A simple connection pool manager for various databases and external ML services.
 #[derive(Clone)]
 pub struct DbPools {
@@ -88,6 +98,49 @@ pub struct DbPools {
 }
 
 impl DbPools {
+    async fn recreate_default_collection(
+        client: &Qdrant,
+        collection: &str,
+    ) -> Result<(), String> {
+        client
+            .create_collection(qdrant_client::qdrant::CreateCollection {
+                collection_name: collection.to_string(),
+                vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
+                    config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
+                        qdrant_client::qdrant::VectorParams {
+                            size: crate::config::get_embedding_dim() as u64,
+                            distance: qdrant_client::qdrant::Distance::Cosine.into(),
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                ..Default::default()
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Qdrant collection recreate failed: {}", e))
+    }
+
+    fn extract_vector_dim(
+        info: &qdrant_client::qdrant::CollectionInfo,
+    ) -> Option<usize> {
+        use qdrant_client::qdrant::vectors_config;
+        info.config
+            .as_ref()?
+            .params
+            .as_ref()?
+            .vectors_config
+            .as_ref()?
+            .config
+            .as_ref()
+            .and_then(|config| match config {
+                vectors_config::Config::Params(params) => Some(params.size as usize),
+                vectors_config::Config::ParamsMap(map) => {
+                    map.map.values().next().map(|params| params.size as usize)
+                }
+            })
+    }
+
     pub fn new() -> Self {
         let threshold = crate::config::get_cb_failure_threshold();
         let cooldown = crate::config::get_cb_cooldown_secs();
@@ -165,14 +218,14 @@ impl DbPools {
     }
 
     /// Fetches an embedding vector for the given text from the ML server
-    pub async fn get_embedding(&self, text: &str, is_query: bool) -> ndarray::Array1<f32> {
+    pub async fn get_embedding(&self, text: &str, is_query: bool) -> Result<ndarray::Array1<f32>, String> {
         let dim = crate::config::get_embedding_dim();
         if cfg!(test) {
-            return ndarray::Array1::from_elem(dim, 0.1);
+            return Ok(ndarray::Array1::from_elem(dim, 0.1));
         }
 
         if self.ml_cb.is_open() {
-            return ndarray::Array1::from_elem(dim, 0.1);
+            return Err("ML server circuit breaker is open".to_string());
         }
 
         // Configure E5 instructions dynamically (with fallback to default E5 format)
@@ -197,11 +250,13 @@ impl DbPools {
         tracing::debug!("E5 model embedding input text: {:?}", formatted_text);
 
         let url = std::env::var("EMBEDDING_SERVER_URL")
-            .unwrap_or_else(|_| "http://localhost:8080/v1/embeddings".to_string());
+            .unwrap_or_else(|_| "http://localhost:11434/v1/embeddings".to_string());
+        let model = crate::config::get_embedding_model_name();
 
         let client = reqwest::Client::new();
         let payload = serde_json::json!({
-            "input": formatted_text
+            "input": formatted_text,
+            "model": model
         });
 
         match client.post(&url).json(&payload).send().await {
@@ -215,28 +270,44 @@ impl DbPools {
                     data: Vec<EmbeddingData>,
                 }
 
-                if let Ok(res_body) = resp.json::<EmbeddingResponse>().await {
-                    if let Some(first) = res_body.data.first() {
-                        if first.embedding.len() == dim {
-                            self.ml_cb.record_success();
-                            return ndarray::Array1::from(first.embedding.clone());
+                let status = resp.status();
+                if !status.is_success() {
+                    let err_text = resp.text().await.unwrap_or_default();
+                    self.ml_cb.record_failure();
+                    return Err(format!("Embedding server returned error status ({}): {}", status, err_text));
+                }
+
+                match resp.json::<EmbeddingResponse>().await {
+                    Ok(res_body) => {
+                        if let Some(first) = res_body.data.first() {
+                            if first.embedding.len() == dim {
+                                self.ml_cb.record_success();
+                                return Ok(ndarray::Array1::from(first.embedding.clone()));
+                            } else {
+                                self.ml_cb.record_failure();
+                                return Err(format!(
+                                    "Embedding dimension mismatch: expected {}, got {}",
+                                    dim,
+                                    first.embedding.len()
+                                ));
+                            }
                         } else {
-                            tracing::error!(
-                                "Embedding dimension mismatch: expected {}, got {}",
-                                dim,
-                                first.embedding.len()
-                            );
+                            self.ml_cb.record_failure();
+                            return Err("Embedding response data vector is empty".to_string());
                         }
+                    }
+                    Err(e) => {
+                        self.ml_cb.record_failure();
+                        return Err(format!("Failed to parse embedding response JSON: {}", e));
                     }
                 }
             }
             Err(e) => {
                 tracing::error!("Failed to fetch embedding: {}", e);
+                self.ml_cb.record_failure();
+                return Err(format!("Failed to connect to embedding server: {}", e));
             }
         }
-
-        self.ml_cb.record_failure();
-        ndarray::Array1::from_elem(dim, 0.1)
     }
 
     /// Inserts text into Postgres documents, gets the id, then upserts the vector + id to Qdrant.
@@ -358,36 +429,139 @@ impl DbPools {
         Ok(())
     }
 
-    /// Clears all documents and collections from PostgreSQL and Qdrant
-    pub async fn clear_database(&self) -> Result<(), String> {
-        // 1. Truncate Postgres table
+    /// Clears all documents from PostgreSQL and Qdrant (preserving schema)
+    pub async fn clear_documents(&self) -> Result<(), String> {
         let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
         sqlx::query("TRUNCATE TABLE documents RESTART IDENTITY")
             .execute(pool)
             .await
             .map_err(|e| format!("PostgreSQL truncate failed: {}", e))?;
 
-        // 2. Recreate Qdrant collection
         if let Some(client) = self.qdrant_clients.get("default") {
             let collection = crate::config::get_qdrant_collection();
-            let _ = client.delete_collection(&collection).await;
-            
-            client.create_collection(qdrant_client::qdrant::CreateCollection {
+            let _ = client.delete_points(qdrant_client::qdrant::DeletePoints {
                 collection_name: collection.clone(),
-                vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
-                    config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
-                        qdrant_client::qdrant::VectorParams {
-                            size: crate::config::get_embedding_dim() as u64,
-                            distance: qdrant_client::qdrant::Distance::Cosine.into(),
-                            ..Default::default()
-                        }
-                    ))
+                points: Some(qdrant_client::qdrant::PointsSelector {
+                    points_selector_one_of: Some(
+                        qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Filter(
+                            qdrant_client::qdrant::Filter::default()
+                        )
+                    )
                 }),
                 ..Default::default()
-            }).await.map_err(|e| format!("Qdrant collection recreate failed: {}", e))?;
+            }).await;
         }
 
         Ok(())
+    }
+
+    /// Removes all stored documents and recreates the default Qdrant collection schema.
+    pub async fn hard_reset_database(&self) -> Result<(), String> {
+        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        sqlx::query("TRUNCATE TABLE documents RESTART IDENTITY")
+            .execute(pool)
+            .await
+            .map_err(|e| format!("PostgreSQL truncate failed: {}", e))?;
+
+        if let Some(client) = self.qdrant_clients.get("default") {
+            let collection = crate::config::get_qdrant_collection();
+            let _ = client.delete_collection(&collection).await;
+            Self::recreate_default_collection(client, &collection).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Recreates the Qdrant collection with the current dimension and re-embeds all documents from PostgreSQL.
+    pub async fn reindex_database(&self) -> Result<(), String> {
+        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+
+        // 1. Fetch all document chunks from PostgreSQL
+        let rows = sqlx::query("SELECT id, text, filename, doc_uuid FROM documents ORDER BY id ASC")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch documents from PostgreSQL: {}", e))?;
+
+        if rows.is_empty() {
+            return Err("No documents found in PostgreSQL to reindex.".to_string());
+        }
+
+        // 2. Recreate Qdrant collection with the current configured dimension
+        let client = self.qdrant_clients.get("default").ok_or("Qdrant client not initialized")?;
+        let collection = crate::config::get_qdrant_collection();
+        let _ = client.delete_collection(&collection).await;
+        Self::recreate_default_collection(client, &collection).await?;
+
+        // 3. Re-embed and upsert each chunk to Qdrant
+        use sqlx::Row;
+        for row in rows {
+            let id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
+            let text: String = row.try_get("text").map_err(|e| e.to_string())?;
+            let filename: String = row.try_get("filename").unwrap_or_else(|_| "Unknown".to_string());
+            let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
+
+            // Generate new embedding using the current dimension
+            let vector = self.get_embedding(&text, false).await?;
+
+            let mut payload = std::collections::HashMap::new();
+            payload.insert("filename".to_string(), serde_json::Value::String(filename));
+            payload.insert("doc_uuid".to_string(), serde_json::Value::String(doc_uuid));
+
+            let point = PointStruct::new(
+                id as u64,
+                vector.to_vec(),
+                payload,
+            );
+
+            client.upsert_points(UpsertPoints {
+                collection_name: collection.clone(),
+                points: vec![point],
+                wait: Some(true),
+                ..Default::default()
+            }).await.map_err(|e| format!("Qdrant upsert failed: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_collection_health(&self) -> CollectionHealth {
+        let collection_name = crate::config::get_qdrant_collection();
+        let configured_dim = crate::config::get_embedding_dim();
+
+        if let Some(client) = self.qdrant_clients.get("default") {
+            match client.collection_info(&collection_name).await {
+                Ok(info) => {
+                    let actual_dim = info.result.as_ref().and_then(|res| Self::extract_vector_dim(res));
+                    let points_count = info.result.as_ref().and_then(|r| r.points_count).unwrap_or(0);
+                    let dimension_matches = actual_dim == Some(configured_dim);
+                    CollectionHealth {
+                        collection_name,
+                        exists: true,
+                        configured_dim,
+                        actual_dim,
+                        points_count: Some(points_count),
+                        dimension_matches,
+                    }
+                }
+                Err(_) => CollectionHealth {
+                    collection_name,
+                    exists: false,
+                    configured_dim,
+                    actual_dim: None,
+                    points_count: None,
+                    dimension_matches: false,
+                },
+            }
+        } else {
+            CollectionHealth {
+                collection_name,
+                exists: false,
+                configured_dim,
+                actual_dim: None,
+                points_count: None,
+                dimension_matches: false,
+            }
+        }
     }
 
     /// Mock method for ANN search in Qdrant (Task 1.4.1, 1.4.6)
@@ -549,7 +723,14 @@ impl DbPools {
                         Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v)),
                 }) = &point.vectors
                 {
-                    vectors.push(ndarray::Array1::from(v.data.clone()));
+                    let vec_data = if let Some(qdrant_client::qdrant::vector_output::Vector::Dense(dense)) = &v.vector
+                    {
+                        dense.data.clone()
+                    } else {
+                        #[allow(deprecated)]
+                        v.data.clone()
+                    };
+                    vectors.push(ndarray::Array1::from(vec_data));
                 } else {
                     vectors.push(ndarray::Array1::from_elem(crate::config::get_embedding_dim(), 0.1));
                 }

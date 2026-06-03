@@ -542,7 +542,7 @@ It supports document ingestion, automatic chunking, dense vector generation usin
 ### search
 * **Purpose:** Queries the database using semantic search and lexical matching.
 * **Arguments:**
-  - `query` (string, required): The search text. DO NOT use search engine question words (such as 'what', 'how', 'why', 'что', 'как', 'почему', etc.). Always query using only descriptive search keywords or phrases. Example: "Arrow Flight vector VM transfer".
+  - `query` (string, required): The search text. Formulate the query in the SAME language as the user's message/question (e.g., Russian, English, Chinese). DO NOT use search engine question words (such as 'what', 'how', 'why', 'что', 'как', 'почему', etc.). Always query using only descriptive search keywords or phrases in the matching language. Examples: "скорость подключения Arrow Flight" (Russian) or "Arrow Flight connection speed" (English).
   - `final_top_k` (integer, optional): The number of top documents/segments to return. Defaults to the configured `.env` value.
   - `doc_uuid` (string, optional): Search only within the document with this UUID.
   - `alpha` (number, optional): Hybrid weighting where `1.0` is semantic-only and `0.0` is BM25-only.
@@ -759,7 +759,7 @@ pub fn execute_program<'a>(
                     top_k,
                 } => {
                     // Generate real query embedding via local model server (with E5 "query: " prefixing)
-                    let query_vec = db_pools.get_embedding(query, true).await;
+                    let query_vec = db_pools.get_embedding(query, true).await?;
                     vm.query_vector = query_vec.clone();
 
                     let (ids, vectors) =

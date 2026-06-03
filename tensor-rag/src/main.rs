@@ -5,6 +5,10 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+fn print_banner_row(label: &str, value: &str) {
+    println!("| {:<18} | {:<56} |", label, value);
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
@@ -19,6 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cancel_token = CancellationToken::new();
     let cloned_token = cancel_token.clone();
+    let control = Arc::new(tensor_rag::router::ServerControl {
+        cancel_token: cancel_token.clone(),
+        restart_requested: std::sync::atomic::AtomicBool::new(false),
+    });
 
     let metrics_clone = Arc::new(tensor_rag::metrics::Metrics::new());
     let metrics = metrics_clone.clone();
@@ -121,28 +129,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workers: worker_senders,
         next_worker: std::sync::atomic::AtomicUsize::new(0),
         db_pools: db_pools.clone(),
+        control: control.clone(),
     });
 
     let router = tensor_rag::router::mcp_router(app_state);
 
     // Bind and serve the router
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8080));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let mut listener_opt = None;
+    for attempt in 1..=10 {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => {
+                listener_opt = Some(l);
+                break;
+            }
+            Err(e) => {
+                if attempt == 10 {
+                    return Err(e.into());
+                }
+                tracing::warn!(
+                    "Failed to bind to {} (attempt {}/10): {}. Retrying in 500ms...",
+                    addr,
+                    attempt,
+                    e
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+    let listener = listener_opt.unwrap();
     let pg_status = if db_pools.postgres.is_some() { "ACTIVE (Pool)" } else { "MOCK MODE" };
     let qdrant_status = if db_pools.qdrant_clients.contains_key("default") { "ACTIVE (Client)" } else { "MOCK MODE" };
     let flight_addr = std::env::var("ARROW_FLIGHT_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
+    let router_value = format!("http://{}", addr);
+    let portal_value = "http://localhost:8080";
 
     println!("\n");
-    println!("+----------------------------------------------------------------------------+");
-    println!("|                   TENSOR MACHINE INITIALIZED SUCCESSFULLY                  |");
-    println!("+----------------------------------------------------------------------------+");
-    println!("|  [DATABASE]   PostgreSQL Connection status : {:<30} |", pg_status);
-    println!("|  [VECTOR DB]  Qdrant Vector DB status      : {:<30} |", qdrant_status);
-    println!("|  [FLIGHT API] Arrow Flight Plane listening : {:<30} |", flight_addr);
-    println!("|  [MCP SERVER] Active CPU Worker Instances  : {:<30} |", num_workers);
-    println!("|  [MCP ROUTER] Axum HTTP Router running on  : http://{:<26} |", addr);
-    println!("|  [PORTAL UI]  Document Portal URL          : http://localhost:8080        |");
-    println!("+----------------------------------------------------------------------------+");
+    println!("+--------------------+----------------------------------------------------------+");
+    println!("|                    TENSOR MACHINE INITIALIZED SUCCESSFULLY                    |");
+    println!("+--------------------+----------------------------------------------------------+");
+    print_banner_row("[DATABASE]", &format!("PostgreSQL Connection status : {}", pg_status));
+    print_banner_row("[VECTOR DB]", &format!("Qdrant Vector DB status      : {}", qdrant_status));
+    print_banner_row("[FLIGHT API]", &format!("Arrow Flight Plane listening : {}", flight_addr));
+    print_banner_row("[MCP SERVER]", &format!("Active CPU Worker Instances  : {}", num_workers));
+    print_banner_row("[MCP ROUTER]", &format!("Axum HTTP Router running on  : {}", router_value));
+    print_banner_row("[PORTAL UI]", &format!("Document Portal URL          : {}", portal_value));
+    println!("+--------------------+----------------------------------------------------------+");
     println!("\n");
 
     let server = axum::serve(listener, router);
@@ -160,6 +192,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(mut child) = _vm_worker_process {
         let _ = child.kill();
+    }
+
+    if control
+        .restart_requested
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        if std::env::var("TENSOR_RAG_LAUNCHER").unwrap_or_default() == "true" {
+            info!("Restart requested. Exiting with code 123 (handled by launcher).");
+            std::process::exit(123);
+        } else {
+            info!("Restart requested. Spawning child process...");
+            let current_exe = std::env::current_exe()?;
+            let current_dir = std::env::current_dir()?;
+            std::process::Command::new(current_exe)
+                .current_dir(current_dir)
+                .spawn()?;
+        }
     }
 
     Ok(())

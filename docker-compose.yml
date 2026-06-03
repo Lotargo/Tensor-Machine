@@ -25,6 +25,36 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: tensor_ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  ollama-pull:
+    image: curlimages/curl:latest
+    container_name: tensor_ollama_pull
+    depends_on:
+      - ollama
+    entrypoint: >
+      sh -c "
+      until curl -s http://ollama:11434/api/tags >/dev/null; do echo 'Waiting for Ollama...'; sleep 2; done;
+      echo 'Pulling nomic-embed-text model...';
+      curl -s -X POST http://ollama:11434/api/pull -d '{\"name\": \"nomic-embed-text\"}';
+      echo 'Model pulled successfully.';
+      "
+
 volumes:
   postgres_data:
   qdrant_data:
+  ollama_data:

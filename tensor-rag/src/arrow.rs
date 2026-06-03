@@ -86,11 +86,18 @@ pub fn qdrant_to_record_batch(
 
     let embedding_dim = crate::config::get_embedding_dim();
     let mut flat_vectors: Vec<f32> = Vec::with_capacity(ids.len() * embedding_dim);
-    for vec in vectors {
+    for (i, vec) in vectors.iter().enumerate() {
         if vec.len() != embedding_dim {
-            return Err(arrow::error::ArrowError::InvalidArgumentError(format!(
-                "Vector length must be exactly {}",
+            tracing::error!(
+                "Vector at index {} has length {}, but configured embedding_dim is {}",
+                i,
+                vec.len(),
                 embedding_dim
+            );
+            return Err(arrow::error::ArrowError::InvalidArgumentError(format!(
+                "Vector length must be exactly {} (got {})",
+                embedding_dim,
+                vec.len()
             )));
         }
         flat_vectors.extend(vec.iter().copied());
