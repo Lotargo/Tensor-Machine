@@ -433,7 +433,7 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
     let ocr_payload = serde_json::json!({
         "model": "mistral-ocr-latest",
         "document": {
-            "type": "file_id",
+            "type": "file",
             "file_id": file_info.id
         }
     });

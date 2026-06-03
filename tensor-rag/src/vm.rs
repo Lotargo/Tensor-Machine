@@ -182,6 +182,26 @@ impl VM {
         Ok(())
     }
 
+    fn map_indices_to_real_ids(&self, indices: &[usize]) -> Vec<usize> {
+        if let Some(batch) = &self.batch {
+            if let Some(id_col) = batch.column_by_name("id") {
+                if let Some(id_arr) = id_col.as_any().downcast_ref::<arrow::array::Int64Array>() {
+                    return indices
+                        .iter()
+                        .map(|&idx| {
+                            if idx < id_arr.len() {
+                                id_arr.value(idx) as usize
+                            } else {
+                                idx
+                            }
+                        })
+                        .collect();
+                }
+            }
+        }
+        indices.to_vec()
+    }
+
     /// Executes a single pure math operation.
     pub fn step(&mut self, op: &OpCode) -> Result<Option<Value>, String> {
         match op {
@@ -487,14 +507,15 @@ impl VM {
             OpCode::TopK(k) => {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
 
-                let (indices, scores) = match a {
+                let (indices, scores, already_mapped) = match a {
                     Value::Tensor1D(t) => {
                         if let Some(gpu) = &self.gpu_context {
                             if let Some(res) =
                                 gpu.topk(t.as_standard_layout().as_slice().unwrap(), *k)
                             {
+                                let real_indices = self.map_indices_to_real_ids(&res.0);
                                 self.stack.push(Value::Result(TopKResult {
-                                    indices: res.0,
+                                    indices: real_indices,
                                     scores: res.1,
                                 }));
                                 return Ok(None);
@@ -505,9 +526,9 @@ impl VM {
                             y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal)
                         });
                         let top = indexed.into_iter().take(*k).collect::<Vec<_>>();
-                        let indices = top.iter().map(|(i, _)| *i).collect();
-                        let scores = top.iter().map(|(_, s)| *s).collect();
-                        (indices, scores)
+                        let indices: Vec<usize> = top.iter().map(|(i, _)| *i).collect();
+                        let scores: Vec<f32> = top.iter().map(|(_, s)| *s).collect();
+                        (indices, scores, false)
                     }
                     Value::ArrowArray(arr) => {
                         let t_f32 = arr
@@ -518,8 +539,9 @@ impl VM {
                         if let Some(gpu) = &self.gpu_context {
                             let s: Vec<f32> = t_f32.iter().map(|v| v.unwrap_or(f32::MIN)).collect();
                             if let Some(res) = gpu.topk(&s, *k) {
+                                let real_indices = self.map_indices_to_real_ids(&res.0);
                                 self.stack.push(Value::Result(TopKResult {
-                                    indices: res.0,
+                                    indices: real_indices,
                                     scores: res.1,
                                 }));
                                 return Ok(None);
@@ -535,15 +557,27 @@ impl VM {
                             y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal)
                         });
                         let top = indexed.into_iter().take(*k).collect::<Vec<_>>();
-                        let indices = top.iter().map(|(i, _)| *i).collect();
-                        let scores = top.iter().map(|(_, s)| *s).collect();
-                        (indices, scores)
+                        let indices: Vec<usize> = top.iter().map(|(i, _)| *i).collect();
+                        let scores: Vec<f32> = top.iter().map(|(_, s)| *s).collect();
+                        (indices, scores, false)
+                    }
+                    Value::Result(topk) => {
+                        let top = topk.indices.into_iter().zip(topk.scores.into_iter()).take(*k).collect::<Vec<_>>();
+                        let indices: Vec<usize> = top.iter().map(|(i, _)| *i).collect();
+                        let scores: Vec<f32> = top.iter().map(|(_, s)| *s).collect();
+                        (indices, scores, true)
                     }
                     _ => return Err("Invalid type for TopK".into()),
                 };
 
+                let final_indices = if already_mapped {
+                    indices
+                } else {
+                    self.map_indices_to_real_ids(&indices)
+                };
+
                 self.stack
-                    .push(Value::Result(TopKResult { indices, scores }));
+                    .push(Value::Result(TopKResult { indices: final_indices, scores }));
             }
             OpCode::Mmr(diversity) => {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
@@ -564,14 +598,15 @@ impl VM {
                             y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal)
                         });
                         let top = indexed.into_iter().take(10).collect::<Vec<_>>(); // Fixed top K for MMR mock
-                        let indices = top.iter().map(|(i, _)| *i).collect();
-                        let scores = top.iter().map(|(_, s)| *s).collect();
+                        let indices: Vec<usize> = top.iter().map(|(i, _)| *i).collect();
+                        let scores: Vec<f32> = top.iter().map(|(_, s)| *s).collect();
                         (indices, scores)
                     }
                     _ => return Err("Invalid type for MMR".into()),
                 };
+                let real_indices = self.map_indices_to_real_ids(&indices);
                 self.stack
-                    .push(Value::Result(TopKResult { indices, scores }));
+                    .push(Value::Result(TopKResult { indices: real_indices, scores }));
             }
             OpCode::Rrf(k) => {
                 let _b = self.stack.pop().ok_or("Stack underflow")?;
@@ -584,15 +619,17 @@ impl VM {
                     1.0 / (61.0 + *k as f32),
                     1.0 / (62.0 + *k as f32),
                 ];
+                let real_indices = self.map_indices_to_real_ids(&indices);
                 self.stack
-                    .push(Value::Result(TopKResult { indices, scores }));
+                    .push(Value::Result(TopKResult { indices: real_indices, scores }));
             }
             OpCode::CallDynamic(name, _args) => {
                 if name == "mock_dynamic" {
                     let indices = vec![100];
                     let scores = vec![0.99];
+                    let real_indices = self.map_indices_to_real_ids(&indices);
                     self.stack
-                        .push(Value::Result(TopKResult { indices, scores }));
+                        .push(Value::Result(TopKResult { indices: real_indices, scores }));
                 } else {
                     return Err(format!("Unknown dynamic strategy: {}", name));
                 }

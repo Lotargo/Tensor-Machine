@@ -49,8 +49,8 @@ services:
     entrypoint: >
       sh -c "
       until curl -s http://ollama:11434/api/tags >/dev/null; do echo 'Waiting for Ollama...'; sleep 2; done;
-      echo 'Pulling nomic-embed-text model...';
-      curl -s -X POST http://ollama:11434/api/pull -d '{\"name\": \"nomic-embed-text\"}';
+      echo 'Pulling zylonai/multilingual-e5-large model...';
+      curl -s -X POST http://ollama:11434/api/pull -d '{\"name\": \"zylonai/multilingual-e5-large\"}';
       echo 'Model pulled successfully.';
       "
 
