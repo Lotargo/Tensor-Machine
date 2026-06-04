@@ -1,9 +1,12 @@
 use crate::mcp::{
-    GetDocumentMetadataTool, HelpTool, ListDocumentsTool, ReadDocumentTool, SearchTextTool, ToolHandler,
+    GetDocumentMetadataTool, HelpTool, ListDocumentsTool, ReadDocumentTool, SearchTextTool,
+    ToolHandler,
 };
 use serde_json::json;
 
-use super::{extract_message_content, parse_search_sources, send_sse, AiConfig, ChatDoneEvent, ChatSource};
+use super::{
+    AiConfig, ChatDoneEvent, ChatSource, extract_message_content, parse_search_sources, send_sse,
+};
 
 pub async fn run_agent_completion(
     db_pools: &crate::db::DbPools,
@@ -18,19 +21,17 @@ pub async fn run_agent_completion(
 
     if use_tools {
         for _round in 0..config.agent_max_tool_rounds {
-            let payload = super::request_chat_payload(
-                config,
-                &messages,
-                Some(tool_definitions()),
-                false,
-            )
-            .await?;
+            let payload =
+                super::request_chat_payload(config, &messages, Some(tool_definitions()), false)
+                    .await?;
             let message = payload
                 .get("choices")
                 .and_then(|value| value.get(0))
                 .and_then(|value| value.get("message"))
                 .cloned()
-                .ok_or_else(|| "AI provider response does not contain an assistant message.".to_string())?;
+                .ok_or_else(|| {
+                    "AI provider response does not contain an assistant message.".to_string()
+                })?;
 
             let tool_calls = extract_tool_calls(&message);
             if tool_calls.is_empty() {
@@ -88,19 +89,17 @@ pub async fn stream_agent_completion(
 
     if use_tools {
         for _round in 0..config.agent_max_tool_rounds {
-            let payload = super::request_chat_payload(
-                config,
-                &messages,
-                Some(tool_definitions()),
-                false,
-            )
-            .await?;
+            let payload =
+                super::request_chat_payload(config, &messages, Some(tool_definitions()), false)
+                    .await?;
             let message = payload
                 .get("choices")
                 .and_then(|value| value.get(0))
                 .and_then(|value| value.get("message"))
                 .cloned()
-                .ok_or_else(|| "AI provider response does not contain an assistant message.".to_string())?;
+                .ok_or_else(|| {
+                    "AI provider response does not contain an assistant message.".to_string()
+                })?;
 
             let tool_calls = extract_tool_calls(&message);
             if tool_calls.is_empty() {
@@ -128,8 +127,12 @@ pub async fn stream_agent_completion(
                 .await?;
                 if !tool_sources.is_empty() {
                     collected_sources.append(&mut tool_sources);
-                    send_sse(tx, "sources", &serde_json::to_value(&collected_sources).map_err(|e| e.to_string())?)
-                        .await?;
+                    send_sse(
+                        tx,
+                        "sources",
+                        &serde_json::to_value(&collected_sources).map_err(|e| e.to_string())?,
+                    )
+                    .await?;
                 }
                 messages.push(json!({
                     "role": "tool",
@@ -170,7 +173,11 @@ fn extract_tool_calls(message: &serde_json::Value) -> Vec<ToolCall> {
                 .and_then(|value| value.as_str())
                 .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
                 .unwrap_or_else(|| json!({}));
-            Some(ToolCall { id, name, arguments })
+            Some(ToolCall {
+                id,
+                name,
+                arguments,
+            })
         })
         .collect()
 }
@@ -193,12 +200,7 @@ async fn execute_tool_call(
         "list_documents" => ListDocumentsTool.handle(args, db_pools, None).await?,
         "get_document_metadata" => GetDocumentMetadataTool.handle(args, db_pools, None).await?,
         "help" => HelpTool.handle(args, db_pools, None).await?,
-        _ => {
-            return Ok((
-                format!("Unsupported tool: {}", tool_call.name),
-                Vec::new(),
-            ))
-        }
+        _ => return Ok((format!("Unsupported tool: {}", tool_call.name), Vec::new())),
     };
 
     let text = String::from_utf8_lossy(&bytes).to_string();

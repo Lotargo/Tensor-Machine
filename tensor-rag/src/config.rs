@@ -35,10 +35,11 @@ pub fn get_embedding_dim() -> usize {
 
 pub fn get_qdrant_collection() -> String {
     static QDRANT_COLLECTION: OnceLock<String> = OnceLock::new();
-    QDRANT_COLLECTION.get_or_init(|| {
-        std::env::var("QDRANT_COLLECTION")
-            .unwrap_or_else(|_| "default".to_string())
-    }).clone()
+    QDRANT_COLLECTION
+        .get_or_init(|| {
+            std::env::var("QDRANT_COLLECTION").unwrap_or_else(|_| "default".to_string())
+        })
+        .clone()
 }
 
 pub fn get_mcp_rate_limit() -> u32 {
@@ -63,10 +64,9 @@ pub fn get_cb_cooldown_secs() -> u64 {
 
 pub fn get_vm_backend() -> String {
     static VM_BACKEND: OnceLock<String> = OnceLock::new();
-    VM_BACKEND.get_or_init(|| {
-        std::env::var("TENSOR_VM_BACKEND")
-            .unwrap_or_else(|_| "simd".to_string())
-    }).clone()
+    VM_BACKEND
+        .get_or_init(|| std::env::var("TENSOR_VM_BACKEND").unwrap_or_else(|_| "simd".to_string()))
+        .clone()
 }
 
 pub fn get_vm_max_instructions() -> usize {
@@ -91,9 +91,8 @@ pub fn get_search_default_top_k() -> usize {
 
 pub fn get_search_max_top_k() -> usize {
     static SEARCH_MAX_TOP_K: OnceLock<usize> = OnceLock::new();
-    *SEARCH_MAX_TOP_K.get_or_init(|| {
-        get_usize_env("MCP_SEARCH_MAX_TOP_K", 20).max(get_search_default_top_k())
-    })
+    *SEARCH_MAX_TOP_K
+        .get_or_init(|| get_usize_env("MCP_SEARCH_MAX_TOP_K", 20).max(get_search_default_top_k()))
 }
 
 pub fn get_search_max_response_tokens() -> usize {
@@ -104,8 +103,7 @@ pub fn get_search_max_response_tokens() -> usize {
 
 pub fn get_read_document_max_tokens() -> usize {
     static READ_DOCUMENT_MAX_TOKENS: OnceLock<usize> = OnceLock::new();
-    *READ_DOCUMENT_MAX_TOKENS
-        .get_or_init(|| get_usize_env("MCP_READ_DOCUMENT_MAX_TOKENS", 10_000))
+    *READ_DOCUMENT_MAX_TOKENS.get_or_init(|| get_usize_env("MCP_READ_DOCUMENT_MAX_TOKENS", 10_000))
 }
 
 pub fn get_tokenizer_model() -> String {
@@ -130,8 +128,7 @@ pub fn get_qdrant_anchors_collection() -> String {
     static QDRANT_ANCHORS: OnceLock<String> = OnceLock::new();
     QDRANT_ANCHORS
         .get_or_init(|| {
-            std::env::var("QDRANT_ANCHORS_COLLECTION")
-                .unwrap_or_else(|_| "anchors".to_string())
+            std::env::var("QDRANT_ANCHORS_COLLECTION").unwrap_or_else(|_| "anchors".to_string())
         })
         .clone()
 }

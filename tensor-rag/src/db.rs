@@ -61,9 +61,9 @@ impl CircuitBreaker {
 }
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    Condition, FieldCondition, Filter as QFilter, Match, PointId, Range, SearchPoints,
-    VectorsOutput, WithVectorsSelector, condition::ConditionOneOf, r#match::MatchValue,
-    point_id::PointIdOptions, PointStruct, UpsertPoints,
+    Condition, FieldCondition, Filter as QFilter, Match, PointId, PointStruct, Range, SearchPoints,
+    UpsertPoints, VectorsOutput, WithVectorsSelector, condition::ConditionOneOf,
+    r#match::MatchValue, point_id::PointIdOptions,
 };
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::collections::HashMap;
@@ -84,6 +84,13 @@ pub struct ChunkDetail {
     pub doc_uuid: String,
     pub chapter_id: String,
     pub chunk_index: i32,
+    pub chunk_level: String,
+    pub parent_chunk_index: Option<i32>,
+    pub macro_index: Option<i32>,
+    pub medium_index: Option<i32>,
+    pub header_chain: Vec<String>,
+    pub zone_keywords: Vec<String>,
+    pub entities: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -108,10 +115,7 @@ pub struct DbPools {
 }
 
 impl DbPools {
-    async fn recreate_default_collection(
-        client: &Qdrant,
-        collection: &str,
-    ) -> Result<(), String> {
+    async fn recreate_default_collection(client: &Qdrant, collection: &str) -> Result<(), String> {
         client
             .create_collection(qdrant_client::qdrant::CreateCollection {
                 collection_name: collection.to_string(),
@@ -131,9 +135,7 @@ impl DbPools {
             .map_err(|e| format!("Qdrant collection recreate failed: {}", e))
     }
 
-    fn extract_vector_dim(
-        info: &qdrant_client::qdrant::CollectionInfo,
-    ) -> Option<usize> {
+    fn extract_vector_dim(info: &qdrant_client::qdrant::CollectionInfo) -> Option<usize> {
         use qdrant_client::qdrant::vectors_config;
         info.config
             .as_ref()?
@@ -178,18 +180,55 @@ impl DbPools {
         let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_uuid TEXT;")
             .execute(&pool)
             .await;
-        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';")
-            .execute(&pool)
-            .await;
+        let _ = sqlx::query(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';",
+        )
+        .execute(&pool)
+        .await;
         let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS chapter_id TEXT;")
             .execute(&pool)
             .await;
         let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_index INTEGER;")
             .execute(&pool)
             .await;
-        let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_documents_group ON documents(doc_uuid, chunk_index);")
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_level TEXT NOT NULL DEFAULT 'medium';")
             .execute(&pool)
             .await;
+        let _ = sqlx::query(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS parent_chunk_index INTEGER;",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS macro_index INTEGER;")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS medium_index INTEGER;")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS header_chain JSONB NOT NULL DEFAULT '[]';")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS zone_keywords JSONB NOT NULL DEFAULT '[]';")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS entities JSONB NOT NULL DEFAULT '[]';",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_documents_group ON documents(doc_uuid, chunk_index);",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_documents_hierarchy ON documents(doc_uuid, chunk_level, parent_chunk_index);")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_documents_entities ON documents USING GIN (entities);",
+        )
+        .execute(&pool)
+        .await;
 
         // Create anchors and edges tables
         let _ = sqlx::query(
@@ -199,16 +238,20 @@ impl DbPools {
                 name TEXT NOT NULL,
                 text TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );"
-        ).execute(&pool).await;
+            );",
+        )
+        .execute(&pool)
+        .await;
 
-        let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_anchors_doc_uuid ON anchors(doc_uuid);"
-        ).execute(&pool).await;
+        let _ =
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_anchors_doc_uuid ON anchors(doc_uuid);")
+                .execute(&pool)
+                .await;
 
-        let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_anchors_name ON anchors(doc_uuid, name);"
-        ).execute(&pool).await;
+        let _ =
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_anchors_name ON anchors(doc_uuid, name);")
+                .execute(&pool)
+                .await;
 
         let _ = sqlx::query(
             "CREATE TABLE IF NOT EXISTS edges (
@@ -218,20 +261,24 @@ impl DbPools {
                 edge_type TEXT NOT NULL,
                 metadata JSONB NOT NULL DEFAULT '{}',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );"
-        ).execute(&pool).await;
+            );",
+        )
+        .execute(&pool)
+        .await;
 
-        let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_doc_uuid);"
-        ).execute(&pool).await;
+        let _ =
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_doc_uuid);")
+                .execute(&pool)
+                .await;
 
-        let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_doc_uuid);"
-        ).execute(&pool).await;
+        let _ =
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_doc_uuid);")
+                .execute(&pool)
+                .await;
 
-        let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);"
-        ).execute(&pool).await;
+        let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);")
+            .execute(&pool)
+            .await;
 
         self.postgres = Some(pool);
         Ok(())
@@ -251,37 +298,44 @@ impl DbPools {
             // Create main collection
             if client.collection_info(&collection).await.is_err() {
                 tracing::info!("Creating Qdrant collection '{}'...", collection);
-                let _ = client.create_collection(qdrant_client::qdrant::CreateCollection {
-                    collection_name: collection.clone(),
-                    vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
-                        config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
-                            qdrant_client::qdrant::VectorParams {
-                                size: crate::config::get_embedding_dim() as u64,
-                                distance: qdrant_client::qdrant::Distance::Cosine.into(),
-                                ..Default::default()
-                            }
-                        ))
-                    }),
-                    ..Default::default()
-                }).await;
+                let _ = client
+                    .create_collection(qdrant_client::qdrant::CreateCollection {
+                        collection_name: collection.clone(),
+                        vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
+                            config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
+                                qdrant_client::qdrant::VectorParams {
+                                    size: crate::config::get_embedding_dim() as u64,
+                                    distance: qdrant_client::qdrant::Distance::Cosine.into(),
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                        ..Default::default()
+                    })
+                    .await;
             }
 
             // Create anchors collection
             if client.collection_info(&anchors_collection).await.is_err() {
-                tracing::info!("Creating Qdrant anchors collection '{}'...", anchors_collection);
-                let _ = client.create_collection(qdrant_client::qdrant::CreateCollection {
-                    collection_name: anchors_collection.clone(),
-                    vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
-                        config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
-                            qdrant_client::qdrant::VectorParams {
-                                size: crate::config::get_embedding_dim() as u64,
-                                distance: qdrant_client::qdrant::Distance::Cosine.into(),
-                                ..Default::default()
-                            }
-                        ))
-                    }),
-                    ..Default::default()
-                }).await;
+                tracing::info!(
+                    "Creating Qdrant anchors collection '{}'...",
+                    anchors_collection
+                );
+                let _ = client
+                    .create_collection(qdrant_client::qdrant::CreateCollection {
+                        collection_name: anchors_collection.clone(),
+                        vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
+                            config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
+                                qdrant_client::qdrant::VectorParams {
+                                    size: crate::config::get_embedding_dim() as u64,
+                                    distance: qdrant_client::qdrant::Distance::Cosine.into(),
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                        ..Default::default()
+                    })
+                    .await;
             }
         }
 
@@ -302,7 +356,11 @@ impl DbPools {
     }
 
     /// Fetches an embedding vector for the given text from the ML server
-    pub async fn get_embedding(&self, text: &str, is_query: bool) -> Result<ndarray::Array1<f32>, String> {
+    pub async fn get_embedding(
+        &self,
+        text: &str,
+        is_query: bool,
+    ) -> Result<ndarray::Array1<f32>, String> {
         let dim = crate::config::get_embedding_dim();
         if cfg!(test) {
             return Ok(ndarray::Array1::from_elem(dim, 0.1));
@@ -314,8 +372,8 @@ impl DbPools {
 
         // Configure E5 instructions dynamically (with fallback to default E5 format)
         let formatted_text = if is_query {
-            let template = std::env::var("EMBEDDING_QUERY_PREFIX")
-                .unwrap_or_else(|_| "query: ".to_string());
+            let template =
+                std::env::var("EMBEDDING_QUERY_PREFIX").unwrap_or_else(|_| "query: ".to_string());
             if template.contains("{}") {
                 template.replace("{}", text)
             } else {
@@ -358,7 +416,10 @@ impl DbPools {
                 if !status.is_success() {
                     let err_text = resp.text().await.unwrap_or_default();
                     self.ml_cb.record_failure();
-                    return Err(format!("Embedding server returned error status ({}): {}", status, err_text));
+                    return Err(format!(
+                        "Embedding server returned error status ({}): {}",
+                        status, err_text
+                    ));
                 }
 
                 match resp.json::<EmbeddingResponse>().await {
@@ -404,46 +465,140 @@ impl DbPools {
         chapter_id: &str,
         chunk_index: i32,
     ) -> Result<usize, String> {
-        // 1. Write to Postgres
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        self.insert_document_enriched(
+            text,
+            vector,
+            filename,
+            doc_uuid,
+            chapter_id,
+            chunk_index,
+            "medium",
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+        )
+        .await
+    }
 
-        let row = sqlx::query("INSERT INTO documents (text, bm25_score, filename, doc_uuid, chapter_id, chunk_index) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id")
-            .bind(text)
-            .bind(0.0f32)
-            .bind(filename)
-            .bind(doc_uuid)
-            .bind(chapter_id)
-            .bind(chunk_index)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_document_enriched(
+        &self,
+        text: &str,
+        vector: ndarray::Array1<f32>,
+        filename: &str,
+        doc_uuid: &str,
+        chapter_id: &str,
+        chunk_index: i32,
+        chunk_level: &str,
+        parent_chunk_index: Option<i32>,
+        macro_index: Option<i32>,
+        medium_index: Option<i32>,
+        header_chain: &[String],
+        zone_keywords: &[String],
+        entities: &[String],
+    ) -> Result<usize, String> {
+        // 1. Write to Postgres
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
+
+        let header_chain_json = serde_json::json!(header_chain);
+        let zone_keywords_json = serde_json::json!(zone_keywords);
+        let entities_json = serde_json::json!(entities);
+
+        let row = sqlx::query(
+            "INSERT INTO documents (
+                text, bm25_score, filename, doc_uuid, chapter_id, chunk_index,
+                chunk_level, parent_chunk_index, macro_index, medium_index,
+                header_chain, zone_keywords, entities
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             RETURNING id",
+        )
+        .bind(text)
+        .bind(0.0f32)
+        .bind(filename)
+        .bind(doc_uuid)
+        .bind(chapter_id)
+        .bind(chunk_index)
+        .bind(chunk_level)
+        .bind(parent_chunk_index)
+        .bind(macro_index)
+        .bind(medium_index)
+        .bind(&header_chain_json)
+        .bind(&zone_keywords_json)
+        .bind(&entities_json)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
 
         use sqlx::Row;
-        let id: i64 = row.try_get("id").map_err(|e| format!("Failed to get inserted id: {}", e))?;
+        let id: i64 = row
+            .try_get("id")
+            .map_err(|e| format!("Failed to get inserted id: {}", e))?;
         let doc_id = id as usize;
 
         // 2. Write vector to Qdrant
-        let client = self.qdrant_clients.get("default").ok_or("Qdrant client not initialized")?;
+        let client = self
+            .qdrant_clients
+            .get("default")
+            .ok_or("Qdrant client not initialized")?;
 
         let mut payload = std::collections::HashMap::new();
-        payload.insert("filename".to_string(), serde_json::Value::String(filename.to_string()));
-        payload.insert("doc_uuid".to_string(), serde_json::Value::String(doc_uuid.to_string()));
-        payload.insert("chapter_id".to_string(), serde_json::Value::String(chapter_id.to_string()));
-        payload.insert("chunk_index".to_string(), serde_json::Value::Number(serde_json::Number::from(chunk_index)));
+        payload.insert(
+            "filename".to_string(),
+            serde_json::Value::String(filename.to_string()),
+        );
+        payload.insert(
+            "doc_uuid".to_string(),
+            serde_json::Value::String(doc_uuid.to_string()),
+        );
+        payload.insert(
+            "chapter_id".to_string(),
+            serde_json::Value::String(chapter_id.to_string()),
+        );
+        payload.insert(
+            "chunk_index".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(chunk_index)),
+        );
+        payload.insert(
+            "chunk_level".to_string(),
+            serde_json::Value::String(chunk_level.to_string()),
+        );
+        if let Some(parent) = parent_chunk_index {
+            payload.insert(
+                "parent_chunk_index".to_string(),
+                serde_json::Value::Number(parent.into()),
+            );
+        }
+        if let Some(idx) = macro_index {
+            payload.insert(
+                "macro_index".to_string(),
+                serde_json::Value::Number(idx.into()),
+            );
+        }
+        if let Some(idx) = medium_index {
+            payload.insert(
+                "medium_index".to_string(),
+                serde_json::Value::Number(idx.into()),
+            );
+        }
+        payload.insert("entities".to_string(), entities_json);
 
         let collection = crate::config::get_qdrant_collection();
-        let point = PointStruct::new(
-            doc_id as u64,
-            vector.to_vec(),
-            payload,
-        );
+        let point = PointStruct::new(doc_id as u64, vector.to_vec(), payload);
 
-        let upsert_result = client.upsert_points(UpsertPoints {
-            collection_name: collection.clone(),
-            points: vec![point],
-            wait: Some(true),
-            ..Default::default()
-        }).await;
+        let upsert_result = client
+            .upsert_points(UpsertPoints {
+                collection_name: collection.clone(),
+                points: vec![point],
+                wait: Some(true),
+                ..Default::default()
+            })
+            .await;
 
         match upsert_result {
             Ok(_) => Ok(doc_id),
@@ -453,7 +608,10 @@ impl DbPools {
 
     /// Deletes a document (all chunks sharing the same doc_uuid) from PostgreSQL and Qdrant
     pub async fn delete_document(&self, doc_id: usize) -> Result<(), String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         // 1. Find the doc_uuid for this doc_id
         let row_opt = sqlx::query("SELECT doc_uuid FROM documents WHERE id = $1")
@@ -479,7 +637,9 @@ impl DbPools {
                     .await
                     .map_err(|e| format!("Failed to fetch doc IDs for uuid: {}", e))?;
                 use sqlx::Row;
-                rows.into_iter().map(|r| r.try_get::<i64, _>("id").unwrap_or(0)).collect()
+                rows.into_iter()
+                    .map(|r| r.try_get::<i64, _>("id").unwrap_or(0))
+                    .collect()
             } else {
                 vec![doc_id as i64]
             }
@@ -497,23 +657,26 @@ impl DbPools {
         // 3. Delete all from Qdrant
         if let Some(client) = self.qdrant_clients.get("default") {
             let collection = crate::config::get_qdrant_collection();
-            let points: Vec<PointId> = ids_to_delete.iter().map(|&id| PointId {
-                point_id_options: Some(PointIdOptions::Num(id as u64)),
-            }).collect();
+            let points: Vec<PointId> = ids_to_delete
+                .iter()
+                .map(|&id| PointId {
+                    point_id_options: Some(PointIdOptions::Num(id as u64)),
+                })
+                .collect();
 
-            let _ = client.delete_points(qdrant_client::qdrant::DeletePoints {
-                collection_name: collection.clone(),
-                points: Some(qdrant_client::qdrant::PointsSelector {
-                    points_selector_one_of: Some(
-                        qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Points(
-                            qdrant_client::qdrant::PointsIdsList {
-                                ids: points
-                            }
-                        )
-                    )
-                }),
-                ..Default::default()
-            }).await;
+            let _ = client
+                .delete_points(qdrant_client::qdrant::DeletePoints {
+                    collection_name: collection.clone(),
+                    points: Some(qdrant_client::qdrant::PointsSelector {
+                        points_selector_one_of: Some(
+                            qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Points(
+                                qdrant_client::qdrant::PointsIdsList { ids: points },
+                            ),
+                        ),
+                    }),
+                    ..Default::default()
+                })
+                .await;
         }
 
         Ok(())
@@ -521,7 +684,10 @@ impl DbPools {
 
     /// Clears all documents from PostgreSQL and Qdrant (preserving schema)
     pub async fn clear_documents(&self) -> Result<(), String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
         sqlx::query("TRUNCATE TABLE documents RESTART IDENTITY")
             .execute(pool)
             .await
@@ -529,17 +695,19 @@ impl DbPools {
 
         if let Some(client) = self.qdrant_clients.get("default") {
             let collection = crate::config::get_qdrant_collection();
-            let _ = client.delete_points(qdrant_client::qdrant::DeletePoints {
-                collection_name: collection.clone(),
-                points: Some(qdrant_client::qdrant::PointsSelector {
-                    points_selector_one_of: Some(
-                        qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Filter(
-                            qdrant_client::qdrant::Filter::default()
-                        )
-                    )
-                }),
-                ..Default::default()
-            }).await;
+            let _ = client
+                .delete_points(qdrant_client::qdrant::DeletePoints {
+                    collection_name: collection.clone(),
+                    points: Some(qdrant_client::qdrant::PointsSelector {
+                        points_selector_one_of: Some(
+                            qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Filter(
+                                qdrant_client::qdrant::Filter::default(),
+                            ),
+                        ),
+                    }),
+                    ..Default::default()
+                })
+                .await;
         }
 
         Ok(())
@@ -547,7 +715,10 @@ impl DbPools {
 
     /// Removes all stored documents and recreates the default Qdrant collection schema.
     pub async fn hard_reset_database(&self) -> Result<(), String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
         sqlx::query("TRUNCATE TABLE documents RESTART IDENTITY")
             .execute(pool)
             .await
@@ -564,20 +735,27 @@ impl DbPools {
 
     /// Recreates the Qdrant collection with the current dimension and re-embeds all documents from PostgreSQL.
     pub async fn reindex_database(&self) -> Result<(), String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         // 1. Fetch all document chunks from PostgreSQL
-        let rows = sqlx::query("SELECT id, text, filename, doc_uuid FROM documents ORDER BY id ASC")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| format!("Failed to fetch documents from PostgreSQL: {}", e))?;
+        let rows =
+            sqlx::query("SELECT id, text, filename, doc_uuid FROM documents ORDER BY id ASC")
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("Failed to fetch documents from PostgreSQL: {}", e))?;
 
         if rows.is_empty() {
             return Err("No documents found in PostgreSQL to reindex.".to_string());
         }
 
         // 2. Recreate Qdrant collection with the current configured dimension
-        let client = self.qdrant_clients.get("default").ok_or("Qdrant client not initialized")?;
+        let client = self
+            .qdrant_clients
+            .get("default")
+            .ok_or("Qdrant client not initialized")?;
         let collection = crate::config::get_qdrant_collection();
         let _ = client.delete_collection(&collection).await;
         Self::recreate_default_collection(client, &collection).await?;
@@ -587,7 +765,9 @@ impl DbPools {
         for row in rows {
             let id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
             let text: String = row.try_get("text").map_err(|e| e.to_string())?;
-            let filename: String = row.try_get("filename").unwrap_or_else(|_| "Unknown".to_string());
+            let filename: String = row
+                .try_get("filename")
+                .unwrap_or_else(|_| "Unknown".to_string());
             let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
 
             // Generate new embedding using the current dimension
@@ -597,18 +777,17 @@ impl DbPools {
             payload.insert("filename".to_string(), serde_json::Value::String(filename));
             payload.insert("doc_uuid".to_string(), serde_json::Value::String(doc_uuid));
 
-            let point = PointStruct::new(
-                id as u64,
-                vector.to_vec(),
-                payload,
-            );
+            let point = PointStruct::new(id as u64, vector.to_vec(), payload);
 
-            client.upsert_points(UpsertPoints {
-                collection_name: collection.clone(),
-                points: vec![point],
-                wait: Some(true),
-                ..Default::default()
-            }).await.map_err(|e| format!("Qdrant upsert failed: {}", e))?;
+            client
+                .upsert_points(UpsertPoints {
+                    collection_name: collection.clone(),
+                    points: vec![point],
+                    wait: Some(true),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| format!("Qdrant upsert failed: {}", e))?;
         }
 
         Ok(())
@@ -621,8 +800,15 @@ impl DbPools {
         if let Some(client) = self.qdrant_clients.get("default") {
             match client.collection_info(&collection_name).await {
                 Ok(info) => {
-                    let actual_dim = info.result.as_ref().and_then(|res| Self::extract_vector_dim(res));
-                    let points_count = info.result.as_ref().and_then(|r| r.points_count).unwrap_or(0);
+                    let actual_dim = info
+                        .result
+                        .as_ref()
+                        .and_then(|res| Self::extract_vector_dim(res));
+                    let points_count = info
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.points_count)
+                        .unwrap_or(0);
                     let dimension_matches = actual_dim == Some(configured_dim);
                     CollectionHealth {
                         collection_name,
@@ -813,16 +999,21 @@ impl DbPools {
                         Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v)),
                 }) = &point.vectors
                 {
-                    let vec_data = if let Some(qdrant_client::qdrant::vector_output::Vector::Dense(dense)) = &v.vector
-                    {
-                        dense.data.clone()
-                    } else {
-                        #[allow(deprecated)]
-                        v.data.clone()
-                    };
+                    let vec_data =
+                        if let Some(qdrant_client::qdrant::vector_output::Vector::Dense(dense)) =
+                            &v.vector
+                        {
+                            dense.data.clone()
+                        } else {
+                            #[allow(deprecated)]
+                            v.data.clone()
+                        };
                     vectors.push(ndarray::Array1::from(vec_data));
                 } else {
-                    vectors.push(ndarray::Array1::from_elem(crate::config::get_embedding_dim(), 0.1));
+                    vectors.push(ndarray::Array1::from_elem(
+                        crate::config::get_embedding_dim(),
+                        0.1,
+                    ));
                 }
             }
             self.qdrant_cb.record_success();
@@ -833,7 +1024,10 @@ impl DbPools {
             let mut vectors = Vec::new();
             for i in 0..top_k {
                 ids.push(i);
-                vectors.push(ndarray::Array1::from_elem(crate::config::get_embedding_dim(), 0.1));
+                vectors.push(ndarray::Array1::from_elem(
+                    crate::config::get_embedding_dim(),
+                    0.1,
+                ));
             }
             self.qdrant_cb.record_success();
             Ok((ids, vectors))
@@ -871,7 +1065,7 @@ impl DbPools {
                 sqlx::query(
                     "SELECT id, 0.0::real as rank 
                      FROM documents 
-                     WHERE id = ANY($1)"
+                     WHERE id = ANY($1)",
                 )
                 .bind(&ids_i64[..])
                 .fetch_all(pool)
@@ -939,17 +1133,32 @@ impl DbPools {
     }
 
     pub async fn fetch_chunk_details(&self, ids: &[usize]) -> Result<Vec<ChunkDetail>, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
         use sqlx::Row;
         let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
-        let rows = sqlx::query("SELECT id, text, COALESCE(filename, '') as filename, COALESCE(doc_uuid, '') as doc_uuid, COALESCE(chapter_id, '') as chapter_id, COALESCE(chunk_index, 0) as chunk_index FROM documents WHERE id = ANY($1)")
-            .bind(&ids_i64[..])
-            .fetch_all(pool)
-            .await
-            .map_err(|e| format!("Failed to fetch chunk details: {}", e))?;
+        let rows = sqlx::query(
+            "SELECT id, text,
+                    COALESCE(filename, '') as filename,
+                    COALESCE(doc_uuid, '') as doc_uuid,
+                    COALESCE(chapter_id, '') as chapter_id,
+                    COALESCE(chunk_index, 0) as chunk_index,
+                    COALESCE(chunk_level, 'medium') as chunk_level,
+                    parent_chunk_index, macro_index, medium_index,
+                    COALESCE(header_chain, '[]'::jsonb) as header_chain,
+                    COALESCE(zone_keywords, '[]'::jsonb) as zone_keywords,
+                    COALESCE(entities, '[]'::jsonb) as entities
+             FROM documents WHERE id = ANY($1)",
+        )
+        .bind(&ids_i64[..])
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Failed to fetch chunk details: {}", e))?;
 
         let mut details = Vec::new();
         for row in rows {
@@ -959,6 +1168,20 @@ impl DbPools {
             let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
             let chapter_id: String = row.try_get("chapter_id").unwrap_or_default();
             let chunk_index: i32 = row.try_get("chunk_index").unwrap_or(0);
+            let chunk_level: String = row
+                .try_get("chunk_level")
+                .unwrap_or_else(|_| "medium".to_string());
+            let parent_chunk_index: Option<i32> = row.try_get("parent_chunk_index").unwrap_or(None);
+            let macro_index: Option<i32> = row.try_get("macro_index").unwrap_or(None);
+            let medium_index: Option<i32> = row.try_get("medium_index").unwrap_or(None);
+            let header_chain =
+                json_array_to_strings(row.try_get("header_chain").unwrap_or(serde_json::json!([])));
+            let zone_keywords = json_array_to_strings(
+                row.try_get("zone_keywords")
+                    .unwrap_or(serde_json::json!([])),
+            );
+            let entities =
+                json_array_to_strings(row.try_get("entities").unwrap_or(serde_json::json!([])));
             details.push(ChunkDetail {
                 id: id as usize,
                 text,
@@ -966,6 +1189,13 @@ impl DbPools {
                 doc_uuid,
                 chapter_id,
                 chunk_index,
+                chunk_level,
+                parent_chunk_index,
+                macro_index,
+                medium_index,
+                header_chain,
+                zone_keywords,
+                entities,
             });
         }
         Ok(details)
@@ -975,17 +1205,25 @@ impl DbPools {
         &self,
         keys: &[(String, i32)],
     ) -> Result<std::collections::HashMap<(String, i32), String>, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
         if keys.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
 
-        let mut query_str = String::from("SELECT doc_uuid, chunk_index, text FROM documents WHERE ");
+        let mut query_str =
+            String::from("SELECT doc_uuid, chunk_index, text FROM documents WHERE ");
         for i in 0..keys.len() {
             if i > 0 {
                 query_str.push_str(" OR ");
             }
-            query_str.push_str(&format!("(doc_uuid = ${} AND chunk_index = ${})", i * 2 + 1, i * 2 + 2));
+            query_str.push_str(&format!(
+                "(doc_uuid = ${} AND chunk_index = ${})",
+                i * 2 + 1,
+                i * 2 + 2
+            ));
         }
 
         let mut query = sqlx::query(&query_str);
@@ -993,8 +1231,11 @@ impl DbPools {
             query = query.bind(uuid).bind(*idx);
         }
 
-        let rows = query.fetch_all(pool).await.map_err(|e| format!("Failed to fetch neighbors: {}", e))?;
-        
+        let rows = query
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch neighbors: {}", e))?;
+
         use sqlx::Row;
         let mut map = std::collections::HashMap::new();
         for r in rows {
@@ -1004,6 +1245,176 @@ impl DbPools {
             map.insert((doc_uuid, chunk_index), text);
         }
         Ok(map)
+    }
+
+    pub async fn fetch_parent_chunks(
+        &self,
+        keys: &[(String, i32)],
+    ) -> Result<std::collections::HashMap<(String, i32), ChunkDetail>, String> {
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
+        if keys.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let mut query_str = String::from(
+            "SELECT id, text, COALESCE(filename, '') as filename,
+                    COALESCE(doc_uuid, '') as doc_uuid,
+                    COALESCE(chapter_id, '') as chapter_id,
+                    COALESCE(chunk_index, 0) as chunk_index,
+                    COALESCE(chunk_level, 'medium') as chunk_level,
+                    parent_chunk_index, macro_index, medium_index,
+                    COALESCE(header_chain, '[]'::jsonb) as header_chain,
+                    COALESCE(zone_keywords, '[]'::jsonb) as zone_keywords,
+                    COALESCE(entities, '[]'::jsonb) as entities
+             FROM documents WHERE ",
+        );
+        for i in 0..keys.len() {
+            if i > 0 {
+                query_str.push_str(" OR ");
+            }
+            query_str.push_str(&format!(
+                "(doc_uuid = ${} AND chunk_index = ${})",
+                i * 2 + 1,
+                i * 2 + 2
+            ));
+        }
+
+        let mut query = sqlx::query(&query_str);
+        for (uuid, idx) in keys {
+            query = query.bind(uuid).bind(*idx);
+        }
+
+        use sqlx::Row;
+        let rows = query
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch parents: {}", e))?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
+            let chunk_index: i32 = row.try_get("chunk_index").unwrap_or(0);
+            map.insert(
+                (doc_uuid.clone(), chunk_index),
+                ChunkDetail {
+                    id: row.try_get::<i64, _>("id").unwrap_or(-1) as usize,
+                    text: row.try_get("text").unwrap_or_default(),
+                    filename: row.try_get("filename").unwrap_or_default(),
+                    doc_uuid,
+                    chapter_id: row.try_get("chapter_id").unwrap_or_default(),
+                    chunk_index,
+                    chunk_level: row
+                        .try_get("chunk_level")
+                        .unwrap_or_else(|_| "medium".to_string()),
+                    parent_chunk_index: row.try_get("parent_chunk_index").unwrap_or(None),
+                    macro_index: row.try_get("macro_index").unwrap_or(None),
+                    medium_index: row.try_get("medium_index").unwrap_or(None),
+                    header_chain: json_array_to_strings(
+                        row.try_get("header_chain").unwrap_or(serde_json::json!([])),
+                    ),
+                    zone_keywords: json_array_to_strings(
+                        row.try_get("zone_keywords")
+                            .unwrap_or(serde_json::json!([])),
+                    ),
+                    entities: json_array_to_strings(
+                        row.try_get("entities").unwrap_or(serde_json::json!([])),
+                    ),
+                },
+            );
+        }
+        Ok(map)
+    }
+
+    pub async fn fetch_entity_scores(&self, ids: &[usize], query_entities: &[String]) -> Vec<f32> {
+        if ids.is_empty() || query_entities.len() < 2 {
+            return vec![0.0; ids.len()];
+        }
+        let Some(pool) = &self.postgres else {
+            return vec![0.0; ids.len()];
+        };
+        use sqlx::Row;
+        let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
+        let rows = sqlx::query("SELECT id, COALESCE(entities, '[]'::jsonb) as entities FROM documents WHERE id = ANY($1)")
+            .bind(&ids_i64[..])
+            .fetch_all(pool)
+            .await;
+        let Ok(rows) = rows else {
+            return vec![0.0; ids.len()];
+        };
+        let wanted: Vec<String> = query_entities.iter().map(|s| s.to_lowercase()).collect();
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let id: i64 = row.try_get("id").unwrap_or(-1);
+            let entities =
+                json_array_to_strings(row.try_get("entities").unwrap_or(serde_json::json!([])));
+            let hits = entities
+                .iter()
+                .filter(|entity| {
+                    wanted.iter().any(|wanted| {
+                        entity.to_lowercase().contains(wanted)
+                            || wanted.contains(&entity.to_lowercase())
+                    })
+                })
+                .count();
+            map.insert(id, hits as f32 / wanted.len().max(1) as f32);
+        }
+        ids_i64
+            .iter()
+            .map(|id| *map.get(id).unwrap_or(&0.0))
+            .collect()
+    }
+
+    pub async fn search_entity_candidate_ids(
+        &self,
+        query_entities: &[String],
+        doc_uuid: Option<&str>,
+        limit: usize,
+    ) -> Vec<usize> {
+        if query_entities.len() < 2 {
+            return Vec::new();
+        }
+        let Some(pool) = &self.postgres else {
+            return Vec::new();
+        };
+        let wanted: Vec<String> = query_entities.iter().map(|s| s.to_lowercase()).collect();
+        let rows = if let Some(uuid) = doc_uuid {
+            sqlx::query("SELECT id, COALESCE(entities, '[]'::jsonb) as entities FROM documents WHERE doc_uuid = $1 AND jsonb_array_length(COALESCE(entities, '[]'::jsonb)) > 0 LIMIT $2")
+                .bind(uuid)
+                .bind((limit * 5).max(50) as i64)
+                .fetch_all(pool)
+                .await
+        } else {
+            sqlx::query("SELECT id, COALESCE(entities, '[]'::jsonb) as entities FROM documents WHERE jsonb_array_length(COALESCE(entities, '[]'::jsonb)) > 0 LIMIT $1")
+                .bind((limit * 5).max(50) as i64)
+                .fetch_all(pool)
+                .await
+        };
+        let Ok(rows) = rows else {
+            return Vec::new();
+        };
+        use sqlx::Row;
+        let mut scored = Vec::new();
+        for row in rows {
+            let id: i64 = row.try_get("id").unwrap_or(-1);
+            let entities =
+                json_array_to_strings(row.try_get("entities").unwrap_or(serde_json::json!([])));
+            let hits = entities
+                .iter()
+                .filter(|entity| {
+                    wanted.iter().any(|wanted| {
+                        entity.to_lowercase().contains(wanted)
+                            || wanted.contains(&entity.to_lowercase())
+                    })
+                })
+                .count();
+            if hits >= 2 || hits == wanted.len() {
+                scored.push((id as usize, hits));
+            }
+        }
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.into_iter().take(limit).map(|(id, _)| id).collect()
     }
 
     pub async fn fetch_document_by_uuid(
@@ -1058,7 +1469,10 @@ impl DbPools {
         key: &str,
         value: serde_json::Value,
     ) -> Result<(), String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
         sqlx::query(
             "UPDATE documents SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), $1, $2, true) WHERE doc_uuid = $3"
         )
@@ -1076,13 +1490,16 @@ impl DbPools {
         &self,
         doc_uuid: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         use sqlx::Row;
 
         // Get document metadata
         let row_opt = sqlx::query(
-            "SELECT filename, doc_uuid, metadata FROM documents WHERE doc_uuid = $1 LIMIT 1"
+            "SELECT filename, doc_uuid, metadata FROM documents WHERE doc_uuid = $1 LIMIT 1",
         )
         .bind(doc_uuid)
         .fetch_optional(pool)
@@ -1094,17 +1511,18 @@ impl DbPools {
             None => return Ok(None),
         };
 
-        let filename: String = row.try_get("filename").unwrap_or_else(|_| "Unknown".to_string());
+        let filename: String = row
+            .try_get("filename")
+            .unwrap_or_else(|_| "Unknown".to_string());
         let metadata: serde_json::Value = row.try_get("metadata").unwrap_or(serde_json::json!({}));
 
         // Get anchors
-        let anchor_rows = sqlx::query(
-            "SELECT name, text FROM anchors WHERE doc_uuid = $1 ORDER BY id ASC"
-        )
-        .bind(doc_uuid)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Failed to fetch anchors: {}", e))?;
+        let anchor_rows =
+            sqlx::query("SELECT name, text FROM anchors WHERE doc_uuid = $1 ORDER BY id ASC")
+                .bind(doc_uuid)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("Failed to fetch anchors: {}", e))?;
 
         let anchors: Vec<serde_json::Value> = anchor_rows.iter().map(|r| {
             serde_json::json!({
@@ -1122,13 +1540,16 @@ impl DbPools {
         .await
         .map_err(|e| format!("Failed to fetch edges: {}", e))?;
 
-        let edges: Vec<serde_json::Value> = edge_rows.iter().map(|r| {
-            serde_json::json!({
-                "source": r.try_get::<String, _>("source_doc_uuid").unwrap_or_default(),
-                "target": r.try_get::<String, _>("target_doc_uuid").unwrap_or_default(),
-                "type": r.try_get::<String, _>("edge_type").unwrap_or_default(),
+        let edges: Vec<serde_json::Value> = edge_rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "source": r.try_get::<String, _>("source_doc_uuid").unwrap_or_default(),
+                    "target": r.try_get::<String, _>("target_doc_uuid").unwrap_or_default(),
+                    "type": r.try_get::<String, _>("edge_type").unwrap_or_default(),
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(Some(serde_json::json!({
             "doc_uuid": doc_uuid,
@@ -1150,10 +1571,13 @@ impl DbPools {
         name: &str,
         text: &str,
     ) -> Result<i64, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         let row = sqlx::query(
-            "INSERT INTO anchors (doc_uuid, name, text) VALUES ($1, $2, $3) RETURNING id"
+            "INSERT INTO anchors (doc_uuid, name, text) VALUES ($1, $2, $3) RETURNING id",
         )
         .bind(doc_uuid)
         .bind(name)
@@ -1163,7 +1587,8 @@ impl DbPools {
         .map_err(|e| format!("Failed to insert anchor: {}", e))?;
 
         use sqlx::Row;
-        row.try_get("id").map_err(|e| format!("Failed to get anchor id: {}", e))
+        row.try_get("id")
+            .map_err(|e| format!("Failed to get anchor id: {}", e))
     }
 
     /// Inserts an anchor embedding into Qdrant anchors collection
@@ -1174,25 +1599,33 @@ impl DbPools {
         doc_uuid: &str,
         name: &str,
     ) -> Result<(), String> {
-        let client = self.qdrant_clients.get("default").ok_or("Qdrant client not initialized")?;
+        let client = self
+            .qdrant_clients
+            .get("default")
+            .ok_or("Qdrant client not initialized")?;
         let anchors_collection = crate::config::get_qdrant_anchors_collection();
 
         let mut payload = std::collections::HashMap::new();
-        payload.insert("doc_uuid".to_string(), serde_json::Value::String(doc_uuid.to_string()));
-        payload.insert("anchor_name".to_string(), serde_json::Value::String(name.to_string()));
-
-        let point = PointStruct::new(
-            anchor_id as u64,
-            vector.to_vec(),
-            payload,
+        payload.insert(
+            "doc_uuid".to_string(),
+            serde_json::Value::String(doc_uuid.to_string()),
+        );
+        payload.insert(
+            "anchor_name".to_string(),
+            serde_json::Value::String(name.to_string()),
         );
 
-        client.upsert_points(UpsertPoints {
-            collection_name: anchors_collection.clone(),
-            points: vec![point],
-            wait: Some(true),
-            ..Default::default()
-        }).await.map_err(|e| format!("Qdrant anchor upsert failed: {}", e))?;
+        let point = PointStruct::new(anchor_id as u64, vector.to_vec(), payload);
+
+        client
+            .upsert_points(UpsertPoints {
+                collection_name: anchors_collection.clone(),
+                points: vec![point],
+                wait: Some(true),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| format!("Qdrant anchor upsert failed: {}", e))?;
 
         Ok(())
     }
@@ -1203,7 +1636,10 @@ impl DbPools {
         query_vector: &ndarray::Array1<f32>,
         top_k: usize,
     ) -> Result<(Vec<i64>, Vec<f32>, Vec<String>), String> {
-        let client = self.qdrant_clients.get("default").ok_or("Qdrant client not initialized")?;
+        let client = self
+            .qdrant_clients
+            .get("default")
+            .ok_or("Qdrant client not initialized")?;
         let anchors_collection = crate::config::get_qdrant_anchors_collection();
 
         let search_points = SearchPoints {
@@ -1214,7 +1650,9 @@ impl DbPools {
             ..Default::default()
         };
 
-        let response = client.search_points(search_points).await
+        let response = client
+            .search_points(search_points)
+            .await
             .map_err(|e| format!("Qdrant anchor search failed: {}", e))?;
 
         let mut ids = Vec::new();
@@ -1231,7 +1669,9 @@ impl DbPools {
             ids.push(id);
             scores.push(point.score);
 
-            let name = point.payload.get("anchor_name")
+            let name = point
+                .payload
+                .get("anchor_name")
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
             names.push(name);
@@ -1246,7 +1686,10 @@ impl DbPools {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<(i64, String, String, f32)>, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         use sqlx::Row;
         let rows = sqlx::query(
@@ -1275,23 +1718,28 @@ impl DbPools {
         &self,
         doc_uuid: &str,
     ) -> Result<Vec<serde_json::Value>, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         use sqlx::Row;
-        let rows = sqlx::query(
-            "SELECT name, text FROM anchors WHERE doc_uuid = $1 ORDER BY id ASC"
-        )
-        .bind(doc_uuid)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Failed to fetch anchors: {}", e))?;
+        let rows =
+            sqlx::query("SELECT name, text FROM anchors WHERE doc_uuid = $1 ORDER BY id ASC")
+                .bind(doc_uuid)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("Failed to fetch anchors: {}", e))?;
 
-        Ok(rows.iter().map(|r| {
-            serde_json::json!({
-                "name": r.try_get::<String, _>("name").unwrap_or_default(),
-                "text": r.try_get::<String, _>("text").unwrap_or_default()
+        Ok(rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.try_get::<String, _>("name").unwrap_or_default(),
+                    "text": r.try_get::<String, _>("text").unwrap_or_default()
+                })
             })
-        }).collect())
+            .collect())
     }
 
     // ------------------------------------------------------------------------
@@ -1306,7 +1754,10 @@ impl DbPools {
         edge_type: &str,
         metadata: Option<serde_json::Value>,
     ) -> Result<i64, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         let meta = metadata.unwrap_or(serde_json::json!({}));
         let row = sqlx::query(
@@ -1321,7 +1772,8 @@ impl DbPools {
         .map_err(|e| format!("Failed to insert edge: {}", e))?;
 
         use sqlx::Row;
-        row.try_get("id").map_err(|e| format!("Failed to get edge id: {}", e))
+        row.try_get("id")
+            .map_err(|e| format!("Failed to get edge id: {}", e))
     }
 
     /// Fetches all edges for a document (both incoming and outgoing)
@@ -1330,7 +1782,10 @@ impl DbPools {
         doc_uuid: &str,
         edge_type: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, String> {
-        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
 
         use sqlx::Row;
         let rows = if let Some(etype) = edge_type {
@@ -1352,13 +1807,16 @@ impl DbPools {
             .map_err(|e| format!("Failed to fetch edges: {}", e))?
         };
 
-        Ok(rows.iter().map(|r| {
-            serde_json::json!({
-                "source": r.try_get::<String, _>("source_doc_uuid").unwrap_or_default(),
-                "target": r.try_get::<String, _>("target_doc_uuid").unwrap_or_default(),
-                "type": r.try_get::<String, _>("edge_type").unwrap_or_default(),
+        Ok(rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "source": r.try_get::<String, _>("source_doc_uuid").unwrap_or_default(),
+                    "target": r.try_get::<String, _>("target_doc_uuid").unwrap_or_default(),
+                    "type": r.try_get::<String, _>("edge_type").unwrap_or_default(),
+                })
             })
-        }).collect())
+            .collect())
     }
 
     /// Extracts markdown headings as anchors
@@ -1408,7 +1866,9 @@ impl DbPools {
             // Get embedding for anchor text
             match self.get_embedding(&text, false).await {
                 Ok(vector) => {
-                    let _ = self.insert_anchor_embedding(anchor_id, vector, doc_uuid, &name).await;
+                    let _ = self
+                        .insert_anchor_embedding(anchor_id, vector, doc_uuid, &name)
+                        .await;
                 }
                 Err(e) => {
                     tracing::warn!("Failed to embed anchor '{}': {}", name, e);
@@ -1428,12 +1888,13 @@ impl DbPools {
         use sqlx::Row;
 
         // 1. Try exact match on doc_uuid
-        let row_opt = sqlx::query("SELECT DISTINCT doc_uuid FROM documents WHERE doc_uuid = $1 LIMIT 1")
-            .bind(input)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
+        let row_opt =
+            sqlx::query("SELECT DISTINCT doc_uuid FROM documents WHERE doc_uuid = $1 LIMIT 1")
+                .bind(input)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
 
         if let Some(row) = row_opt {
             let uuid: String = row.try_get("doc_uuid").unwrap_or_default();
@@ -1443,12 +1904,13 @@ impl DbPools {
         }
 
         // 2. Try exact match on filename
-        let row_opt = sqlx::query("SELECT DISTINCT doc_uuid FROM documents WHERE filename = $1 LIMIT 1")
-            .bind(input)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
+        let row_opt =
+            sqlx::query("SELECT DISTINCT doc_uuid FROM documents WHERE filename = $1 LIMIT 1")
+                .bind(input)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
 
         if let Some(row) = row_opt {
             let uuid: String = row.try_get("doc_uuid").unwrap_or_default();
@@ -1459,12 +1921,13 @@ impl DbPools {
 
         // 3. Try partial case-insensitive match on filename
         let pattern = format!("%{}%", input);
-        let row_opt = sqlx::query("SELECT DISTINCT doc_uuid FROM documents WHERE filename ILIKE $1 LIMIT 1")
-            .bind(&pattern)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
+        let row_opt =
+            sqlx::query("SELECT DISTINCT doc_uuid FROM documents WHERE filename ILIKE $1 LIMIT 1")
+                .bind(&pattern)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
 
         if let Some(row) = row_opt {
             let uuid: String = row.try_get("doc_uuid").unwrap_or_default();
@@ -1481,4 +1944,16 @@ impl Default for DbPools {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn json_array_to_strings(value: serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }

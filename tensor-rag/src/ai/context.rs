@@ -124,11 +124,18 @@ fn build_sources_context(sources: &[ChatSource]) -> String {
     )
 }
 
-fn agent_instruction(doc_uuid: Option<&str>, scope_to_selected_document: bool, rag_top_k: usize) -> String {
+fn agent_instruction(
+    doc_uuid: Option<&str>,
+    scope_to_selected_document: bool,
+    rag_top_k: usize,
+) -> String {
     let mut lines = vec![
         "You can decide whether to call local MCP-backed tools before answering.".to_string(),
         "Only call a tool when it genuinely helps answer the user's request.".to_string(),
-        format!("When using search_text, prefer concise keyword queries and keep final_top_k at or below {}.", rag_top_k),
+        format!(
+            "When using search_text, prefer concise keyword queries and keep final_top_k at or below {}.",
+            rag_top_k
+        ),
         "If no tool is needed, answer directly.".to_string(),
     ];
 
@@ -167,7 +174,10 @@ fn trim_messages_to_budget(
     }
 }
 
-fn trim_sliding_window(messages: Vec<serde_json::Value>, token_limit: usize) -> Vec<serde_json::Value> {
+fn trim_sliding_window(
+    messages: Vec<serde_json::Value>,
+    token_limit: usize,
+) -> Vec<serde_json::Value> {
     let (system_messages, conversation_messages) = split_system_and_conversation(messages);
     let mut kept = Vec::new();
     let mut acc = system_messages.clone();

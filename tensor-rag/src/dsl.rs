@@ -53,8 +53,11 @@ fn parse_add_metadata_args(args: &Value) -> Result<AstNode, String> {
                 value = match val {
                     Value::String(s) => serde_json::json!(s),
                     Value::Number(n) => {
-                        if let Some(i) = n.as_i64() { serde_json::json!(i) }
-                        else { serde_json::json!(n.as_f64().unwrap_or(0.0)) }
+                        if let Some(i) = n.as_i64() {
+                            serde_json::json!(i)
+                        } else {
+                            serde_json::json!(n.as_f64().unwrap_or(0.0))
+                        }
                     }
                     _ => return Err("value must be a string or number".to_string()),
                 };
@@ -64,10 +67,18 @@ fn parse_add_metadata_args(args: &Value) -> Result<AstNode, String> {
         current = next_cell.cdr();
     }
 
-    if doc_uuid.is_empty() { return Err("Missing :doc-uuid".to_string()); }
-    if key.is_empty() { return Err("Missing :key".to_string()); }
+    if doc_uuid.is_empty() {
+        return Err("Missing :doc-uuid".to_string());
+    }
+    if key.is_empty() {
+        return Err("Missing :key".to_string());
+    }
 
-    Ok(AstNode::AddMetadata { doc_uuid, key, value })
+    Ok(AstNode::AddMetadata {
+        doc_uuid,
+        key,
+        value,
+    })
 }
 
 fn parse_add_anchor_args(args: &Value) -> Result<AstNode, String> {
@@ -93,11 +104,21 @@ fn parse_add_anchor_args(args: &Value) -> Result<AstNode, String> {
         current = next_cell.cdr();
     }
 
-    if doc_uuid.is_empty() { return Err("Missing :doc-uuid".to_string()); }
-    if name.is_empty() { return Err("Missing :name".to_string()); }
-    if text.is_empty() { return Err("Missing :text".to_string()); }
+    if doc_uuid.is_empty() {
+        return Err("Missing :doc-uuid".to_string());
+    }
+    if name.is_empty() {
+        return Err("Missing :name".to_string());
+    }
+    if text.is_empty() {
+        return Err("Missing :text".to_string());
+    }
 
-    Ok(AstNode::AddAnchor { doc_uuid, name, text })
+    Ok(AstNode::AddAnchor {
+        doc_uuid,
+        name,
+        text,
+    })
 }
 
 fn parse_add_edge_args(args: &Value) -> Result<AstNode, String> {
@@ -121,18 +142,32 @@ fn parse_add_edge_args(args: &Value) -> Result<AstNode, String> {
             ":type" => edge_type = val.as_str().ok_or("type must be a string")?.to_string(),
             ":metadata" => {
                 let meta_str = val.as_str().ok_or("metadata must be a JSON string")?;
-                metadata = Some(serde_json::from_str(meta_str).map_err(|e| format!("Invalid metadata JSON: {}", e))?);
+                metadata = Some(
+                    serde_json::from_str(meta_str)
+                        .map_err(|e| format!("Invalid metadata JSON: {}", e))?,
+                );
             }
             _ => return Err(format!("Unknown parameter: {}", key_sym)),
         }
         current = next_cell.cdr();
     }
 
-    if source.is_empty() { return Err("Missing :source".to_string()); }
-    if target.is_empty() { return Err("Missing :target".to_string()); }
-    if edge_type.is_empty() { return Err("Missing :type".to_string()); }
+    if source.is_empty() {
+        return Err("Missing :source".to_string());
+    }
+    if target.is_empty() {
+        return Err("Missing :target".to_string());
+    }
+    if edge_type.is_empty() {
+        return Err("Missing :type".to_string());
+    }
 
-    Ok(AstNode::AddEdge { source, target, edge_type, metadata })
+    Ok(AstNode::AddEdge {
+        source,
+        target,
+        edge_type,
+        metadata,
+    })
 }
 
 fn parse_multi_hop_args(args: &Value) -> Result<AstNode, String> {
@@ -284,24 +319,41 @@ fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
                 final_top_k = value.as_u64().ok_or("final-top-k must be an integer")? as usize;
             }
             ":doc-uuid" => {
-                doc_uuid = Some(value.as_str().ok_or("doc-uuid must be a string")?.to_string());
+                doc_uuid = Some(
+                    value
+                        .as_str()
+                        .ok_or("doc-uuid must be a string")?
+                        .to_string(),
+                );
             }
             ":alpha" => {
                 alpha = Some(value.as_f64().ok_or("alpha must be a float")? as f32);
             }
             ":anchor-name" => {
-                anchor_name = Some(value.as_str().ok_or("anchor-name must be a string")?.to_string());
+                anchor_name = Some(
+                    value
+                        .as_str()
+                        .ok_or("anchor-name must be a string")?
+                        .to_string(),
+                );
             }
             ":anchor-mode" => {
-                let mode_str = value.as_symbol().or_else(|| value.as_str().map(|s| {
-                    // Create a symbol-like Value from string
-                    return s;
-                })).ok_or("anchor-mode must be a symbol (exact, semantic, or both)")?;
+                let mode_str = value
+                    .as_symbol()
+                    .or_else(|| {
+                        value.as_str().map(|s| {
+                            // Create a symbol-like Value from string
+                            return s;
+                        })
+                    })
+                    .ok_or("anchor-mode must be a symbol (exact, semantic, or both)")?;
                 anchor_mode = match mode_str {
                     "exact" => Some(AnchorSearchMode::Exact),
                     "semantic" => Some(AnchorSearchMode::Semantic),
                     "both" => Some(AnchorSearchMode::Both),
-                    _ => return Err("anchor-mode must be one of: exact, semantic, both".to_string()),
+                    _ => {
+                        return Err("anchor-mode must be one of: exact, semantic, both".to_string());
+                    }
                 };
             }
             ":metadata-filters" => {
@@ -338,9 +390,13 @@ fn parse_filters_list(filter_val: &Value) -> Result<Vec<Filter>, String> {
 
             let json_val = match val {
                 Value::Number(n) => {
-                    if let Some(i) = n.as_i64() { serde_json::json!(i) }
-                    else if let Some(f) = n.as_f64() { serde_json::json!(f) }
-                    else { return Err("Unsupported number format in filter".to_string()); }
+                    if let Some(i) = n.as_i64() {
+                        serde_json::json!(i)
+                    } else if let Some(f) = n.as_f64() {
+                        serde_json::json!(f)
+                    } else {
+                        return Err("Unsupported number format in filter".to_string());
+                    }
                 }
                 Value::String(s) => serde_json::json!(s),
                 _ => return Err("Unsupported value type in filter".to_string()),
@@ -363,9 +419,13 @@ fn parse_filters_list(filter_val: &Value) -> Result<Vec<Filter>, String> {
 
                     let json_val = match val {
                         Value::Number(n) => {
-                            if let Some(i) = n.as_i64() { serde_json::json!(i) }
-                            else if let Some(f) = n.as_f64() { serde_json::json!(f) }
-                            else { return Err("Unsupported number format in filter".to_string()); }
+                            if let Some(i) = n.as_i64() {
+                                serde_json::json!(i)
+                            } else if let Some(f) = n.as_f64() {
+                                serde_json::json!(f)
+                            } else {
+                                return Err("Unsupported number format in filter".to_string());
+                            }
                         }
                         Value::String(s) => serde_json::json!(s),
                         _ => return Err("Unsupported value type in filter".to_string()),
@@ -500,6 +560,12 @@ fn parse_rerank(rerank_val: &Value) -> Result<RerankStrategy, String> {
                 let k_val = rest.cdr().as_cons().ok_or("Expected k value")?.car();
                 let k = k_val.as_u64().ok_or("k must be an integer")? as usize;
                 Ok(RerankStrategy::Rrf { k })
+            } else if strategy == "rsf" {
+                Ok(RerankStrategy::Rsf {
+                    dense_weight: None,
+                    bm25_weight: None,
+                    entity_weight: None,
+                })
             } else {
                 let rest_json = if let Some(rest) = cell.cdr().as_cons() {
                     let mut args_map = serde_json::Map::new();

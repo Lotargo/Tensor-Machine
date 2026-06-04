@@ -96,7 +96,8 @@ fn get_setting(settings: &HashMap<String, String>, key: &str) -> Option<String> 
 pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, String> {
     let provider = get_setting(settings, "AI_PROVIDER").unwrap_or_else(|| "openai".to_string());
     let (default_base_url, default_model) = ai_defaults_for_provider(&provider);
-    let base_url = get_setting(settings, "AI_BASE_URL").unwrap_or_else(|| default_base_url.to_string());
+    let base_url =
+        get_setting(settings, "AI_BASE_URL").unwrap_or_else(|| default_base_url.to_string());
     let model = get_setting(settings, "AI_MODEL").unwrap_or_else(|| default_model.to_string());
     let api_key = get_setting(settings, "AI_API_KEY").unwrap_or_default();
     let temperature = get_setting(settings, "AI_TEMPERATURE")
@@ -107,8 +108,8 @@ pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, St
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(5)
         .max(1);
-    let system_prompt =
-        get_setting(settings, "AI_SYSTEM_PROMPT").unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+    let system_prompt = get_setting(settings, "AI_SYSTEM_PROMPT")
+        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
     let chat_mode = context::AiChatMode::from_setting(
         &get_setting(settings, "AI_CHAT_MODE").unwrap_or_else(|| "rag".to_string()),
     );
@@ -125,7 +126,9 @@ pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, St
         .clamp(1, 12);
 
     if base_url.is_empty() {
-        return Err("AI_BASE_URL is empty. Choose a provider or specify a custom base URL.".to_string());
+        return Err(
+            "AI_BASE_URL is empty. Choose a provider or specify a custom base URL.".to_string(),
+        );
     }
     if model.is_empty() {
         return Err("AI_MODEL is empty. Choose a model in the AI settings.".to_string());
@@ -186,7 +189,8 @@ pub async fn run_chat(
         } else {
             Vec::new()
         };
-        let request_messages = context::build_completion_messages(&config, &request.messages, &sources)?;
+        let request_messages =
+            context::build_completion_messages(&config, &request.messages, &sources)?;
         let completion = request_completion_from_messages(&config, &request_messages).await?;
         (completion, sources)
     };
@@ -259,8 +263,14 @@ pub async fn stream_chat(
             } else {
                 None
             };
-            let sources = retrieve_sources(&db_pools, &query, scoped_doc_uuid, config.rag_top_k).await?;
-            send_sse(&tx, "sources", &serde_json::to_value(&sources).map_err(|e| e.to_string())?).await?;
+            let sources =
+                retrieve_sources(&db_pools, &query, scoped_doc_uuid, config.rag_top_k).await?;
+            send_sse(
+                &tx,
+                "sources",
+                &serde_json::to_value(&sources).map_err(|e| e.to_string())?,
+            )
+            .await?;
             sources
         } else {
             Vec::new()
@@ -276,7 +286,8 @@ pub async fn stream_chat(
         )
         .await?;
 
-        let request_messages = context::build_completion_messages(&config, &request.messages, &sources)?;
+        let request_messages =
+            context::build_completion_messages(&config, &request.messages, &sources)?;
         request_completion_stream_from_messages(&config, &request_messages, &tx).await?;
         ChatDoneEvent {
             provider: config.provider.clone(),
@@ -348,7 +359,10 @@ pub(crate) fn parse_search_sources(payload_text: &str) -> Result<Vec<ChatSource>
                 return None;
             }
             let (title, excerpt) = parse_source_block(text);
-            let score = scores.get(index).and_then(|score| score.as_f64()).map(|score| score as f32);
+            let score = scores
+                .get(index)
+                .and_then(|score| score.as_f64())
+                .map(|score| score as f32);
             Some(ChatSource {
                 index: index + 1,
                 title,
@@ -502,8 +516,8 @@ async fn process_provider_sse_frame(
             return Ok(());
         }
 
-        let payload: serde_json::Value =
-            serde_json::from_str(data).map_err(|err| format!("Failed to parse streamed chunk: {err}"))?;
+        let payload: serde_json::Value = serde_json::from_str(data)
+            .map_err(|err| format!("Failed to parse streamed chunk: {err}"))?;
         let delta = payload
             .get("choices")
             .and_then(|value| value.get(0))

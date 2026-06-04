@@ -1,9 +1,14 @@
 pub mod ai;
+pub mod clustering;
+pub mod config;
 pub mod db;
+pub mod entity;
 pub mod ir;
 pub mod mcp;
+pub mod normalizer;
+pub mod response;
+pub mod rsf;
 pub mod vm;
-pub mod config;
 
 #[cfg(test)]
 mod tests {

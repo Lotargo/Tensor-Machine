@@ -1,10 +1,10 @@
+use arrow::ipc::writer::DictionaryTracker;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PutResult, SchemaResult, Ticket,
     flight_service_server::FlightService,
 };
-use arrow::ipc::writer::DictionaryTracker;
 use futures::Stream;
 use futures::StreamExt;
 use std::pin::Pin;
@@ -182,7 +182,9 @@ impl FlightService for TensorFlightService {
 
         use arrow_flight::decode::FlightRecordBatchStream;
         use futures::TryStreamExt;
-        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(stream.map_err(|e: tonic::Status| e.into()));
+        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
+            stream.map_err(|e: tonic::Status| e.into()),
+        );
 
         let mut batches = Vec::new();
 

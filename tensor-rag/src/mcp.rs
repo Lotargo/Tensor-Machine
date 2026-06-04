@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use regex::Regex;
 use once_cell::sync::Lazy;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -300,6 +300,8 @@ impl ToolHandler for SearchTool {
 
             match &mut ast {
                 crate::ir::AstNode::Search(req) => {
+                    let (real_query, _history) = crate::response::prune_query_history(&req.query);
+                    req.query = real_query;
                     if let Some(ref uuid_or_file) = req.doc_uuid {
                         if let Some(resolved) = db_pools.resolve_doc_uuid(uuid_or_file).await {
                             req.doc_uuid = Some(resolved);
@@ -394,15 +396,32 @@ async fn fetch_and_format_expanded_documents(
     };
 
     let mut neighbor_keys = Vec::new();
+    let mut parent_keys = Vec::new();
     for d in &details {
         if !d.doc_uuid.is_empty() {
             neighbor_keys.push((d.doc_uuid.clone(), d.chunk_index - 1));
             neighbor_keys.push((d.doc_uuid.clone(), d.chunk_index + 1));
+            if let Some(macro_idx) = d.macro_index {
+                parent_keys.push((d.doc_uuid.clone(), macro_idx));
+            } else if let Some(parent_idx) = d.parent_chunk_index {
+                parent_keys.push((d.doc_uuid.clone(), parent_idx));
+            }
         }
     }
 
     let neighbors_map = if !neighbor_keys.is_empty() {
-        db_pools.fetch_neighbors(&neighbor_keys).await.unwrap_or_default()
+        db_pools
+            .fetch_neighbors(&neighbor_keys)
+            .await
+            .unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+    let parents_map = if !parent_keys.is_empty() {
+        db_pools
+            .fetch_parent_chunks(&parent_keys)
+            .await
+            .unwrap_or_default()
     } else {
         std::collections::HashMap::new()
     };
@@ -417,11 +436,22 @@ async fn fetch_and_format_expanded_documents(
         if let Some(detail) = details_map.get(&id) {
             let prev_key = (detail.doc_uuid.clone(), detail.chunk_index - 1);
             let next_key = (detail.doc_uuid.clone(), detail.chunk_index + 1);
-            
+            let parent_key = detail
+                .macro_index
+                .or(detail.parent_chunk_index)
+                .map(|idx| (detail.doc_uuid.clone(), idx));
+
             let prev_text = neighbors_map.get(&prev_key);
             let next_text = neighbors_map.get(&next_key);
 
-            let mut context_window = detail.text.clone();
+            let mut context_window = if let Some(parent_key) = parent_key {
+                parents_map
+                    .get(&parent_key)
+                    .map(|parent| parent.text.clone())
+                    .unwrap_or_else(|| detail.text.clone())
+            } else {
+                detail.text.clone()
+            };
             if let Some(prev) = prev_text {
                 if !prev.trim().is_empty() {
                     context_window = format!("{} [...] {}", prev.trim(), context_window);
@@ -439,7 +469,20 @@ async fn fetch_and_format_expanded_documents(
                 } else {
                     String::new()
                 };
-                format!("Source: {}{}\n", detail.filename, chap)
+                let hierarchy = if detail.header_chain.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Headers: {}", detail.header_chain.join(" > "))
+                };
+                let zones = if detail.zone_keywords.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Zone: {}", detail.zone_keywords.join(", "))
+                };
+                format!(
+                    "Source: {}{} Level: {}{}{}\n",
+                    detail.filename, chap, detail.chunk_level, hierarchy, zones
+                )
             } else {
                 String::new()
             };
@@ -450,7 +493,7 @@ async fn fetch_and_format_expanded_documents(
         }
     }
 
-    formatted_docs
+    crate::response::deduplicate_contexts(formatted_docs)
 }
 
 pub struct SearchTextTool;
@@ -473,6 +516,8 @@ impl ToolHandler for SearchTextTool {
 
             match &mut ast {
                 crate::ir::AstNode::Search(req) => {
+                    let (real_query, _history) = crate::response::prune_query_history(&req.query);
+                    req.query = real_query;
                     if let Some(ref uuid_or_file) = req.doc_uuid {
                         if let Some(resolved) = db_pools.resolve_doc_uuid(uuid_or_file).await {
                             req.doc_uuid = Some(resolved);
@@ -516,7 +561,8 @@ impl ToolHandler for SearchTextTool {
 
             match result {
                 Some(crate::vm::Value::Result(topk)) => {
-                    let metadata = fetch_and_format_expanded_documents(db_pools, &topk.indices).await;
+                    let metadata =
+                        fetch_and_format_expanded_documents(db_pools, &topk.indices).await;
                     let response_json = trim_search_payload(topk.indices, topk.scores, metadata);
 
                     if let Some(m) = &metrics {
@@ -619,7 +665,9 @@ impl ToolHandler for ListDocumentsTool {
             use sqlx::Row;
             let mut docs = Vec::new();
             for row in rows {
-                let filename: String = row.try_get("filename").unwrap_or_else(|_| "Unknown".to_string());
+                let filename: String = row
+                    .try_get("filename")
+                    .unwrap_or_else(|_| "Unknown".to_string());
                 let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
                 docs.push(serde_json::json!({
                     "filename": filename,
@@ -710,22 +758,29 @@ impl ToolHandler for GetDocumentMetadataTool {
         _metrics: Option<Arc<crate::metrics::Metrics>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
-            let doc_uuid = args.get("doc_uuid")
+            let doc_uuid = args
+                .get("doc_uuid")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'doc_uuid'".to_string())?;
 
-            let resolved_uuid = db_pools.resolve_doc_uuid(doc_uuid).await
+            let resolved_uuid = db_pools
+                .resolve_doc_uuid(doc_uuid)
+                .await
                 .ok_or_else(|| format!("Could not resolve document: {}", doc_uuid))?;
 
-            match db_pools.fetch_document_metadata_by_uuid(&resolved_uuid).await? {
+            match db_pools
+                .fetch_document_metadata_by_uuid(&resolved_uuid)
+                .await?
+            {
                 Some(meta) => {
                     let formatted = serde_json::to_string_pretty(&meta)
                         .map_err(|e| format!("Failed to format response: {}", e))?;
                     Ok(formatted.into_bytes())
                 }
-                None => {
-                    Err(format!("Document metadata not found for UUID: {}", resolved_uuid))
-                }
+                None => Err(format!(
+                    "Document metadata not found for UUID: {}",
+                    resolved_uuid
+                )),
             }
         })
     }
@@ -741,7 +796,8 @@ impl ToolHandler for ExecTool {
         _metrics: Option<Arc<crate::metrics::Metrics>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
-            let dsl_string = args.get("dsl")
+            let dsl_string = args
+                .get("dsl")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'dsl'".to_string())?;
 
@@ -829,7 +885,10 @@ impl McpServer {
             tools: HashMap::new(),
             sessions: HashMap::new(),
             db_pools,
-            rate_limiter: Arc::new(RateLimiter::new(crate::config::get_mcp_rate_limit(), crate::config::get_mcp_rate_limit_refill())),
+            rate_limiter: Arc::new(RateLimiter::new(
+                crate::config::get_mcp_rate_limit(),
+                crate::config::get_mcp_rate_limit_refill(),
+            )),
             metrics,
         }
     }
@@ -949,7 +1008,10 @@ impl McpServer {
 
 fn extract_chapter_id(query: &str) -> Option<String> {
     static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)(?:Chapter|Part|Глава|Часть)\s+((?:\d+|\b[IVXLCDM]+\b|[a-zA-Z\p{Cyrillic}]+))").unwrap()
+        Regex::new(
+            r"(?i)(?:Chapter|Part|Глава|Часть)\s+((?:\d+|\b[IVXLCDM]+\b|[a-zA-Z\p{Cyrillic}]+))",
+        )
+        .unwrap()
     });
     if let Some(caps) = RE.captures(query) {
         if let Some(m) = caps.get(1) {
@@ -1007,8 +1069,9 @@ pub fn execute_program<'a>(
                         None
                     };
 
-                    let (mut ids, mut vectors) =
-                        db_pools.search_qdrant(&query_vec, &filters_opt, *top_k).await?;
+                    let (mut ids, mut vectors) = db_pools
+                        .search_qdrant(&query_vec, &filters_opt, *top_k)
+                        .await?;
 
                     // Also retrieve keyword-matching candidates from Postgres and merge them
                     let clean_query = query
@@ -1025,7 +1088,9 @@ pub fn execute_program<'a>(
                             let mut postgres_doc_uuid = None;
                             if let Some(f_list) = &filters_opt {
                                 for filter in f_list {
-                                    if filter.field == "doc_uuid" && (filter.operator == "==" || filter.operator == "=") {
+                                    if filter.field == "doc_uuid"
+                                        && (filter.operator == "==" || filter.operator == "=")
+                                    {
                                         if let Some(val_str) = filter.value.as_str() {
                                             postgres_doc_uuid = Some(val_str.to_string());
                                         }
@@ -1126,7 +1191,7 @@ pub fn execute_program<'a>(
                                                         }) => *n as usize,
                                                         _ => continue,
                                                     };
-                                                    
+
                                                     let vec_data = if let Some(qdrant_client::qdrant::VectorsOutput {
                                                         vectors_options: Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v)),
                                                     }) = &point.vectors {
@@ -1144,6 +1209,89 @@ pub fn execute_program<'a>(
                                                     vectors.push(ndarray::Array1::from(vec_data));
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let query_entities = crate::entity::extract_query_entities(query);
+                    if query_entities.len() >= 2 {
+                        let doc_uuid_filter = filters_opt.as_ref().and_then(|f_list| {
+                            f_list.iter().find_map(|filter| {
+                                if filter.field == "doc_uuid"
+                                    && (filter.operator == "==" || filter.operator == "=")
+                                {
+                                    filter.value.as_str().map(ToString::to_string)
+                                } else {
+                                    None
+                                }
+                            })
+                        });
+                        let entity_ids = db_pools
+                            .search_entity_candidate_ids(
+                                &query_entities,
+                                doc_uuid_filter.as_deref(),
+                                50,
+                            )
+                            .await;
+
+                        if !entity_ids.is_empty() {
+                            if let Some(client) = db_pools.qdrant_clients.get("default") {
+                                let collection = crate::config::get_qdrant_collection();
+                                let point_ids: Vec<qdrant_client::qdrant::PointId> = entity_ids
+                                    .iter()
+                                    .filter(|id| !ids.contains(id))
+                                    .map(|&id| qdrant_client::qdrant::PointId {
+                                        point_id_options: Some(
+                                            qdrant_client::qdrant::point_id::PointIdOptions::Num(
+                                                id as u64,
+                                            ),
+                                        ),
+                                    })
+                                    .collect();
+
+                                if !point_ids.is_empty() {
+                                    let request = qdrant_client::qdrant::GetPoints {
+                                        collection_name: collection.clone(),
+                                        ids: point_ids,
+                                        with_vectors: Some(qdrant_client::qdrant::WithVectorsSelector {
+                                            selector_options: Some(
+                                                qdrant_client::qdrant::with_vectors_selector::SelectorOptions::Enable(true),
+                                            ),
+                                        }),
+                                        with_payload: Some(qdrant_client::qdrant::WithPayloadSelector {
+                                            selector_options: Some(
+                                                qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(false),
+                                            ),
+                                        }),
+                                        ..Default::default()
+                                    };
+                                    if let Ok(response) = client.get_points(request).await {
+                                        for point in response.result {
+                                            let id = match &point.id {
+                                                Some(qdrant_client::qdrant::PointId {
+                                                    point_id_options: Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)),
+                                                }) => *n as usize,
+                                                _ => continue,
+                                            };
+
+                                            let vec_data = if let Some(qdrant_client::qdrant::VectorsOutput {
+                                                vectors_options: Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v)),
+                                            }) = &point.vectors {
+                                                if let Some(qdrant_client::qdrant::vector_output::Vector::Dense(dense)) = &v.vector {
+                                                    dense.data.clone()
+                                                } else {
+                                                    #[allow(deprecated)]
+                                                    v.data.clone()
+                                                }
+                                            } else {
+                                                vec![0.1; crate::config::get_embedding_dim()]
+                                            };
+
+                                            ids.push(id);
+                                            vectors.push(ndarray::Array1::from(vec_data));
                                         }
                                     }
                                 }
@@ -1169,6 +1317,28 @@ pub fn execute_program<'a>(
                     let real_ids: Vec<usize> =
                         id_arr.iter().map(|v| v.unwrap_or(0) as usize).collect();
                     let scores = db_pools.fetch_bm25_scores(&real_ids, query).await;
+
+                    vm.stack.push(crate::vm::Value::ArrowArray(Arc::new(
+                        arrow::array::Float32Array::from(scores),
+                    )));
+                }
+                crate::ir::OpCode::RetrieveEntityScores { query } => {
+                    let batch = vm
+                        .batch
+                        .as_ref()
+                        .ok_or("No batch found for RetrieveEntityScores")?;
+
+                    let id_col = batch.column_by_name("id").ok_or("Missing id column")?;
+                    let id_arr = id_col
+                        .as_any()
+                        .downcast_ref::<arrow::array::Int64Array>()
+                        .ok_or("Not Int64Array")?;
+                    let real_ids: Vec<usize> =
+                        id_arr.iter().map(|v| v.unwrap_or(0) as usize).collect();
+                    let query_entities = crate::entity::extract_query_entities(query);
+                    let scores = db_pools
+                        .fetch_entity_scores(&real_ids, &query_entities)
+                        .await;
 
                     vm.stack.push(crate::vm::Value::ArrowArray(Arc::new(
                         arrow::array::Float32Array::from(scores),
@@ -1229,12 +1399,16 @@ pub fn execute_program<'a>(
                     let mut doc_uuids = Vec::new();
                     if let Some(pool) = &db_pools.postgres {
                         use sqlx::Row;
-                        let ids_i64: Vec<i64> = main_result.indices.iter().map(|&x| x as i64).collect();
-                        let rows = sqlx::query("SELECT id, doc_uuid FROM documents WHERE id = ANY($1)")
-                            .bind(&ids_i64[..])
-                            .fetch_all(pool)
-                            .await
-                            .map_err(|e| format!("Failed to resolve doc_uuids for anchors: {}", e))?;
+                        let ids_i64: Vec<i64> =
+                            main_result.indices.iter().map(|&x| x as i64).collect();
+                        let rows =
+                            sqlx::query("SELECT id, doc_uuid FROM documents WHERE id = ANY($1)")
+                                .bind(&ids_i64[..])
+                                .fetch_all(pool)
+                                .await
+                                .map_err(|e| {
+                                    format!("Failed to resolve doc_uuids for anchors: {}", e)
+                                })?;
 
                         let mut uuid_map = std::collections::HashMap::new();
                         for r in rows {
@@ -1244,7 +1418,8 @@ pub fn execute_program<'a>(
                         }
 
                         for &doc_id in &main_result.indices {
-                            doc_uuids.push(uuid_map.get(&(doc_id as i64)).cloned().unwrap_or_default());
+                            doc_uuids
+                                .push(uuid_map.get(&(doc_id as i64)).cloned().unwrap_or_default());
                         }
                     } else {
                         return Err("PostgreSQL pool not initialized".to_string());
@@ -1265,27 +1440,35 @@ pub fn execute_program<'a>(
                         }
                         crate::ir::AnchorSearchMode::Semantic => {
                             let query_vector = db_pools.get_embedding(query, true).await?;
-                            let (ids, scores, _) = db_pools.search_anchors_dense(&query_vector, *top_k).await?;
-                            
+                            let (ids, scores, _) =
+                                db_pools.search_anchors_dense(&query_vector, *top_k).await?;
+
                             if !ids.is_empty() {
                                 if let Some(pool) = &db_pools.postgres {
                                     use sqlx::Row;
-                                    let rows = sqlx::query("SELECT id, doc_uuid FROM anchors WHERE id = ANY($1)")
-                                        .bind(&ids[..])
-                                        .fetch_all(pool)
-                                        .await
-                                        .map_err(|e| format!("Failed to map anchor IDs to doc_uuids: {}", e))?;
-                                    
+                                    let rows = sqlx::query(
+                                        "SELECT id, doc_uuid FROM anchors WHERE id = ANY($1)",
+                                    )
+                                    .bind(&ids[..])
+                                    .fetch_all(pool)
+                                    .await
+                                    .map_err(|e| {
+                                        format!("Failed to map anchor IDs to doc_uuids: {}", e)
+                                    })?;
+
                                     let mut anchor_uuid_map = std::collections::HashMap::new();
                                     for r in rows {
                                         let id: i64 = r.try_get("id").unwrap_or(-1);
-                                        let doc_uuid: String = r.try_get("doc_uuid").unwrap_or_default();
+                                        let doc_uuid: String =
+                                            r.try_get("doc_uuid").unwrap_or_default();
                                         anchor_uuid_map.insert(id, doc_uuid);
                                     }
 
                                     for (i, &anchor_id) in ids.iter().enumerate() {
                                         if let Some(doc_uuid) = anchor_uuid_map.get(&anchor_id) {
-                                            if let Some(idx) = doc_uuids.iter().position(|u| u == doc_uuid) {
+                                            if let Some(idx) =
+                                                doc_uuids.iter().position(|u| u == doc_uuid)
+                                            {
                                                 let score = scores[i];
                                                 if score > anchor_scores[idx] {
                                                     anchor_scores[idx] = score;
@@ -1306,27 +1489,35 @@ pub fn execute_program<'a>(
                                 }
                             }
                             let query_vector = db_pools.get_embedding(query, true).await?;
-                            let (ids, scores, _) = db_pools.search_anchors_dense(&query_vector, *top_k).await?;
-                            
+                            let (ids, scores, _) =
+                                db_pools.search_anchors_dense(&query_vector, *top_k).await?;
+
                             if !ids.is_empty() {
                                 if let Some(pool) = &db_pools.postgres {
                                     use sqlx::Row;
-                                    let rows = sqlx::query("SELECT id, doc_uuid FROM anchors WHERE id = ANY($1)")
-                                        .bind(&ids[..])
-                                        .fetch_all(pool)
-                                        .await
-                                        .map_err(|e| format!("Failed to map anchor IDs to doc_uuids: {}", e))?;
-                                    
+                                    let rows = sqlx::query(
+                                        "SELECT id, doc_uuid FROM anchors WHERE id = ANY($1)",
+                                    )
+                                    .bind(&ids[..])
+                                    .fetch_all(pool)
+                                    .await
+                                    .map_err(|e| {
+                                        format!("Failed to map anchor IDs to doc_uuids: {}", e)
+                                    })?;
+
                                     let mut anchor_uuid_map = std::collections::HashMap::new();
                                     for r in rows {
                                         let id: i64 = r.try_get("id").unwrap_or(-1);
-                                        let doc_uuid: String = r.try_get("doc_uuid").unwrap_or_default();
+                                        let doc_uuid: String =
+                                            r.try_get("doc_uuid").unwrap_or_default();
                                         anchor_uuid_map.insert(id, doc_uuid);
                                     }
 
                                     for (i, &anchor_id) in ids.iter().enumerate() {
                                         if let Some(doc_uuid) = anchor_uuid_map.get(&anchor_id) {
-                                            if let Some(idx) = doc_uuids.iter().position(|u| u == doc_uuid) {
+                                            if let Some(idx) =
+                                                doc_uuids.iter().position(|u| u == doc_uuid)
+                                            {
                                                 let score = scores[i];
                                                 if score > anchor_scores[idx] {
                                                     anchor_scores[idx] = score;
@@ -1340,24 +1531,41 @@ pub fn execute_program<'a>(
                     }
 
                     vm.stack.push(crate::vm::Value::Result(main_result));
-                    vm.stack.push(crate::vm::Value::Tensor1D(ndarray::Array1::from(anchor_scores)));
+                    vm.stack
+                        .push(crate::vm::Value::Tensor1D(ndarray::Array1::from(
+                            anchor_scores,
+                        )));
                 }
-                crate::ir::OpCode::AnchorFusion { main_weight, anchor_weight } => {
+                crate::ir::OpCode::AnchorFusion {
+                    main_weight,
+                    anchor_weight,
+                } => {
                     let anchor_val = vm.stack.pop().ok_or("Stack underflow in AnchorFusion")?;
                     let main_val = vm.stack.pop().ok_or("Stack underflow in AnchorFusion")?;
-                    
-                    let anchor_scores = match anchor_val {
-                        crate::vm::Value::Tensor1D(t) => t.to_vec(),
-                        crate::vm::Value::ArrowArray(arr) => {
-                            let t_f32 = arr.as_any().downcast_ref::<arrow::array::Float32Array>().ok_or("Not Float32Array")?;
-                            t_f32.iter().map(|v| v.unwrap_or(0.0)).collect()
-                        }
-                        _ => return Err("Expected Tensor1D or ArrowArray for AnchorFusion anchor scores".to_string()),
-                    };
+
+                    let anchor_scores =
+                        match anchor_val {
+                            crate::vm::Value::Tensor1D(t) => t.to_vec(),
+                            crate::vm::Value::ArrowArray(arr) => {
+                                let t_f32 = arr
+                                    .as_any()
+                                    .downcast_ref::<arrow::array::Float32Array>()
+                                    .ok_or("Not Float32Array")?;
+                                t_f32.iter().map(|v| v.unwrap_or(0.0)).collect()
+                            }
+                            _ => return Err(
+                                "Expected Tensor1D or ArrowArray for AnchorFusion anchor scores"
+                                    .to_string(),
+                            ),
+                        };
 
                     let main_result = match main_val {
                         crate::vm::Value::Result(r) => r,
-                        _ => return Err("Expected TopKResult for AnchorFusion main result".to_string()),
+                        _ => {
+                            return Err(
+                                "Expected TopKResult for AnchorFusion main result".to_string()
+                            );
+                        }
                     };
 
                     let mut fused_scores = Vec::new();
@@ -1367,13 +1575,17 @@ pub fn execute_program<'a>(
                         fused_scores.push(m * main_weight + a * anchor_weight);
                     }
 
-                    vm.stack.push(crate::vm::Value::Result(crate::vm::TopKResult {
-                        indices: main_result.indices,
-                        scores: fused_scores,
-                    }));
+                    vm.stack
+                        .push(crate::vm::Value::Result(crate::vm::TopKResult {
+                            indices: main_result.indices,
+                            scores: fused_scores,
+                        }));
                 }
                 crate::ir::OpCode::FilterByMetadata { filters } => {
-                    let val = vm.stack.pop().ok_or("Stack underflow in FilterByMetadata")?;
+                    let val = vm
+                        .stack
+                        .pop()
+                        .ok_or("Stack underflow in FilterByMetadata")?;
                     let main_result = match val {
                         crate::vm::Value::Result(r) => r,
                         _ => return Err("Expected TopKResult for FilterByMetadata".to_string()),
@@ -1384,23 +1596,31 @@ pub fn execute_program<'a>(
 
                     if let Some(pool) = &db_pools.postgres {
                         use sqlx::Row;
-                        let ids_i64: Vec<i64> = main_result.indices.iter().map(|&x| x as i64).collect();
-                        let rows = sqlx::query("SELECT id, metadata FROM documents WHERE id = ANY($1)")
-                            .bind(&ids_i64[..])
-                            .fetch_all(pool)
-                            .await
-                            .map_err(|e| format!("Failed to fetch metadata for filtering: {}", e))?;
+                        let ids_i64: Vec<i64> =
+                            main_result.indices.iter().map(|&x| x as i64).collect();
+                        let rows =
+                            sqlx::query("SELECT id, metadata FROM documents WHERE id = ANY($1)")
+                                .bind(&ids_i64[..])
+                                .fetch_all(pool)
+                                .await
+                                .map_err(|e| {
+                                    format!("Failed to fetch metadata for filtering: {}", e)
+                                })?;
 
                         let mut metadata_map = std::collections::HashMap::new();
                         for r in rows {
                             let id: i64 = r.try_get("id").unwrap_or(-1);
-                            let metadata_val: serde_json::Value = r.try_get("metadata").unwrap_or(serde_json::json!({}));
+                            let metadata_val: serde_json::Value =
+                                r.try_get("metadata").unwrap_or(serde_json::json!({}));
                             metadata_map.insert(id, metadata_val);
                         }
 
                         for (i, &doc_id) in main_result.indices.iter().enumerate() {
-                            let doc_metadata = metadata_map.get(&(doc_id as i64)).cloned().unwrap_or(serde_json::json!({}));
-                            
+                            let doc_metadata = metadata_map
+                                .get(&(doc_id as i64))
+                                .cloned()
+                                .unwrap_or(serde_json::json!({}));
+
                             let matches_all = filters.iter().all(|f| {
                                 let val = match doc_metadata.get(&f.field) {
                                     Some(v) => v,
@@ -1410,28 +1630,36 @@ pub fn execute_program<'a>(
                                     "==" | "=" => val == &f.value,
                                     "!=" => val != &f.value,
                                     ">=" => {
-                                        if let (Some(v_num), Some(f_num)) = (val.as_f64(), f.value.as_f64()) {
+                                        if let (Some(v_num), Some(f_num)) =
+                                            (val.as_f64(), f.value.as_f64())
+                                        {
                                             v_num >= f_num
                                         } else {
                                             false
                                         }
                                     }
                                     ">" => {
-                                        if let (Some(v_num), Some(f_num)) = (val.as_f64(), f.value.as_f64()) {
+                                        if let (Some(v_num), Some(f_num)) =
+                                            (val.as_f64(), f.value.as_f64())
+                                        {
                                             v_num > f_num
                                         } else {
                                             false
                                         }
                                     }
                                     "<=" => {
-                                        if let (Some(v_num), Some(f_num)) = (val.as_f64(), f.value.as_f64()) {
+                                        if let (Some(v_num), Some(f_num)) =
+                                            (val.as_f64(), f.value.as_f64())
+                                        {
                                             v_num <= f_num
                                         } else {
                                             false
                                         }
                                     }
                                     "<" => {
-                                        if let (Some(v_num), Some(f_num)) = (val.as_f64(), f.value.as_f64()) {
+                                        if let (Some(v_num), Some(f_num)) =
+                                            (val.as_f64(), f.value.as_f64())
+                                        {
                                             v_num < f_num
                                         } else {
                                             false
@@ -1455,27 +1683,47 @@ pub fn execute_program<'a>(
                         }
                     }
 
-                    vm.stack.push(crate::vm::Value::Result(crate::vm::TopKResult {
-                        indices: filtered_indices,
-                        scores: filtered_scores,
-                    }));
+                    vm.stack
+                        .push(crate::vm::Value::Result(crate::vm::TopKResult {
+                            indices: filtered_indices,
+                            scores: filtered_scores,
+                        }));
                 }
                 crate::ir::OpCode::RetrieveEdges { doc_uuid } => {
                     let _ = db_pools.fetch_edges_by_doc_uuid(doc_uuid, None).await?;
                     vm.stack.push(crate::vm::Value::Scalar(1.0));
                 }
-                crate::ir::OpCode::AddMetadata { doc_uuid, key, value } => {
-                    db_pools.update_document_metadata(doc_uuid, key, value.clone()).await?;
+                crate::ir::OpCode::AddMetadata {
+                    doc_uuid,
+                    key,
+                    value,
+                } => {
+                    db_pools
+                        .update_document_metadata(doc_uuid, key, value.clone())
+                        .await?;
                     vm.stack.push(crate::vm::Value::Scalar(1.0));
                 }
-                crate::ir::OpCode::AddAnchor { doc_uuid, name, text } => {
+                crate::ir::OpCode::AddAnchor {
+                    doc_uuid,
+                    name,
+                    text,
+                } => {
                     let anchor_id = db_pools.insert_anchor(doc_uuid, name, text).await?;
                     let vector = db_pools.get_embedding(text, true).await?;
-                    db_pools.insert_anchor_embedding(anchor_id, vector, doc_uuid, name).await?;
+                    db_pools
+                        .insert_anchor_embedding(anchor_id, vector, doc_uuid, name)
+                        .await?;
                     vm.stack.push(crate::vm::Value::Scalar(1.0));
                 }
-                crate::ir::OpCode::AddEdge { source, target, edge_type, metadata } => {
-                    db_pools.insert_edge(source, target, edge_type, metadata.clone()).await?;
+                crate::ir::OpCode::AddEdge {
+                    source,
+                    target,
+                    edge_type,
+                    metadata,
+                } => {
+                    db_pools
+                        .insert_edge(source, target, edge_type, metadata.clone())
+                        .await?;
                     vm.stack.push(crate::vm::Value::Scalar(1.0));
                 }
                 _ => {

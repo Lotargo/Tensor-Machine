@@ -1,9 +1,9 @@
 use crate::mcp::{McpRequest, McpResponse};
 use axum::{
+    Router,
     body::Body,
     extract::{Json, Multipart, Path as AxumPath, State},
     routing::post,
-    Router,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -382,7 +382,10 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/mermaid.min.js", axum::routing::get(serve_mermaid))
         .route("/mammoth.browser.min.js", axum::routing::get(serve_mammoth))
         .route("/documents", axum::routing::get(handle_list_documents))
-        .route("/documents/:id", axum::routing::delete(handle_delete_document))
+        .route(
+            "/documents/:id",
+            axum::routing::delete(handle_delete_document),
+        )
         .route(
             "/settings",
             axum::routing::get(handle_get_settings).post(handle_update_settings),
@@ -661,17 +664,20 @@ async fn handle_upload(
         }
     };
 
-    use crate::chunker::SmartChunker;
-    let chunker = SmartChunker::new(1000, 200);
-    let chunks = chunker.chunk(&ocr_text);
+    use crate::chunker::HierarchicalChunker;
+    let chunker = HierarchicalChunker::default();
+    let chunks = chunker.chunk(&ocr_text, &filename);
 
     info!("Split document into {} chunks.", chunks.len());
 
     let mut doc_ids = Vec::new();
     let doc_uuid = uuid::Uuid::new_v4().to_string();
     for item in chunks {
-        let augmented = format!("File: {}. Chapter: {}. {}", filename, item.chapter_id, item.text);
-        let vector = match state.db_pools.get_embedding(&augmented, false).await {
+        let vector = match state
+            .db_pools
+            .get_embedding(&item.embedding_text, false)
+            .await
+        {
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to generate vector embedding: {}", e);
@@ -686,7 +692,21 @@ async fn handle_upload(
         };
         match state
             .db_pools
-            .insert_document(&item.text, vector, &filename, &doc_uuid, &item.chapter_id, item.chunk_index)
+            .insert_document_enriched(
+                &item.text,
+                vector,
+                &filename,
+                &doc_uuid,
+                &item.chapter_id,
+                item.chunk_index,
+                item.level.as_str(),
+                item.parent_chunk_index,
+                item.macro_index,
+                item.medium_index,
+                &item.header_chain,
+                &item.zone_keywords,
+                &item.entities,
+            )
             .await
         {
             Ok(id) => doc_ids.push(id),
@@ -704,7 +724,10 @@ async fn handle_upload(
     }
 
     // Auto-extract anchors from headings in the OCR text
-    let anchor_count = state.db_pools.auto_extract_anchors(&doc_uuid, &ocr_text).await
+    let anchor_count = state
+        .db_pools
+        .auto_extract_anchors(&doc_uuid, &ocr_text)
+        .await
         .map(|ids| ids.len())
         .unwrap_or(0);
 
@@ -748,7 +771,10 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
     let file_status = file_resp.status();
     if !file_status.is_success() {
         let err_text = file_resp.text().await.unwrap_or_default();
-        return Err(format!("File upload failed ({}): {}", file_status, err_text));
+        return Err(format!(
+            "File upload failed ({}): {}",
+            file_status, err_text
+        ));
     }
 
     let file_info = file_resp
@@ -857,7 +883,11 @@ async fn serve_static_file(
     }
 
     let content = std::fs::read(&resolved).map_err(|_| axum::http::StatusCode::NOT_FOUND)?;
-    let content_type = match resolved.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+    let content_type = match resolved
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
         "js" => "application/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "json" => "application/json; charset=utf-8",
@@ -869,10 +899,7 @@ async fn serve_static_file(
         _ => "text/plain; charset=utf-8",
     };
 
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, content_type)],
-        content,
-    ))
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], content))
 }
 
 async fn serve_favicon() -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
@@ -940,7 +967,10 @@ async fn serve_marked() -> impl axum::response::IntoResponse {
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/javascript"),
     );
-    (headers, include_bytes!("../static/marked.min.js").as_slice())
+    (
+        headers,
+        include_bytes!("../static/marked.min.js").as_slice(),
+    )
 }
 
 async fn serve_katex_js() -> impl axum::response::IntoResponse {
@@ -958,7 +988,10 @@ async fn serve_katex_css() -> impl axum::response::IntoResponse {
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/css"),
     );
-    (headers, include_bytes!("../static/katex.min.css").as_slice())
+    (
+        headers,
+        include_bytes!("../static/katex.min.css").as_slice(),
+    )
 }
 
 async fn serve_mermaid() -> impl axum::response::IntoResponse {
@@ -967,7 +1000,10 @@ async fn serve_mermaid() -> impl axum::response::IntoResponse {
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/javascript"),
     );
-    (headers, include_bytes!("../static/mermaid.min.js").as_slice())
+    (
+        headers,
+        include_bytes!("../static/mermaid.min.js").as_slice(),
+    )
 }
 
 async fn serve_mammoth() -> impl axum::response::IntoResponse {
@@ -976,7 +1012,10 @@ async fn serve_mammoth() -> impl axum::response::IntoResponse {
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/javascript"),
     );
-    (headers, include_bytes!("../static/mammoth.browser.min.js").as_slice())
+    (
+        headers,
+        include_bytes!("../static/mammoth.browser.min.js").as_slice(),
+    )
 }
 
 async fn handle_delete_document(
@@ -1044,13 +1083,17 @@ async fn handle_chat(
     match crate::ai::run_chat(state.db_pools.clone(), &settings, request).await {
         Ok(response) => Ok((
             axum::http::StatusCode::OK,
-            Json(serde_json::to_value(response).map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?),
+            Json(
+                serde_json::to_value(response)
+                    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?,
+            ),
         )),
         Err(err) => {
             error!("Chat request failed: {}", err);
             let status = if err.contains("PERMISSION_DENIED") || err.contains("denied access") {
                 axum::http::StatusCode::FORBIDDEN
-            } else if err.contains("API key") || err.contains("Unauthorized") || err.contains("401") {
+            } else if err.contains("API key") || err.contains("Unauthorized") || err.contains("401")
+            {
                 axum::http::StatusCode::UNAUTHORIZED
             } else {
                 axum::http::StatusCode::BAD_GATEWAY
@@ -1090,7 +1133,8 @@ async fn handle_chat_stream(
         if let Ok(Err(err)) = worker.await {
             let status = if err.contains("PERMISSION_DENIED") || err.contains("denied access") {
                 "forbidden"
-            } else if err.contains("API key") || err.contains("Unauthorized") || err.contains("401") {
+            } else if err.contains("API key") || err.contains("Unauthorized") || err.contains("401")
+            {
                 "unauthorized"
             } else {
                 "error"
@@ -1108,13 +1152,13 @@ async fn handle_chat_stream(
 
     Ok((
         [
-            (axum::http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8"),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/event-stream; charset=utf-8",
+            ),
             (axum::http::header::CACHE_CONTROL, "no-cache"),
             (axum::http::header::CONNECTION, "keep-alive"),
         ],
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
     ))
 }
-
-
-

@@ -75,7 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let socket_path = tensor_rag::config::get_vm_socket_path();
         _vm_worker_process = Some(
             std::process::Command::new("cargo")
-                .args(["run", "--bin", "vm_worker", "--", &format!("--socket={}", socket_path)])
+                .args([
+                    "run",
+                    "--bin",
+                    "vm_worker",
+                    "--",
+                    &format!("--socket={}", socket_path),
+                ])
                 .spawn()
                 .expect("Failed to spawn vm_worker process"),
         );
@@ -158,9 +164,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let listener = listener_opt.unwrap();
-    let pg_status = if db_pools.postgres.is_some() { "ACTIVE (Pool)" } else { "MOCK MODE" };
-    let qdrant_status = if db_pools.qdrant_clients.contains_key("default") { "ACTIVE (Client)" } else { "MOCK MODE" };
-    let flight_addr = std::env::var("ARROW_FLIGHT_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
+    let pg_status = if db_pools.postgres.is_some() {
+        "ACTIVE (Pool)"
+    } else {
+        "MOCK MODE"
+    };
+    let qdrant_status = if db_pools.qdrant_clients.contains_key("default") {
+        "ACTIVE (Client)"
+    } else {
+        "MOCK MODE"
+    };
+    let flight_addr =
+        std::env::var("ARROW_FLIGHT_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
     let router_value = format!("http://{}", addr);
     let portal_value = "http://localhost:8080";
 
@@ -168,12 +183,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("+--------------------+----------------------------------------------------------+");
     println!("|                    TENSOR MACHINE INITIALIZED SUCCESSFULLY                    |");
     println!("+--------------------+----------------------------------------------------------+");
-    print_banner_row("[DATABASE]", &format!("PostgreSQL Connection status : {}", pg_status));
-    print_banner_row("[VECTOR DB]", &format!("Qdrant Vector DB status      : {}", qdrant_status));
-    print_banner_row("[FLIGHT API]", &format!("Arrow Flight Plane listening : {}", flight_addr));
-    print_banner_row("[MCP SERVER]", &format!("Active CPU Worker Instances  : {}", num_workers));
-    print_banner_row("[MCP ROUTER]", &format!("Axum HTTP Router running on  : {}", router_value));
-    print_banner_row("[PORTAL UI]", &format!("Document Portal URL          : {}", portal_value));
+    print_banner_row(
+        "[DATABASE]",
+        &format!("PostgreSQL Connection status : {}", pg_status),
+    );
+    print_banner_row(
+        "[VECTOR DB]",
+        &format!("Qdrant Vector DB status      : {}", qdrant_status),
+    );
+    print_banner_row(
+        "[FLIGHT API]",
+        &format!("Arrow Flight Plane listening : {}", flight_addr),
+    );
+    print_banner_row(
+        "[MCP SERVER]",
+        &format!("Active CPU Worker Instances  : {}", num_workers),
+    );
+    print_banner_row(
+        "[MCP ROUTER]",
+        &format!("Axum HTTP Router running on  : {}", router_value),
+    );
+    print_banner_row(
+        "[PORTAL UI]",
+        &format!("Document Portal URL          : {}", portal_value),
+    );
     println!("+--------------------+----------------------------------------------------------+");
     println!("\n");
 

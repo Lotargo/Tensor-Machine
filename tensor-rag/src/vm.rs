@@ -43,8 +43,18 @@ impl PartialEq for Value {
             (Value::Tensor2D(a), Value::Tensor2D(b)) => a == b,
             (Value::Result(a), Value::Result(b)) => a.indices == b.indices && a.scores == b.scores,
             (Value::ArrowArray(a), Value::ArrowArray(b)) => Arc::ptr_eq(a, b),
-            (Value::AnchorResult { ids: i1, scores: s1, names: n1 },
-             Value::AnchorResult { ids: i2, scores: s2, names: n2 }) => i1 == i2 && s1 == s2 && n1 == n2,
+            (
+                Value::AnchorResult {
+                    ids: i1,
+                    scores: s1,
+                    names: n1,
+                },
+                Value::AnchorResult {
+                    ids: i2,
+                    scores: s2,
+                    names: n2,
+                },
+            ) => i1 == i2 && s1 == s2 && n1 == n2,
             _ => false,
         }
     }
@@ -89,12 +99,14 @@ impl From<&Value> for IpcValue {
                 IpcValue::FlatArray(vec)
             }
             Value::Result(res) => IpcValue::Result(res.clone()),
-            Value::AnchorResult { ids, scores, names: _ } => {
-                IpcValue::Result(TopKResult {
-                    indices: ids.iter().map(|&id| id as usize).collect(),
-                    scores: scores.clone(),
-                })
-            }
+            Value::AnchorResult {
+                ids,
+                scores,
+                names: _,
+            } => IpcValue::Result(TopKResult {
+                indices: ids.iter().map(|&id| id as usize).collect(),
+                scores: scores.clone(),
+            }),
         }
     }
 }
@@ -211,6 +223,68 @@ impl VM {
             }
         }
         indices.to_vec()
+    }
+
+    fn compute_mmr(&self, relevance: &[f32], diversity: f32, limit: usize) -> Vec<(usize, f32)> {
+        if relevance.is_empty() {
+            return Vec::new();
+        }
+        let lambda = (1.0 - diversity).clamp(0.0, 1.0);
+        let vectors = self.batch_vectors();
+        let mut remaining: Vec<usize> = (0..relevance.len()).collect();
+        let mut selected = Vec::new();
+
+        if let Some((best_idx, _)) = relevance
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            selected.push((best_idx, relevance[best_idx]));
+            remaining.retain(|idx| *idx != best_idx);
+        }
+
+        while selected.len() < limit && !remaining.is_empty() {
+            let mut best = (remaining[0], f32::NEG_INFINITY);
+            for &candidate in &remaining {
+                let max_sim = selected
+                    .iter()
+                    .map(|(chosen, _)| {
+                        vectors
+                            .as_ref()
+                            .map(|v| cosine_slices(&v[candidate], &v[*chosen]))
+                            .unwrap_or(0.0)
+                    })
+                    .fold(0.0, f32::max);
+                let score = lambda * relevance[candidate] - (1.0 - lambda) * max_sim;
+                if score > best.1 {
+                    best = (candidate, score);
+                }
+            }
+            selected.push(best);
+            remaining.retain(|idx| *idx != best.0);
+        }
+
+        selected
+    }
+
+    fn batch_vectors(&self) -> Option<Vec<Vec<f32>>> {
+        let batch = self.batch.as_ref()?;
+        let vec_col = batch.column_by_name("vector")?;
+        let list_arr = vec_col
+            .as_any()
+            .downcast_ref::<arrow::array::FixedSizeListArray>()?;
+        let values = list_arr.values();
+        let f32_values = values
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()?;
+        let dim = list_arr.value_length() as usize;
+        let mut vectors = Vec::with_capacity(list_arr.len());
+        for i in 0..list_arr.len() {
+            let start = i * dim;
+            let end = start + dim;
+            vectors.push(f32_values.values()[start..end].to_vec());
+        }
+        Some(vectors)
     }
 
     /// Executes a single pure math operation.
@@ -573,7 +647,12 @@ impl VM {
                         (indices, scores, false)
                     }
                     Value::Result(topk) => {
-                        let top = topk.indices.into_iter().zip(topk.scores.into_iter()).take(*k).collect::<Vec<_>>();
+                        let top = topk
+                            .indices
+                            .into_iter()
+                            .zip(topk.scores.into_iter())
+                            .take(*k)
+                            .collect::<Vec<_>>();
                         let indices: Vec<usize> = top.iter().map(|(i, _)| *i).collect();
                         let scores: Vec<f32> = top.iter().map(|(_, s)| *s).collect();
                         (indices, scores, true)
@@ -587,60 +666,80 @@ impl VM {
                     self.map_indices_to_real_ids(&indices)
                 };
 
-                self.stack
-                    .push(Value::Result(TopKResult { indices: final_indices, scores }));
+                self.stack.push(Value::Result(TopKResult {
+                    indices: final_indices,
+                    scores,
+                }));
             }
             OpCode::Mmr(diversity) => {
                 let a = self.stack.pop().ok_or("Stack underflow")?;
 
-                // Synthetic MMR logic for demonstration
-                let (indices, scores) = match a {
+                let relevance = match a {
                     Value::ArrowArray(arr) => {
                         let t_f32 = arr
                             .as_any()
                             .downcast_ref::<arrow::array::Float32Array>()
                             .ok_or("Not Float32Array")?;
-                        let mut indexed: Vec<(usize, f32)> = t_f32
-                            .iter()
-                            .enumerate()
-                            .map(|(i, v)| (i, v.unwrap_or(0.0) * (1.0 - diversity)))
-                            .collect();
-                        indexed.sort_by(|x, y| {
-                            y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                        let top = indexed.into_iter().take(10).collect::<Vec<_>>(); // Fixed top K for MMR mock
-                        let indices: Vec<usize> = top.iter().map(|(i, _)| *i).collect();
-                        let scores: Vec<f32> = top.iter().map(|(_, s)| *s).collect();
-                        (indices, scores)
+                        t_f32.iter().map(|v| v.unwrap_or(0.0)).collect::<Vec<_>>()
                     }
+                    Value::Tensor1D(t) => t.to_vec(),
                     _ => return Err("Invalid type for MMR".into()),
                 };
+                let selected = self.compute_mmr(&relevance, *diversity, relevance.len());
+                let indices: Vec<usize> = selected.iter().map(|(idx, _)| *idx).collect();
+                let scores: Vec<f32> = selected.iter().map(|(_, score)| *score).collect();
                 let real_indices = self.map_indices_to_real_ids(&indices);
-                self.stack
-                    .push(Value::Result(TopKResult { indices: real_indices, scores }));
+                self.stack.push(Value::Result(TopKResult {
+                    indices: real_indices,
+                    scores,
+                }));
             }
             OpCode::Rrf(k) => {
-                let _b = self.stack.pop().ok_or("Stack underflow")?;
-                let _a = self.stack.pop().ok_or("Stack underflow")?;
-
-                // Synthetic RRF mock returning fixed values for testing
-                let indices = vec![0, 1, 2];
-                let scores = vec![
-                    1.0 / (60.0 + *k as f32),
-                    1.0 / (61.0 + *k as f32),
-                    1.0 / (62.0 + *k as f32),
-                ];
-                let real_indices = self.map_indices_to_real_ids(&indices);
-                self.stack
-                    .push(Value::Result(TopKResult { indices: real_indices, scores }));
+                let b = self.stack.pop().ok_or("Stack underflow")?;
+                let a = self.stack.pop().ok_or("Stack underflow")?;
+                let list_a = ranked_indices_from_value(a)?;
+                let list_b = ranked_indices_from_value(b)?;
+                let fused = crate::rsf::reciprocal_rank_fusion(&[list_a, list_b], *k);
+                let indices: Vec<usize> = fused.iter().map(|(idx, _)| *idx).collect();
+                let scores: Vec<f32> = fused.iter().map(|(_, score)| *score).collect();
+                self.stack.push(Value::Result(TopKResult {
+                    indices: self.map_indices_to_real_ids(&indices),
+                    scores,
+                }));
+            }
+            OpCode::Rsf(config) => {
+                let entity = self.stack.pop().ok_or("Stack underflow")?;
+                let bm25 = self.stack.pop().ok_or("Stack underflow")?;
+                let dense = self.stack.pop().ok_or("Stack underflow")?;
+                let dense_scores = scores_from_value(dense)?;
+                let bm25_scores = scores_from_value(bm25)?;
+                let entity_scores = scores_from_value(entity)?;
+                let ids: Vec<usize> = (0..dense_scores.len()).collect();
+                let fused = crate::rsf::compute_rsf(
+                    &ids,
+                    &[
+                        (crate::rsf::RsfChannel::Dense, dense_scores),
+                        (crate::rsf::RsfChannel::Bm25, bm25_scores),
+                        (crate::rsf::RsfChannel::Entity, entity_scores),
+                    ],
+                    config,
+                );
+                let indices: Vec<usize> = fused.iter().map(|(idx, _)| *idx).collect();
+                let scores: Vec<f32> = fused.iter().map(|(_, score)| *score).collect();
+                self.stack.push(Value::Result(TopKResult {
+                    indices: self.map_indices_to_real_ids(&indices),
+                    scores,
+                }));
             }
             OpCode::CallDynamic(name, _args) => {
                 if name == "mock_dynamic" {
                     let indices = vec![100];
                     let scores = vec![0.99];
                     let real_indices = self.map_indices_to_real_ids(&indices);
-                    self.stack
-                        .push(Value::Result(TopKResult { indices: real_indices, scores }));
+                    self.stack.push(Value::Result(TopKResult {
+                        indices: real_indices,
+                        scores,
+                    }));
                 } else {
                     return Err(format!("Unknown dynamic strategy: {}", name));
                 }
@@ -782,10 +881,17 @@ impl VM {
                 self.stack
                     .push(Value::Tensor1D(ndarray::Array1::from(scores)));
             }
-            OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres { .. } | OpCode::IfConfidence(..)
-            | OpCode::RetrieveAnchors { .. } | OpCode::RetrieveEdges { .. }
-            | OpCode::FilterByMetadata { .. } | OpCode::AnchorFusion { .. }
-            | OpCode::AddMetadata { .. } | OpCode::AddAnchor { .. } | OpCode::AddEdge { .. } => {
+            OpCode::RetrieveQdrant { .. }
+            | OpCode::RetrievePostgres { .. }
+            | OpCode::RetrieveEntityScores { .. }
+            | OpCode::IfConfidence(..)
+            | OpCode::RetrieveAnchors { .. }
+            | OpCode::RetrieveEdges { .. }
+            | OpCode::FilterByMetadata { .. }
+            | OpCode::AnchorFusion { .. }
+            | OpCode::AddMetadata { .. }
+            | OpCode::AddAnchor { .. }
+            | OpCode::AddEdge { .. } => {
                 return Err(
                     "I/O operations and branching must be handled by the orchestrator".into(),
                 );
@@ -818,6 +924,7 @@ impl VM {
             match instruction.op {
                 OpCode::RetrieveQdrant { .. }
                 | OpCode::RetrievePostgres { .. }
+                | OpCode::RetrieveEntityScores { .. }
                 | OpCode::IfConfidence(..)
                 | OpCode::RetrieveAnchors { .. }
                 | OpCode::RetrieveEdges { .. }
@@ -859,6 +966,62 @@ fn simd_dot_product(a: &[f32], b: &[f32]) -> f32 {
         i += 1;
     }
     sum
+}
+
+fn scores_from_value(value: Value) -> Result<Vec<f32>, String> {
+    match value {
+        Value::Tensor1D(t) => Ok(t.to_vec()),
+        Value::ArrowArray(arr) => {
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .ok_or("Not Float32Array")?;
+            Ok(t_f32.iter().map(|v| v.unwrap_or(0.0)).collect())
+        }
+        Value::Result(result) => Ok(result.scores),
+        _ => Err("Expected score vector".to_string()),
+    }
+}
+
+fn ranked_indices_from_value(value: Value) -> Result<Vec<usize>, String> {
+    match value {
+        Value::Result(result) => Ok(result.indices),
+        Value::Tensor1D(t) => {
+            let mut indexed: Vec<(usize, f32)> = t.into_iter().enumerate().collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            Ok(indexed.into_iter().map(|(idx, _)| idx).collect())
+        }
+        Value::ArrowArray(arr) => {
+            let t_f32 = arr
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .ok_or("Not Float32Array")?;
+            let mut indexed: Vec<(usize, f32)> = t_f32
+                .iter()
+                .enumerate()
+                .map(|(idx, score)| (idx, score.unwrap_or(0.0)))
+                .collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            Ok(indexed.into_iter().map(|(idx, _)| idx).collect())
+        }
+        _ => Err("Expected ranked value".to_string()),
+    }
+}
+
+fn cosine_slices(a: &[f32], b: &[f32]) -> f32 {
+    let mut dot = 0.0;
+    let mut an = 0.0;
+    let mut bn = 0.0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        an += x * x;
+        bn += y * y;
+    }
+    if an == 0.0 || bn == 0.0 {
+        0.0
+    } else {
+        dot / (an.sqrt() * bn.sqrt())
+    }
 }
 
 pub fn colbert_maxsim_simd(
@@ -1205,7 +1368,9 @@ mod io_rejection_tests {
         let mut vm = VM::new();
 
         let mut program = Program::new();
-        program.push(OpCode::RetrievePostgres { query: "test".to_string() });
+        program.push(OpCode::RetrievePostgres {
+            query: "test".to_string(),
+        });
 
         let res = vm.run(program, &mut 0, 10);
         assert!(res.is_err());

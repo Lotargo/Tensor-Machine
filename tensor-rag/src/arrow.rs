@@ -245,10 +245,7 @@ mod tests {
     fn test_qdrant_to_record_batch() {
         let dim = crate::config::get_embedding_dim();
         let ids = vec![1, 2];
-        let vectors = vec![
-            Array1::from_elem(dim, 0.1),
-            Array1::from_elem(dim, 0.2),
-        ];
+        let vectors = vec![Array1::from_elem(dim, 0.1), Array1::from_elem(dim, 0.2)];
 
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
         assert_eq!(batch.num_columns(), 5);
@@ -270,10 +267,7 @@ mod tests {
     fn test_ipc_roundtrip() {
         let dim = crate::config::get_embedding_dim();
         let ids = vec![10, 20];
-        let vectors = vec![
-            Array1::from_elem(dim, 0.5),
-            Array1::from_elem(dim, 0.8),
-        ];
+        let vectors = vec![Array1::from_elem(dim, 0.5), Array1::from_elem(dim, 0.8)];
         let batch = qdrant_to_record_batch(&ids, &vectors).unwrap();
 
         let manager = crate::shared_memory::SharedMemoryManager::new();

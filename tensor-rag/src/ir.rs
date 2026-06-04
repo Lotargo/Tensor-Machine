@@ -64,6 +64,15 @@ pub enum RerankStrategy {
     Mmr { diversity: f32 },
     #[serde(rename = "rrf")]
     Rrf { k: usize },
+    #[serde(rename = "rsf")]
+    Rsf {
+        #[serde(default)]
+        dense_weight: Option<f32>,
+        #[serde(default)]
+        bm25_weight: Option<f32>,
+        #[serde(default)]
+        entity_weight: Option<f32>,
+    },
     #[serde(rename = "dynamic")]
     Dynamic {
         name: String,
@@ -125,7 +134,9 @@ pub enum OpCode {
         top_k: usize,
     },
     /// Fetch BM25 scores and metadata from Postgres for given IDs
-    RetrievePostgres { query: String },
+    RetrievePostgres {
+        query: String,
+    },
     /// Compute semantic scores (dot product of query vector with retrieved vectors)
     ComputeSemantic,
     /// Load a scalar constant into memory
@@ -142,6 +153,12 @@ pub enum OpCode {
     Mmr(f32),
     /// Reciprocal Rank Fusion
     Rrf(usize),
+    /// Reciprocal Score Fusion over dense/BM25/entity channels
+    Rsf(crate::rsf::RsfConfig),
+    /// Fetch entity co-occurrence scores for current candidates
+    RetrieveEntityScores {
+        query: String,
+    },
     /// Branch execution based on max score threshold
     IfConfidence(f32, Program, Program),
     /// Return the result
@@ -227,6 +244,24 @@ impl Program {
 
 pub struct Planner;
 
+fn make_rsf_config(
+    dense_weight: Option<f32>,
+    bm25_weight: Option<f32>,
+    entity_weight: Option<f32>,
+) -> crate::rsf::RsfConfig {
+    let mut config = crate::rsf::RsfConfig::default();
+    if let Some(weight) = dense_weight {
+        config.dense_weight = weight;
+    }
+    if let Some(weight) = bm25_weight {
+        config.bm25_weight = weight;
+    }
+    if let Some(weight) = entity_weight {
+        config.entity_weight = weight;
+    }
+    config
+}
+
 impl Planner {
     pub fn compile(ast: AstNode) -> Program {
         let mut program = Program::new();
@@ -259,31 +294,42 @@ impl Planner {
                         });
                     }
                 }
-                let filters_opt = if filters.is_empty() { None } else { Some(filters) };
+                let filters_opt = if filters.is_empty() {
+                    None
+                } else {
+                    Some(filters)
+                };
 
                 if let Some(ref anchor) = request.anchor_name {
-                    let mode = request.anchor_mode.clone().unwrap_or(AnchorSearchMode::Semantic);
-                    
+                    let mode = request
+                        .anchor_mode
+                        .clone()
+                        .unwrap_or(AnchorSearchMode::Semantic);
+
                     program.push(OpCode::RetrieveQdrant {
                         query: request.query.clone(),
                         filters: filters_opt,
                         top_k: initial_k,
                     });
                     program.push(OpCode::ComputeSemantic);
-                    
+
                     match strategy {
                         RerankStrategy::SemanticOnly => {
                             program.push(OpCode::TopK(final_top_k));
                         }
                         RerankStrategy::Bm25Only => {
-                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
                             program.push(OpCode::TopK(final_top_k));
                         }
                         RerankStrategy::Hybrid {
                             semantic_weight,
                             bm25_weight,
                         } => {
-                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
                             program.push(OpCode::LoadConst(semantic_weight));
                             program.push(OpCode::LoadConst(bm25_weight));
                             program.push(OpCode::Fusion);
@@ -294,8 +340,28 @@ impl Planner {
                             program.push(OpCode::TopK(final_top_k));
                         }
                         RerankStrategy::Rrf { k } => {
-                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
                             program.push(OpCode::Rrf(k));
+                            program.push(OpCode::TopK(final_top_k));
+                        }
+                        RerankStrategy::Rsf {
+                            dense_weight,
+                            bm25_weight,
+                            entity_weight,
+                        } => {
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
+                            program.push(OpCode::RetrieveEntityScores {
+                                query: request.query.clone(),
+                            });
+                            program.push(OpCode::Rsf(make_rsf_config(
+                                dense_weight,
+                                bm25_weight,
+                                entity_weight,
+                            )));
                             program.push(OpCode::TopK(final_top_k));
                         }
                         RerankStrategy::Dynamic { name, args } => {
@@ -311,18 +377,18 @@ impl Planner {
                             });
                         }
                     }
-                    
+
                     program.push(OpCode::RetrieveAnchors {
                         query: anchor.clone(),
                         mode,
                         top_k: final_top_k,
                     });
-                    
+
                     program.push(OpCode::AnchorFusion {
                         main_weight: 0.7,
                         anchor_weight: 0.3,
                     });
-                    
+
                     program.push(OpCode::TopK(final_top_k));
                     program.push(OpCode::Emit);
                 } else {
@@ -346,7 +412,9 @@ impl Planner {
                             program.push(OpCode::Emit);
                         }
                         RerankStrategy::Bm25Only => {
-                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
                             if let Some(ref meta_filters) = request.metadata_filters {
                                 if !meta_filters.is_empty() {
                                     program.push(OpCode::FilterByMetadata {
@@ -361,7 +429,9 @@ impl Planner {
                             semantic_weight,
                             bm25_weight,
                         } => {
-                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
                             program.push(OpCode::LoadConst(semantic_weight));
                             program.push(OpCode::LoadConst(bm25_weight));
                             program.push(OpCode::Fusion);
@@ -388,8 +458,36 @@ impl Planner {
                             program.push(OpCode::Emit);
                         }
                         RerankStrategy::Rrf { k } => {
-                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
                             program.push(OpCode::Rrf(k));
+                            if let Some(ref meta_filters) = request.metadata_filters {
+                                if !meta_filters.is_empty() {
+                                    program.push(OpCode::FilterByMetadata {
+                                        filters: meta_filters.clone(),
+                                    });
+                                }
+                            }
+                            program.push(OpCode::TopK(final_top_k));
+                            program.push(OpCode::Emit);
+                        }
+                        RerankStrategy::Rsf {
+                            dense_weight,
+                            bm25_weight,
+                            entity_weight,
+                        } => {
+                            program.push(OpCode::RetrievePostgres {
+                                query: request.query.clone(),
+                            });
+                            program.push(OpCode::RetrieveEntityScores {
+                                query: request.query.clone(),
+                            });
+                            program.push(OpCode::Rsf(make_rsf_config(
+                                dense_weight,
+                                bm25_weight,
+                                entity_weight,
+                            )));
                             if let Some(ref meta_filters) = request.metadata_filters {
                                 if !meta_filters.is_empty() {
                                     program.push(OpCode::FilterByMetadata {
@@ -470,16 +568,42 @@ impl Planner {
                 program.push(OpCode::TopK(10));
                 program.push(OpCode::Emit);
             }
-            AstNode::AddMetadata { doc_uuid, key, value } => {
-                program.push(OpCode::AddMetadata { doc_uuid, key, value });
+            AstNode::AddMetadata {
+                doc_uuid,
+                key,
+                value,
+            } => {
+                program.push(OpCode::AddMetadata {
+                    doc_uuid,
+                    key,
+                    value,
+                });
                 program.push(OpCode::Emit);
             }
-            AstNode::AddAnchor { doc_uuid, name, text } => {
-                program.push(OpCode::AddAnchor { doc_uuid, name, text });
+            AstNode::AddAnchor {
+                doc_uuid,
+                name,
+                text,
+            } => {
+                program.push(OpCode::AddAnchor {
+                    doc_uuid,
+                    name,
+                    text,
+                });
                 program.push(OpCode::Emit);
             }
-            AstNode::AddEdge { source, target, edge_type, metadata } => {
-                program.push(OpCode::AddEdge { source, target, edge_type, metadata });
+            AstNode::AddEdge {
+                source,
+                target,
+                edge_type,
+                metadata,
+            } => {
+                program.push(OpCode::AddEdge {
+                    source,
+                    target,
+                    edge_type,
+                    metadata,
+                });
                 program.push(OpCode::Emit);
             }
         }
@@ -515,7 +639,10 @@ mod tests {
             OpCode::RetrieveQdrant { .. }
         ));
         assert_eq!(program.instructions[1].op, OpCode::ComputeSemantic);
-        assert!(matches!(program.instructions[2].op, OpCode::RetrievePostgres { .. }));
+        assert!(matches!(
+            program.instructions[2].op,
+            OpCode::RetrievePostgres { .. }
+        ));
         assert_eq!(program.instructions[3].op, OpCode::LoadConst(0.7));
         assert_eq!(program.instructions[4].op, OpCode::LoadConst(0.3));
         assert_eq!(program.instructions[5].op, OpCode::Fusion);
@@ -555,12 +682,43 @@ mod tests {
             OpCode::RetrieveQdrant { top_k: 100, .. }
         ));
         assert_eq!(program.instructions[1].op, OpCode::ComputeSemantic);
-        assert!(matches!(program.instructions[2].op, OpCode::RetrievePostgres { .. }));
+        assert!(matches!(
+            program.instructions[2].op,
+            OpCode::RetrievePostgres { .. }
+        ));
         assert_eq!(program.instructions[3].op, OpCode::LoadConst(0.25));
         assert_eq!(program.instructions[4].op, OpCode::LoadConst(0.75));
         assert_eq!(program.instructions[5].op, OpCode::Fusion);
         assert_eq!(program.instructions[6].op, OpCode::TopK(3));
         assert_eq!(program.instructions[7].op, OpCode::Emit);
+    }
+
+    #[test]
+    fn test_planner_compile_rsf() {
+        let request_json = r#"{
+            "query": "Alice Liddell and White Rabbit",
+            "rerank_strategy": {
+                "type": "rsf",
+                "dense_weight": 0.6,
+                "bm25_weight": 0.2,
+                "entity_weight": 0.2
+            },
+            "final_top_k": 4
+        }"#;
+
+        let request: QueryRequest = serde_json::from_str(request_json).unwrap();
+        let program = Planner::compile(AstNode::Search(request));
+
+        assert!(matches!(
+            program.instructions[2].op,
+            OpCode::RetrievePostgres { .. }
+        ));
+        assert!(matches!(
+            program.instructions[3].op,
+            OpCode::RetrieveEntityScores { .. }
+        ));
+        assert!(matches!(program.instructions[4].op, OpCode::Rsf(_)));
+        assert_eq!(program.instructions[5].op, OpCode::TopK(4));
     }
 
     #[test]
@@ -584,9 +742,6 @@ mod tests {
             program.instructions[0].op,
             OpCode::RetrieveQdrant { top_k, .. } if top_k == expected_top_k.saturating_mul(10)
         ));
-        assert_eq!(
-            program.instructions[2].op,
-            OpCode::TopK(expected_top_k)
-        );
+        assert_eq!(program.instructions[2].op, OpCode::TopK(expected_top_k));
     }
 }

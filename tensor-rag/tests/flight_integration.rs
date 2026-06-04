@@ -1,16 +1,16 @@
-use futures::TryStreamExt;
 use arrow::array::{Float32Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
+use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::flight_service_client::FlightServiceClient;
+use arrow_flight::{FlightDescriptor, Ticket};
+use futures::StreamExt;
+use futures::TryStreamExt;
 use std::sync::Arc;
+use tensor_rag::flight::TensorFlightService;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::encode::FlightDataEncoderBuilder;
-use arrow_flight::{Ticket, FlightDescriptor};
-use tensor_rag::flight::TensorFlightService;
-use futures::StreamExt;
 
 #[tokio::test]
 async fn test_flight_put_get_roundtrip() {
@@ -54,7 +54,8 @@ async fn test_flight_put_get_roundtrip() {
     let mut flight_data_msgs = Vec::new();
     while let Some(Ok(data)) = encoder.next().await {
         let mut mut_data = data;
-        mut_data.flight_descriptor = Some(FlightDescriptor::new_path(vec!["test_dataset".to_string()]));
+        mut_data.flight_descriptor =
+            Some(FlightDescriptor::new_path(vec!["test_dataset".to_string()]));
         flight_data_msgs.push(mut_data);
     }
 
@@ -64,10 +65,16 @@ async fn test_flight_put_get_roundtrip() {
     let ticket = Ticket {
         ticket: "test_dataset".as_bytes().to_vec().into(),
     };
-    let get_stream = client.do_get(ticket).await.expect("do_get failed").into_inner();
+    let get_stream = client
+        .do_get(ticket)
+        .await
+        .expect("do_get failed")
+        .into_inner();
 
     use arrow_flight::decode::FlightRecordBatchStream;
-    let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(get_stream.map_err(|e: tonic::Status| e.into()));
+    let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
+        get_stream.map_err(|e: tonic::Status| e.into()),
+    );
 
     let mut retrieved_batches = Vec::new();
     while let Some(Ok(batch)) = batch_stream.next().await {
