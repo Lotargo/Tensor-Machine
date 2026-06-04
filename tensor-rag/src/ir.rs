@@ -17,6 +17,28 @@ pub struct QueryRequest {
     pub doc_uuid: Option<String>,
     #[serde(default)]
     pub alpha: Option<f32>,
+    #[serde(default)]
+    pub anchor_name: Option<String>,
+    #[serde(default)]
+    pub anchor_mode: Option<AnchorSearchMode>,
+    #[serde(default)]
+    pub metadata_filters: Option<Vec<Filter>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub enum AnchorSearchMode {
+    #[serde(rename = "exact")]
+    Exact,
+    #[serde(rename = "semantic")]
+    Semantic,
+    #[serde(rename = "both")]
+    Both,
+}
+
+impl Default for AnchorSearchMode {
+    fn default() -> Self {
+        AnchorSearchMode::Semantic
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -76,6 +98,22 @@ pub enum AstNode {
         query: String,
         docs: Box<AstNode>,
     },
+    AddMetadata {
+        doc_uuid: String,
+        key: String,
+        value: serde_json::Value,
+    },
+    AddAnchor {
+        doc_uuid: String,
+        name: String,
+        text: String,
+    },
+    AddEdge {
+        source: String,
+        target: String,
+        edge_type: String,
+        metadata: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -87,7 +125,7 @@ pub enum OpCode {
         top_k: usize,
     },
     /// Fetch BM25 scores and metadata from Postgres for given IDs
-    RetrievePostgres,
+    RetrievePostgres { query: String },
     /// Compute semantic scores (dot product of query vector with retrieved vectors)
     ComputeSemantic,
     /// Load a scalar constant into memory
@@ -124,6 +162,37 @@ pub enum OpCode {
     ColbertMaxSim,
     /// Mock load query tokens (M x 128)
     LoadColbertQuery(String),
+    RetrieveAnchors {
+        query: String,
+        mode: AnchorSearchMode,
+        top_k: usize,
+    },
+    RetrieveEdges {
+        doc_uuid: String,
+    },
+    FilterByMetadata {
+        filters: Vec<Filter>,
+    },
+    AnchorFusion {
+        main_weight: f32,
+        anchor_weight: f32,
+    },
+    AddMetadata {
+        doc_uuid: String,
+        key: String,
+        value: serde_json::Value,
+    },
+    AddAnchor {
+        doc_uuid: String,
+        name: String,
+        text: String,
+    },
+    AddEdge {
+        source: String,
+        target: String,
+        edge_type: String,
+        metadata: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,7 +236,7 @@ impl Planner {
                 let final_top_k = request
                     .final_top_k
                     .clamp(1, crate::config::get_search_max_top_k());
-                let initial_k = final_top_k.saturating_mul(10);
+                let initial_k = (final_top_k.saturating_mul(10)).max(100);
 
                 // Override strategy if alpha is provided
                 let strategy = if let Some(alpha) = request.alpha {
@@ -192,50 +261,157 @@ impl Planner {
                 }
                 let filters_opt = if filters.is_empty() { None } else { Some(filters) };
 
-                program.push(OpCode::RetrieveQdrant {
-                    query: request.query.clone(),
-                    filters: filters_opt,
-                    top_k: initial_k,
-                });
+                if let Some(ref anchor) = request.anchor_name {
+                    let mode = request.anchor_mode.clone().unwrap_or(AnchorSearchMode::Semantic);
+                    
+                    program.push(OpCode::RetrieveQdrant {
+                        query: request.query.clone(),
+                        filters: filters_opt,
+                        top_k: initial_k,
+                    });
+                    program.push(OpCode::ComputeSemantic);
+                    
+                    match strategy {
+                        RerankStrategy::SemanticOnly => {
+                            program.push(OpCode::TopK(final_top_k));
+                        }
+                        RerankStrategy::Bm25Only => {
+                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::TopK(final_top_k));
+                        }
+                        RerankStrategy::Hybrid {
+                            semantic_weight,
+                            bm25_weight,
+                        } => {
+                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::LoadConst(semantic_weight));
+                            program.push(OpCode::LoadConst(bm25_weight));
+                            program.push(OpCode::Fusion);
+                            program.push(OpCode::TopK(final_top_k));
+                        }
+                        RerankStrategy::Mmr { diversity } => {
+                            program.push(OpCode::Mmr(diversity));
+                            program.push(OpCode::TopK(final_top_k));
+                        }
+                        RerankStrategy::Rrf { k } => {
+                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::Rrf(k));
+                            program.push(OpCode::TopK(final_top_k));
+                        }
+                        RerankStrategy::Dynamic { name, args } => {
+                            program.push(OpCode::CallDynamic(name, args));
+                            program.push(OpCode::TopK(final_top_k));
+                        }
+                    }
 
-                program.push(OpCode::ComputeSemantic);
+                    if let Some(ref meta_filters) = request.metadata_filters {
+                        if !meta_filters.is_empty() {
+                            program.push(OpCode::FilterByMetadata {
+                                filters: meta_filters.clone(),
+                            });
+                        }
+                    }
+                    
+                    program.push(OpCode::RetrieveAnchors {
+                        query: anchor.clone(),
+                        mode,
+                        top_k: final_top_k,
+                    });
+                    
+                    program.push(OpCode::AnchorFusion {
+                        main_weight: 0.7,
+                        anchor_weight: 0.3,
+                    });
+                    
+                    program.push(OpCode::TopK(final_top_k));
+                    program.push(OpCode::Emit);
+                } else {
+                    program.push(OpCode::RetrieveQdrant {
+                        query: request.query.clone(),
+                        filters: filters_opt,
+                        top_k: initial_k,
+                    });
+                    program.push(OpCode::ComputeSemantic);
 
-                match strategy {
-                    RerankStrategy::SemanticOnly => {
-                        program.push(OpCode::TopK(final_top_k));
-                        program.push(OpCode::Emit);
-                    }
-                    RerankStrategy::Bm25Only => {
-                        program.push(OpCode::RetrievePostgres);
-                        program.push(OpCode::TopK(final_top_k));
-                        program.push(OpCode::Emit);
-                    }
-                    RerankStrategy::Hybrid {
-                        semantic_weight,
-                        bm25_weight,
-                    } => {
-                        program.push(OpCode::RetrievePostgres);
-                        program.push(OpCode::LoadConst(semantic_weight));
-                        program.push(OpCode::LoadConst(bm25_weight));
-                        program.push(OpCode::Fusion);
-                        program.push(OpCode::TopK(final_top_k));
-                        program.push(OpCode::Emit);
-                    }
-                    RerankStrategy::Mmr { diversity } => {
-                        program.push(OpCode::Mmr(diversity));
-                        program.push(OpCode::TopK(final_top_k));
-                        program.push(OpCode::Emit);
-                    }
-                    RerankStrategy::Rrf { k } => {
-                        program.push(OpCode::RetrievePostgres);
-                        program.push(OpCode::Rrf(k));
-                        program.push(OpCode::TopK(final_top_k));
-                        program.push(OpCode::Emit);
-                    }
-                    RerankStrategy::Dynamic { name, args } => {
-                        program.push(OpCode::CallDynamic(name, args));
-                        program.push(OpCode::TopK(final_top_k));
-                        program.push(OpCode::Emit);
+                    match strategy {
+                        RerankStrategy::SemanticOnly => {
+                            if let Some(ref meta_filters) = request.metadata_filters {
+                                if !meta_filters.is_empty() {
+                                    program.push(OpCode::FilterByMetadata {
+                                        filters: meta_filters.clone(),
+                                    });
+                                }
+                            }
+                            program.push(OpCode::TopK(final_top_k));
+                            program.push(OpCode::Emit);
+                        }
+                        RerankStrategy::Bm25Only => {
+                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            if let Some(ref meta_filters) = request.metadata_filters {
+                                if !meta_filters.is_empty() {
+                                    program.push(OpCode::FilterByMetadata {
+                                        filters: meta_filters.clone(),
+                                    });
+                                }
+                            }
+                            program.push(OpCode::TopK(final_top_k));
+                            program.push(OpCode::Emit);
+                        }
+                        RerankStrategy::Hybrid {
+                            semantic_weight,
+                            bm25_weight,
+                        } => {
+                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::LoadConst(semantic_weight));
+                            program.push(OpCode::LoadConst(bm25_weight));
+                            program.push(OpCode::Fusion);
+                            if let Some(ref meta_filters) = request.metadata_filters {
+                                if !meta_filters.is_empty() {
+                                    program.push(OpCode::FilterByMetadata {
+                                        filters: meta_filters.clone(),
+                                    });
+                                }
+                            }
+                            program.push(OpCode::TopK(final_top_k));
+                            program.push(OpCode::Emit);
+                        }
+                        RerankStrategy::Mmr { diversity } => {
+                            program.push(OpCode::Mmr(diversity));
+                            if let Some(ref meta_filters) = request.metadata_filters {
+                                if !meta_filters.is_empty() {
+                                    program.push(OpCode::FilterByMetadata {
+                                        filters: meta_filters.clone(),
+                                    });
+                                }
+                            }
+                            program.push(OpCode::TopK(final_top_k));
+                            program.push(OpCode::Emit);
+                        }
+                        RerankStrategy::Rrf { k } => {
+                            program.push(OpCode::RetrievePostgres { query: request.query.clone() });
+                            program.push(OpCode::Rrf(k));
+                            if let Some(ref meta_filters) = request.metadata_filters {
+                                if !meta_filters.is_empty() {
+                                    program.push(OpCode::FilterByMetadata {
+                                        filters: meta_filters.clone(),
+                                    });
+                                }
+                            }
+                            program.push(OpCode::TopK(final_top_k));
+                            program.push(OpCode::Emit);
+                        }
+                        RerankStrategy::Dynamic { name, args } => {
+                            program.push(OpCode::CallDynamic(name, args));
+                            if let Some(ref meta_filters) = request.metadata_filters {
+                                if !meta_filters.is_empty() {
+                                    program.push(OpCode::FilterByMetadata {
+                                        filters: meta_filters.clone(),
+                                    });
+                                }
+                            }
+                            program.push(OpCode::TopK(final_top_k));
+                            program.push(OpCode::Emit);
+                        }
                     }
                 }
             }
@@ -244,7 +420,7 @@ impl Planner {
                     program.push(OpCode::RetrieveQdrant {
                         query: query.clone(),
                         filters: None,
-                        top_k: 10, // Mock fixed top_k
+                        top_k: 10,
                     });
                 }
                 program.push(OpCode::ComputeSemantic);
@@ -272,7 +448,6 @@ impl Planner {
                 query: _,
                 fallback_query,
             } => {
-                // Corrective Rag mocks fallback
                 program.push(OpCode::RetrieveQdrant {
                     query: fallback_query.clone(),
                     filters: None,
@@ -284,7 +459,6 @@ impl Planner {
             }
             AstNode::ColbertRetrieval { query, docs } => {
                 let mut docs_prog = Planner::compile(*docs);
-                // Remove the last Emit if there is one
                 if let Some(last) = docs_prog.instructions.last() {
                     if last.op == OpCode::Emit {
                         docs_prog.instructions.pop();
@@ -294,6 +468,18 @@ impl Planner {
                 program.push(OpCode::LoadColbertQuery(query));
                 program.push(OpCode::ColbertMaxSim);
                 program.push(OpCode::TopK(10));
+                program.push(OpCode::Emit);
+            }
+            AstNode::AddMetadata { doc_uuid, key, value } => {
+                program.push(OpCode::AddMetadata { doc_uuid, key, value });
+                program.push(OpCode::Emit);
+            }
+            AstNode::AddAnchor { doc_uuid, name, text } => {
+                program.push(OpCode::AddAnchor { doc_uuid, name, text });
+                program.push(OpCode::Emit);
+            }
+            AstNode::AddEdge { source, target, edge_type, metadata } => {
+                program.push(OpCode::AddEdge { source, target, edge_type, metadata });
                 program.push(OpCode::Emit);
             }
         }
@@ -329,7 +515,7 @@ mod tests {
             OpCode::RetrieveQdrant { .. }
         ));
         assert_eq!(program.instructions[1].op, OpCode::ComputeSemantic);
-        assert_eq!(program.instructions[2].op, OpCode::RetrievePostgres);
+        assert!(matches!(program.instructions[2].op, OpCode::RetrievePostgres { .. }));
         assert_eq!(program.instructions[3].op, OpCode::LoadConst(0.7));
         assert_eq!(program.instructions[4].op, OpCode::LoadConst(0.3));
         assert_eq!(program.instructions[5].op, OpCode::Fusion);
@@ -366,10 +552,10 @@ mod tests {
         assert_eq!(program.instructions.len(), 8);
         assert!(matches!(
             program.instructions[0].op,
-            OpCode::RetrieveQdrant { top_k: 30, .. }
+            OpCode::RetrieveQdrant { top_k: 100, .. }
         ));
         assert_eq!(program.instructions[1].op, OpCode::ComputeSemantic);
-        assert_eq!(program.instructions[2].op, OpCode::RetrievePostgres);
+        assert!(matches!(program.instructions[2].op, OpCode::RetrievePostgres { .. }));
         assert_eq!(program.instructions[3].op, OpCode::LoadConst(0.25));
         assert_eq!(program.instructions[4].op, OpCode::LoadConst(0.75));
         assert_eq!(program.instructions[5].op, OpCode::Fusion);
@@ -386,6 +572,9 @@ mod tests {
             final_top_k: usize::MAX,
             doc_uuid: None,
             alpha: None,
+            anchor_name: None,
+            anchor_mode: None,
+            metadata_filters: None,
         };
 
         let program = Planner::compile(AstNode::Search(request));

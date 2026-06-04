@@ -28,6 +28,11 @@ pub enum Value {
     Tensor2D(ndarray::Array2<f32>),
     ArrowArray(Arc<dyn Array>),
     Result(TopKResult),
+    AnchorResult {
+        ids: Vec<i64>,
+        scores: Vec<f32>,
+        names: Vec<String>,
+    },
 }
 
 impl PartialEq for Value {
@@ -37,9 +42,9 @@ impl PartialEq for Value {
             (Value::Tensor1D(a), Value::Tensor1D(b)) => a == b,
             (Value::Tensor2D(a), Value::Tensor2D(b)) => a == b,
             (Value::Result(a), Value::Result(b)) => a.indices == b.indices && a.scores == b.scores,
-            // Simple reference equality for Arc<dyn Array> for tests,
-            // or just false if we don't need strict equality on Arrays
             (Value::ArrowArray(a), Value::ArrowArray(b)) => Arc::ptr_eq(a, b),
+            (Value::AnchorResult { ids: i1, scores: s1, names: n1 },
+             Value::AnchorResult { ids: i2, scores: s2, names: n2 }) => i1 == i2 && s1 == s2 && n1 == n2,
             _ => false,
         }
     }
@@ -84,6 +89,12 @@ impl From<&Value> for IpcValue {
                 IpcValue::FlatArray(vec)
             }
             Value::Result(res) => IpcValue::Result(res.clone()),
+            Value::AnchorResult { ids, scores, names: _ } => {
+                IpcValue::Result(TopKResult {
+                    indices: ids.iter().map(|&id| id as usize).collect(),
+                    scores: scores.clone(),
+                })
+            }
         }
     }
 }
@@ -771,7 +782,10 @@ impl VM {
                 self.stack
                     .push(Value::Tensor1D(ndarray::Array1::from(scores)));
             }
-            OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres | OpCode::IfConfidence(..) => {
+            OpCode::RetrieveQdrant { .. } | OpCode::RetrievePostgres { .. } | OpCode::IfConfidence(..)
+            | OpCode::RetrieveAnchors { .. } | OpCode::RetrieveEdges { .. }
+            | OpCode::FilterByMetadata { .. } | OpCode::AnchorFusion { .. }
+            | OpCode::AddMetadata { .. } | OpCode::AddAnchor { .. } | OpCode::AddEdge { .. } => {
                 return Err(
                     "I/O operations and branching must be handled by the orchestrator".into(),
                 );
@@ -803,8 +817,15 @@ impl VM {
 
             match instruction.op {
                 OpCode::RetrieveQdrant { .. }
-                | OpCode::RetrievePostgres
-                | OpCode::IfConfidence(..) => {
+                | OpCode::RetrievePostgres { .. }
+                | OpCode::IfConfidence(..)
+                | OpCode::RetrieveAnchors { .. }
+                | OpCode::RetrieveEdges { .. }
+                | OpCode::FilterByMetadata { .. }
+                | OpCode::AnchorFusion { .. }
+                | OpCode::AddMetadata { .. }
+                | OpCode::AddAnchor { .. }
+                | OpCode::AddEdge { .. } => {
                     return Err(
                         "I/O operations and branching must be handled by the orchestrator".into(),
                     );
@@ -1184,7 +1205,7 @@ mod io_rejection_tests {
         let mut vm = VM::new();
 
         let mut program = Program::new();
-        program.push(OpCode::RetrievePostgres);
+        program.push(OpCode::RetrievePostgres { query: "test".to_string() });
 
         let res = vm.run(program, &mut 0, 10);
         assert!(res.is_err());

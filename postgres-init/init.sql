@@ -4,6 +4,30 @@ CREATE TABLE IF NOT EXISTS documents (
     bm25_score REAL NOT NULL DEFAULT 0.0
 );
 
+CREATE TABLE IF NOT EXISTS anchors (
+    id BIGSERIAL PRIMARY KEY,
+    doc_uuid TEXT NOT NULL,
+    name TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_anchors_doc_uuid ON anchors(doc_uuid);
+CREATE INDEX IF NOT EXISTS idx_anchors_name ON anchors(doc_uuid, name);
+
+CREATE TABLE IF NOT EXISTS edges (
+    id BIGSERIAL PRIMARY KEY,
+    source_doc_uuid TEXT NOT NULL,
+    target_doc_uuid TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_doc_uuid);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_doc_uuid);
+CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);
+
 -- Seed with some sample documents
 INSERT INTO documents (id, text, bm25_score) VALUES
 (1, 'Tensor Machine is a high-performance vector search engine built in Rust.', 4.5),

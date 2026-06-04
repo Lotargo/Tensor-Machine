@@ -125,3 +125,13 @@ pub fn get_embedding_model_name() -> String {
         })
         .clone()
 }
+
+pub fn get_qdrant_anchors_collection() -> String {
+    static QDRANT_ANCHORS: OnceLock<String> = OnceLock::new();
+    QDRANT_ANCHORS
+        .get_or_init(|| {
+            std::env::var("QDRANT_ANCHORS_COLLECTION")
+                .unwrap_or_else(|_| "anchors".to_string())
+        })
+        .clone()
+}

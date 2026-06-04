@@ -55,6 +55,9 @@ mod tests {
             final_top_k: 100, // 100 * 10 = 1000 initial candidates
             doc_uuid: None,
             alpha: None,
+            anchor_name: None,
+            anchor_mode: None,
+            metadata_filters: None,
         };
 
         let mut latencies: Vec<u128> = Vec::with_capacity(100);

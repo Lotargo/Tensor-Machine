@@ -104,6 +104,34 @@ function handleMessage(msg) {
             }
           },
           {
+            name: "get_document_metadata",
+            description: "Retrieve metadata, anchors (headings), and relationships (edges) for a specific document by its doc_uuid.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                doc_uuid: {
+                  type: "string",
+                  description: "UUID of the document."
+                }
+              },
+              required: ["doc_uuid"]
+            }
+          },
+          {
+            name: "exec",
+            description: "Execute a declarative DSL S-expression command for side-effects, such as adding metadata, anchors, or edges.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                dsl: {
+                  type: "string",
+                  description: "DSL S-expression command to execute, e.g. (add-metadata :doc-uuid \"...\" :key \"...\" :value \"...\")"
+                }
+              },
+              required: ["dsl"]
+            }
+          },
+          {
             name: "help",
             description: "Retrieve comprehensive English guides, documentation, and query DSL examples for the hybrid search RAG engine.",
             inputSchema: {
@@ -116,7 +144,7 @@ function handleMessage(msg) {
       break;
 
     case "tools/call":
-      if (msg.params.name === "search" || msg.params.name === "read_document" || msg.params.name === "list_documents" || msg.params.name === "help") {
+      if (msg.params.name === "search" || msg.params.name === "read_document" || msg.params.name === "list_documents" || msg.params.name === "get_document_metadata" || msg.params.name === "exec" || msg.params.name === "help") {
         callTool(msg.id, msg.params.name, msg.params.arguments);
       } else {
         sendError(msg.id, -32601, "Method not found: tool " + msg.params.name);

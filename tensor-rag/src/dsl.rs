@@ -1,4 +1,4 @@
-use crate::ir::{AstNode, Filter, QueryRequest, RerankStrategy};
+use crate::ir::{AnchorSearchMode, AstNode, Filter, QueryRequest, RerankStrategy};
 use lexpr::Value;
 
 pub fn parse_dsl(input: &str) -> Result<AstNode, String> {
@@ -19,14 +19,120 @@ pub fn parse_dsl(input: &str) -> Result<AstNode, String> {
                 Some("self-rag") => parse_self_rag_args(cdr),
                 Some("corrective-rag") => parse_corrective_rag_args(cdr),
                 Some("colbert-retrieval") => parse_colbert_retrieval_args(cdr),
+                Some("add-metadata") => parse_add_metadata_args(cdr),
+                Some("add-anchor") => parse_add_anchor_args(cdr),
+                Some("add-edge") => parse_add_edge_args(cdr),
                 _ => Err(
-                    "Expected a 'search', 'multi-hop', 'self-rag', 'corrective-rag', or 'colbert-retrieval' expression"
+                    "Expected a 'search', 'multi-hop', 'self-rag', 'corrective-rag', 'colbert-retrieval', 'add-metadata', 'add-anchor', or 'add-edge' expression"
                         .to_string(),
                 ),
             }
         }
         _ => Err("Expected a list expression".to_string()),
     }
+}
+
+fn parse_add_metadata_args(args: &Value) -> Result<AstNode, String> {
+    let mut doc_uuid = String::new();
+    let mut key = String::new();
+    let mut value = serde_json::Value::Null;
+
+    let mut current = args;
+    while let Value::Cons(cell) = current {
+        let key_sym = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key_sym))?;
+        let val = next_cell.car();
+
+        match key_sym {
+            ":doc-uuid" => doc_uuid = val.as_str().ok_or("doc-uuid must be a string")?.to_string(),
+            ":key" => key = val.as_str().ok_or("key must be a string")?.to_string(),
+            ":value" => {
+                value = match val {
+                    Value::String(s) => serde_json::json!(s),
+                    Value::Number(n) => {
+                        if let Some(i) = n.as_i64() { serde_json::json!(i) }
+                        else { serde_json::json!(n.as_f64().unwrap_or(0.0)) }
+                    }
+                    _ => return Err("value must be a string or number".to_string()),
+                };
+            }
+            _ => return Err(format!("Unknown parameter: {}", key_sym)),
+        }
+        current = next_cell.cdr();
+    }
+
+    if doc_uuid.is_empty() { return Err("Missing :doc-uuid".to_string()); }
+    if key.is_empty() { return Err("Missing :key".to_string()); }
+
+    Ok(AstNode::AddMetadata { doc_uuid, key, value })
+}
+
+fn parse_add_anchor_args(args: &Value) -> Result<AstNode, String> {
+    let mut doc_uuid = String::new();
+    let mut name = String::new();
+    let mut text = String::new();
+
+    let mut current = args;
+    while let Value::Cons(cell) = current {
+        let key_sym = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key_sym))?;
+        let val = next_cell.car();
+
+        match key_sym {
+            ":doc-uuid" => doc_uuid = val.as_str().ok_or("doc-uuid must be a string")?.to_string(),
+            ":name" => name = val.as_str().ok_or("name must be a string")?.to_string(),
+            ":text" => text = val.as_str().ok_or("text must be a string")?.to_string(),
+            _ => return Err(format!("Unknown parameter: {}", key_sym)),
+        }
+        current = next_cell.cdr();
+    }
+
+    if doc_uuid.is_empty() { return Err("Missing :doc-uuid".to_string()); }
+    if name.is_empty() { return Err("Missing :name".to_string()); }
+    if text.is_empty() { return Err("Missing :text".to_string()); }
+
+    Ok(AstNode::AddAnchor { doc_uuid, name, text })
+}
+
+fn parse_add_edge_args(args: &Value) -> Result<AstNode, String> {
+    let mut source = String::new();
+    let mut target = String::new();
+    let mut edge_type = String::new();
+    let mut metadata = None;
+
+    let mut current = args;
+    while let Value::Cons(cell) = current {
+        let key_sym = cell.car().as_symbol().ok_or("Expected keyword symbol")?;
+        let next_cell = cell
+            .cdr()
+            .as_cons()
+            .ok_or(format!("Expected value after {}", key_sym))?;
+        let val = next_cell.car();
+
+        match key_sym {
+            ":source" => source = val.as_str().ok_or("source must be a string")?.to_string(),
+            ":target" => target = val.as_str().ok_or("target must be a string")?.to_string(),
+            ":type" => edge_type = val.as_str().ok_or("type must be a string")?.to_string(),
+            ":metadata" => {
+                let meta_str = val.as_str().ok_or("metadata must be a JSON string")?;
+                metadata = Some(serde_json::from_str(meta_str).map_err(|e| format!("Invalid metadata JSON: {}", e))?);
+            }
+            _ => return Err(format!("Unknown parameter: {}", key_sym)),
+        }
+        current = next_cell.cdr();
+    }
+
+    if source.is_empty() { return Err("Missing :source".to_string()); }
+    if target.is_empty() { return Err("Missing :target".to_string()); }
+    if edge_type.is_empty() { return Err("Missing :type".to_string()); }
+
+    Ok(AstNode::AddEdge { source, target, edge_type, metadata })
 }
 
 fn parse_multi_hop_args(args: &Value) -> Result<AstNode, String> {
@@ -118,7 +224,6 @@ fn parse_corrective_rag_args(args: &Value) -> Result<AstNode, String> {
 }
 
 fn parse_inner_node(val: &Value) -> Result<AstNode, String> {
-    // For nested AST parsing where the input is already a Value, not a string
     match val {
         Value::Cons(cell) => {
             let car = cell.car();
@@ -133,6 +238,9 @@ fn parse_inner_node(val: &Value) -> Result<AstNode, String> {
                 Some("self-rag") => parse_self_rag_args(cdr),
                 Some("corrective-rag") => parse_corrective_rag_args(cdr),
                 Some("colbert-retrieval") => parse_colbert_retrieval_args(cdr),
+                Some("add-metadata") => parse_add_metadata_args(cdr),
+                Some("add-anchor") => parse_add_anchor_args(cdr),
+                Some("add-edge") => parse_add_edge_args(cdr),
                 _ => {
                     Err("Expected an inner expression list starting with known keyword".to_string())
                 }
@@ -147,6 +255,11 @@ fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
     let mut filters: Option<Vec<Filter>> = None;
     let mut rerank_strategy = RerankStrategy::SemanticOnly;
     let mut final_top_k = 10;
+    let mut doc_uuid: Option<String> = None;
+    let mut alpha: Option<f32> = None;
+    let mut anchor_name: Option<String> = None;
+    let mut anchor_mode: Option<AnchorSearchMode> = None;
+    let mut metadata_filters: Option<Vec<Filter>> = None;
 
     let mut current = args;
     while let Value::Cons(cell) = current {
@@ -170,6 +283,30 @@ fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
             ":final-top-k" => {
                 final_top_k = value.as_u64().ok_or("final-top-k must be an integer")? as usize;
             }
+            ":doc-uuid" => {
+                doc_uuid = Some(value.as_str().ok_or("doc-uuid must be a string")?.to_string());
+            }
+            ":alpha" => {
+                alpha = Some(value.as_f64().ok_or("alpha must be a float")? as f32);
+            }
+            ":anchor-name" => {
+                anchor_name = Some(value.as_str().ok_or("anchor-name must be a string")?.to_string());
+            }
+            ":anchor-mode" => {
+                let mode_str = value.as_symbol().or_else(|| value.as_str().map(|s| {
+                    // Create a symbol-like Value from string
+                    return s;
+                })).ok_or("anchor-mode must be a symbol (exact, semantic, or both)")?;
+                anchor_mode = match mode_str {
+                    "exact" => Some(AnchorSearchMode::Exact),
+                    "semantic" => Some(AnchorSearchMode::Semantic),
+                    "both" => Some(AnchorSearchMode::Both),
+                    _ => return Err("anchor-mode must be one of: exact, semantic, both".to_string()),
+                };
+            }
+            ":metadata-filters" => {
+                metadata_filters = Some(parse_filters_list(value)?);
+            }
             _ => return Err(format!("Unknown parameter: {}", key)),
         }
 
@@ -181,9 +318,70 @@ fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
         filters,
         rerank_strategy,
         final_top_k,
-        doc_uuid: None,
-        alpha: None,
+        doc_uuid,
+        alpha,
+        anchor_name,
+        anchor_mode,
+        metadata_filters,
     })
+}
+
+fn parse_filters_list(filter_val: &Value) -> Result<Vec<Filter>, String> {
+    let mut parsed = Vec::new();
+    match filter_val {
+        Value::Cons(cell) => {
+            let op_sym = cell.car().as_symbol().ok_or("Expected filter operator")?;
+            let rest = cell.cdr().as_cons().ok_or("Expected filter operands")?;
+            let field_sym = rest.car().as_symbol().ok_or("Expected filter field")?;
+            let val_cell = rest.cdr().as_cons().ok_or("Expected filter value")?;
+            let val = val_cell.car();
+
+            let json_val = match val {
+                Value::Number(n) => {
+                    if let Some(i) = n.as_i64() { serde_json::json!(i) }
+                    else if let Some(f) = n.as_f64() { serde_json::json!(f) }
+                    else { return Err("Unsupported number format in filter".to_string()); }
+                }
+                Value::String(s) => serde_json::json!(s),
+                _ => return Err("Unsupported value type in filter".to_string()),
+            };
+
+            parsed.push(Filter {
+                field: field_sym.to_string(),
+                operator: op_sym.to_string(),
+                value: json_val,
+            });
+        }
+        Value::Vector(vec) => {
+            for item in vec {
+                if let Value::Cons(cell) = item {
+                    let op_sym = cell.car().as_symbol().ok_or("Expected filter operator")?;
+                    let rest = cell.cdr().as_cons().ok_or("Expected filter operands")?;
+                    let field_sym = rest.car().as_symbol().ok_or("Expected filter field")?;
+                    let val_cell = rest.cdr().as_cons().ok_or("Expected filter value")?;
+                    let val = val_cell.car();
+
+                    let json_val = match val {
+                        Value::Number(n) => {
+                            if let Some(i) = n.as_i64() { serde_json::json!(i) }
+                            else if let Some(f) = n.as_f64() { serde_json::json!(f) }
+                            else { return Err("Unsupported number format in filter".to_string()); }
+                        }
+                        Value::String(s) => serde_json::json!(s),
+                        _ => return Err("Unsupported value type in filter".to_string()),
+                    };
+
+                    parsed.push(Filter {
+                        field: field_sym.to_string(),
+                        operator: op_sym.to_string(),
+                        value: json_val,
+                    });
+                }
+            }
+        }
+        _ => return Err("Expected a filter expression or list".to_string()),
+    }
+    Ok(parsed)
 }
 
 fn parse_filters(filter_val: &Value) -> Result<Vec<Filter>, String> {

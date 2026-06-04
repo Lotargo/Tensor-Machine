@@ -382,12 +382,19 @@ async fn handle_upload(
         }
     }
 
+    // Auto-extract anchors from headings in the OCR text
+    let anchor_count = state.db_pools.auto_extract_anchors(&doc_uuid, &ocr_text).await
+        .map(|ids| ids.len())
+        .unwrap_or(0);
+
     (
         axum::http::StatusCode::OK,
         Json(serde_json::json!({
             "status": "success",
             "ids": doc_ids,
-            "filename": filename
+            "filename": filename,
+            "doc_uuid": doc_uuid,
+            "anchors_extracted": anchor_count
         })),
     )
 }
