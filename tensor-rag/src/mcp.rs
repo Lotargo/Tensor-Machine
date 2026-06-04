@@ -233,53 +233,7 @@ impl VmIpcClient {
 
 pub struct SearchTool;
 
-fn trim_search_payload(
-    indices: Vec<usize>,
-    scores: Vec<f32>,
-    documents: Vec<String>,
-) -> serde_json::Value {
-    let token_limit = crate::config::get_search_max_response_tokens();
-    let total_results = indices.len().min(scores.len()).min(documents.len());
-    let mut kept_indices = Vec::new();
-    let mut kept_scores = Vec::new();
-    let mut kept_documents = Vec::new();
-    let mut consumed_tokens = 0usize;
 
-    for ((index, score), document) in indices
-        .into_iter()
-        .zip(scores.into_iter())
-        .zip(documents.into_iter())
-    {
-        let document_tokens = crate::chunker::count_tokens(&document);
-        if consumed_tokens + document_tokens > token_limit {
-            break;
-        }
-
-        consumed_tokens += document_tokens;
-        kept_indices.push(index);
-        kept_scores.push(score);
-        kept_documents.push(document);
-    }
-
-    let trimmed = kept_indices.len() < total_results;
-    let warning = if trimmed {
-        Some(format!(
-            "Search response was trimmed to {} tokens; trailing results were dropped.",
-            token_limit
-        ))
-    } else {
-        None
-    };
-
-    serde_json::json!({
-        "indices": kept_indices,
-        "scores": kept_scores,
-        "documents": kept_documents,
-        "token_limit": token_limit,
-        "returned_tokens": consumed_tokens,
-        "warning": warning
-    })
-}
 
 impl ToolHandler for SearchTool {
     fn handle<'a>(
@@ -383,118 +337,7 @@ impl ToolHandler for SearchTool {
     }
 }
 
-async fn fetch_and_format_expanded_documents(
-    db_pools: &crate::db::DbPools,
-    indices: &[usize],
-) -> Vec<String> {
-    let details = match db_pools.fetch_chunk_details(indices).await {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!("Failed to fetch chunk details: {}", e);
-            return db_pools.fetch_metadata(indices).await;
-        }
-    };
 
-    let mut neighbor_keys = Vec::new();
-    let mut parent_keys = Vec::new();
-    for d in &details {
-        if !d.doc_uuid.is_empty() {
-            neighbor_keys.push((d.doc_uuid.clone(), d.chunk_index - 1));
-            neighbor_keys.push((d.doc_uuid.clone(), d.chunk_index + 1));
-            if let Some(macro_idx) = d.macro_index {
-                parent_keys.push((d.doc_uuid.clone(), macro_idx));
-            } else if let Some(parent_idx) = d.parent_chunk_index {
-                parent_keys.push((d.doc_uuid.clone(), parent_idx));
-            }
-        }
-    }
-
-    let neighbors_map = if !neighbor_keys.is_empty() {
-        db_pools
-            .fetch_neighbors(&neighbor_keys)
-            .await
-            .unwrap_or_default()
-    } else {
-        std::collections::HashMap::new()
-    };
-    let parents_map = if !parent_keys.is_empty() {
-        db_pools
-            .fetch_parent_chunks(&parent_keys)
-            .await
-            .unwrap_or_default()
-    } else {
-        std::collections::HashMap::new()
-    };
-
-    let mut formatted_docs = Vec::new();
-    let mut details_map = std::collections::HashMap::new();
-    for d in details {
-        details_map.insert(d.id, d);
-    }
-
-    for &id in indices {
-        if let Some(detail) = details_map.get(&id) {
-            let prev_key = (detail.doc_uuid.clone(), detail.chunk_index - 1);
-            let next_key = (detail.doc_uuid.clone(), detail.chunk_index + 1);
-            let parent_key = detail
-                .macro_index
-                .or(detail.parent_chunk_index)
-                .map(|idx| (detail.doc_uuid.clone(), idx));
-
-            let prev_text = neighbors_map.get(&prev_key);
-            let next_text = neighbors_map.get(&next_key);
-
-            let mut context_window = if let Some(parent_key) = parent_key {
-                parents_map
-                    .get(&parent_key)
-                    .map(|parent| parent.text.clone())
-                    .unwrap_or_else(|| detail.text.clone())
-            } else {
-                detail.text.clone()
-            };
-            if let Some(prev) = prev_text {
-                if !prev.trim().is_empty() {
-                    context_window = format!("{} [...] {}", prev.trim(), context_window);
-                }
-            }
-            if let Some(next) = next_text {
-                if !next.trim().is_empty() {
-                    context_window = format!("{} [...] {}", context_window, next.trim());
-                }
-            }
-
-            let header = if !detail.filename.is_empty() {
-                let chap = if !detail.chapter_id.is_empty() {
-                    format!(" (Chapter: {})", detail.chapter_id)
-                } else {
-                    String::new()
-                };
-                let hierarchy = if detail.header_chain.is_empty() {
-                    String::new()
-                } else {
-                    format!(" Headers: {}", detail.header_chain.join(" > "))
-                };
-                let zones = if detail.zone_keywords.is_empty() {
-                    String::new()
-                } else {
-                    format!(" Zone: {}", detail.zone_keywords.join(", "))
-                };
-                format!(
-                    "Source: {}{} Level: {}{}{}\n",
-                    detail.filename, chap, detail.chunk_level, hierarchy, zones
-                )
-            } else {
-                String::new()
-            };
-
-            formatted_docs.push(format!("{}{}", header, context_window));
-        } else {
-            formatted_docs.push(format!("Metadata for doc {}", id));
-        }
-    }
-
-    crate::response::deduplicate_contexts(formatted_docs)
-}
 
 pub struct SearchTextTool;
 
@@ -561,9 +404,12 @@ impl ToolHandler for SearchTextTool {
 
             match result {
                 Some(crate::vm::Value::Result(topk)) => {
-                    let metadata =
-                        fetch_and_format_expanded_documents(db_pools, &topk.indices).await;
-                    let response_json = trim_search_payload(topk.indices, topk.scores, metadata);
+                    let response_json = crate::response::build_search_response(
+                        db_pools,
+                        topk.indices,
+                        topk.scores,
+                    )
+                    .await?;
 
                     if let Some(m) = &metrics {
                         let count = response_json

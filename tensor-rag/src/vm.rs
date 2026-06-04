@@ -715,13 +715,27 @@ impl VM {
                 let bm25_scores = scores_from_value(bm25)?;
                 let entity_scores = scores_from_value(entity)?;
                 let ids: Vec<usize> = (0..dense_scores.len()).collect();
+
+                let mut channels = vec![
+                    (crate::rsf::RsfChannel::Dense, dense_scores),
+                    (crate::rsf::RsfChannel::Bm25, bm25_scores),
+                    (crate::rsf::RsfChannel::Entity, entity_scores),
+                ];
+
+                if let Some(vectors) = self.batch_vectors() {
+                    use crate::clustering::Clusterer;
+                    let clusterer = crate::clustering::RadiusClusterer::default();
+                    let assignments = clusterer.cluster(&vectors);
+                    let cluster_scores = crate::clustering::cluster_diversity_bonus(&assignments);
+                    channels.push((crate::rsf::RsfChannel::Cluster, cluster_scores));
+                } else {
+                    let cluster_scores = vec![0.2; ids.len()];
+                    channels.push((crate::rsf::RsfChannel::Cluster, cluster_scores));
+                }
+
                 let fused = crate::rsf::compute_rsf(
                     &ids,
-                    &[
-                        (crate::rsf::RsfChannel::Dense, dense_scores),
-                        (crate::rsf::RsfChannel::Bm25, bm25_scores),
-                        (crate::rsf::RsfChannel::Entity, entity_scores),
-                    ],
+                    &channels,
                     config,
                 );
                 let indices: Vec<usize> = fused.iter().map(|(idx, _)| *idx).collect();
@@ -1356,6 +1370,27 @@ mod additional_tests {
             "Execution error: Instruction limit exceeded (5)"
         );
         assert_eq!(instruction_count, 5);
+    }
+
+    #[test]
+    fn test_rsf_clustering_fallback() {
+        let mut vm = VM::new();
+        // push dense, bm25, entity scores (stack pop order: entity, bm25, dense)
+        vm.stack.push(Value::Tensor1D(Array1::from(vec![0.9, 0.1]))); // dense
+        vm.stack.push(Value::Tensor1D(Array1::from(vec![0.1, 0.9]))); // bm25
+        vm.stack.push(Value::Tensor1D(Array1::from(vec![0.5, 0.5]))); // entity
+
+        let mut program = Program::new();
+        program.push(OpCode::Rsf(crate::rsf::RsfConfig::default()));
+        program.push(OpCode::Emit);
+
+        let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();
+        if let Value::Result(topk) = res {
+            assert_eq!(topk.indices.len(), 2);
+            assert!(topk.scores[0] > 0.0);
+        } else {
+            panic!("Expected TopKResult");
+        }
     }
 }
 
