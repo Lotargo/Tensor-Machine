@@ -630,6 +630,9 @@ impl DbPools {
 
         let ids_to_delete: Vec<i64> = if let Some(ref uuid_str) = doc_uuid {
             if !uuid_str.is_empty() {
+                // Delete associated graph edges first
+                crate::graph::delete_document_edges(pool, uuid_str).await?;
+
                 // Find all document IDs with the same doc_uuid
                 let rows = sqlx::query("SELECT id FROM documents WHERE doc_uuid = $1")
                     .bind(uuid_str)

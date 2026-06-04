@@ -382,6 +382,9 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/mermaid.min.js", axum::routing::get(serve_mermaid))
         .route("/mammoth.browser.min.js", axum::routing::get(serve_mammoth))
         .route("/documents", axum::routing::get(handle_list_documents))
+        .route("/documents/path", axum::routing::get(handle_find_shortest_path))
+        .route("/documents/auto-link", axum::routing::post(handle_auto_link_documents))
+        .route("/documents/:doc_uuid/graph", axum::routing::get(handle_get_document_graph))
         .route(
             "/documents/:id",
             axum::routing::delete(handle_delete_document),
@@ -904,6 +907,90 @@ async fn serve_static_file(
 
 async fn serve_favicon() -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
     serve_static_file("assets/icons", "chat.png".to_string()).await
+}
+
+#[derive(serde::Deserialize)]
+struct GraphQuery {
+    depth: Option<u32>,
+}
+
+async fn handle_get_document_graph(
+    State(state): State<Arc<AppState>>,
+    AxumPath(doc_uuid): AxumPath<String>,
+    axum::extract::Query(query): axum::extract::Query<GraphQuery>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let pool = state
+        .db_pools
+        .postgres
+        .as_ref()
+        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let depth = query.depth.unwrap_or(2);
+    let graph_data = crate::graph::get_document_neighborhood(pool, &doc_uuid, depth)
+        .await
+        .map_err(|e| {
+            error!("Failed to get document graph: {}", e);
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(graph_data))
+}
+
+#[derive(serde::Deserialize)]
+struct PathQuery {
+    start: String,
+    end: String,
+}
+
+async fn handle_find_shortest_path(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<PathQuery>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let pool = state
+        .db_pools
+        .postgres
+        .as_ref()
+        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let path = crate::graph::find_shortest_path(pool, &query.start, &query.end)
+        .await
+        .map_err(|e| {
+            error!("Pathfinding failed: {}", e);
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "path": path
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct AutoLinkQuery {
+    threshold: Option<usize>,
+}
+
+async fn handle_auto_link_documents(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<AutoLinkQuery>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let pool = state
+        .db_pools
+        .postgres
+        .as_ref()
+        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let threshold = query.threshold.unwrap_or(3);
+    let count = crate::graph::auto_link_by_shared_entities(pool, threshold)
+        .await
+        .map_err(|e| {
+            error!("Auto-linking failed: {}", e);
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "status": "success",
+        "edges_created": count
+    })))
 }
 
 async fn handle_list_documents(

@@ -156,8 +156,10 @@ pub mod chunker;
 pub mod dsl;
 pub mod flight;
 pub mod gpu;
+pub mod graph;
 pub mod metrics;
 #[allow(non_snake_case)]
 pub mod result_generated;
 pub mod router;
 pub mod shared_memory;
+
