@@ -7,13 +7,19 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/katex.min.css">
     <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/app/app.css">
 </head>
 <body>
     <div class="app-container">
-        <aside class="sidebar">
+        <aside class="sidebar" id="library-sidebar">
             <div class="sidebar-header">
-                <i class="fa-solid fa-layer-group logo-icon"></i>
-                <h2>Библиотека</h2>
+                <div class="sidebar-heading">
+                    <i class="fa-solid fa-layer-group logo-icon"></i>
+                    <h2 id="library-title">Библиотека</h2>
+                </div>
+                <button class="icon-btn sidebar-collapse-btn" id="collapse-left-sidebar-btn" title="Скрыть библиотеку">
+                    <i class="fa-solid fa-panel-left"></i>
+                </button>
             </div>
 
             <div class="search-container">
@@ -37,16 +43,22 @@
 
             <header class="main-header">
                 <div class="header-info">
-                    <h1>Панель управления документами</h1>
-                    <p>Загружайте и просматривайте проиндексированные документы RAG</p>
+                    <h1 id="header-title">Панель управления документами</h1>
+                    <p id="header-subtitle">Загружайте и просматривайте проиндексированные документы RAG</p>
                 </div>
 
                 <div class="upload-btn-container header-actions">
+                    <button class="btn btn-ghost" id="toggle-library-btn">
+                        <i class="fa-solid fa-panel-left"></i> Библиотека
+                    </button>
+                    <button class="btn btn-ghost" id="toggle-ai-btn">
+                        <i class="fa-solid fa-panel-right"></i> AI
+                    </button>
                     <button class="btn btn-ghost" id="open-settings-btn">
-                        <i class="fa-solid fa-gear"></i> Настройки
+                        <i class="fa-solid fa-gear"></i> Системные настройки
                     </button>
                     <input type="file" id="file-input" style="display: none;">
-                    <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">
+                    <button class="btn btn-primary" id="upload-document-btn">
                         <i class="fa-solid fa-cloud-arrow-up"></i> Загрузить документ
                     </button>
                 </div>
@@ -54,13 +66,13 @@
 
             <div id="drop-zone" class="drop-zone">
                 <i class="fa-solid fa-file-lines upload-icon"></i>
-                <p>Перетащите файл сюда или нажмите кнопку <strong>Загрузить</strong></p>
-                <span class="upload-subtext">Поддерживаются изображения, PDF, TXT, Markdown и DOCX</span>
+                <p id="dropzone-text">Перетащите файл сюда или нажмите кнопку <strong>Загрузить</strong></p>
+                <span class="upload-subtext" id="dropzone-subtext">Поддерживаются изображения, PDF, TXT, Markdown и DOCX</span>
             </div>
 
             <div id="status-panel" class="status-panel" style="display: none;">
                 <div class="status-header">
-                    <h3>Обработка файла: <span id="status-filename">doc.txt</span></h3>
+                    <h3 id="status-title">Обработка файла: <span id="status-filename">doc.txt</span></h3>
                     <button class="close-status-btn" onclick="document.getElementById('status-panel').style.display='none'">
                         <i class="fa-solid fa-xmark"></i>
                     </button>
@@ -114,7 +126,7 @@
 
                 <div class="viewer-container">
                     <div class="canvas-pane">
-                        <div class="pane-title">Визуальный макет документа</div>
+                        <div class="pane-title" id="visual-layout-title">Визуальный макет документа</div>
                         <div class="canvas-wrapper">
                             <div id="document-mini-preview" class="document-mini-preview">
                                 <div class="mini-doc-header">
@@ -124,14 +136,14 @@
                                 <div id="mini-doc-body" class="mini-doc-body"></div>
                                 <div class="mini-doc-footer">
                                     <span id="mini-doc-name">document.txt</span>
-                                    <span>PAGE 1 OF 1</span>
+                                    <span id="mini-doc-page">PAGE 1 OF 1</span>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="rendered-pane">
-                        <div class="pane-title">Содержимое документа (Markdown / LaTeX / Mermaid)</div>
+                        <div class="pane-title" id="rendered-content-title">Содержимое документа (Markdown / LaTeX / Mermaid)</div>
                         <div id="rendered-content" class="markdown-body"></div>
                     </div>
                 </div>
@@ -139,17 +151,88 @@
 
             <div id="empty-state" class="empty-state">
                 <i class="fa-solid fa-book-open empty-icon"></i>
-                <h3>Документ не выбран</h3>
-                <p>Выберите документ слева или загрузите новый файл для просмотра</p>
+                <h3 id="empty-title">Документ не выбран</h3>
+                <p id="empty-text">Выберите документ слева или загрузите новый файл для просмотра</p>
             </div>
         </main>
+
+        <aside class="sidebar secondary-sidebar" id="ai-sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-heading">
+                    <i class="fa-solid fa-robot logo-icon"></i>
+                    <h2 id="ai-sidebar-title">AI Agent</h2>
+                </div>
+                <button class="icon-btn sidebar-collapse-btn" id="collapse-right-sidebar-btn" title="Скрыть AI панель">
+                    <i class="fa-solid fa-panel-right"></i>
+                </button>
+            </div>
+
+            <div class="ai-sidebar-body">
+                <section class="chat-panel">
+                    <div class="chat-panel-header">
+                        <div>
+                            <strong id="chat-panel-title">Чат с RAG</strong>
+                            <p id="chat-panel-subtitle">Модель получает контекст через MCP retrieval.</p>
+                        </div>
+                        <div class="chat-panel-actions">
+                            <button class="icon-btn" id="open-chat-modal-btn" title="Открыть чат на весь экран">
+                                <i class="fa-solid fa-up-right-and-down-left-from-center"></i>
+                            </button>
+                            <button class="icon-btn" id="clear-chat-btn" title="Очистить чат">
+                                <i class="fa-solid fa-broom"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <label class="chat-scope-toggle">
+                        <input type="checkbox" id="chat-scope-doc-toggle">
+                        <span id="chat-scope-label">Ограничивать ответы выбранным документом</span>
+                    </label>
+                    <label class="chat-scope-toggle">
+                        <input type="checkbox" id="chat-rag-toggle" checked>
+                        <span id="chat-rag-label">Использовать RAG-поиск по библиотеке</span>
+                    </label>
+                    <div id="chat-scope-caption" class="chat-scope-caption">Документ не выбран</div>
+
+                    <div id="chat-messages" class="chat-messages"></div>
+
+                    <div class="chat-resize-handle" id="chat-resize-handle" title="Перетащите, чтобы изменить высоту чата">
+                        <span></span>
+                    </div>
+
+                    <div class="chat-composer">
+                        <textarea id="chat-input" rows="4" placeholder="Спросите что-нибудь по библиотеке документов..."></textarea>
+                        <div class="chat-composer-actions">
+                            <button class="btn btn-primary" id="send-chat-btn">
+                                <i class="fa-solid fa-paper-plane"></i> Отправить
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="ai-settings-panel">
+                    <div class="ai-settings-header">
+                        <div>
+                            <strong id="ai-settings-title">AI настройки</strong>
+                            <p id="ai-settings-subtitle">OpenAI-compatible провайдеры, включая Gemini.</p>
+                        </div>
+                    </div>
+                    <div id="ai-settings-form" class="stacked-settings-form"></div>
+                    <div class="settings-actions settings-actions-compact">
+                        <button class="btn btn-primary" id="save-ai-settings-btn">
+                            <i class="fa-solid fa-floppy-disk"></i> Сохранить AI настройки
+                        </button>
+                    </div>
+                </section>
+            </div>
+        </aside>
     </div>
 
     <script src="/marked.min.js"></script>
     <script src="/katex.min.js"></script>
     <script src="/mermaid.min.js"></script>
     <script src="/mammoth.browser.min.js"></script>
-    <script src="/app.js"></script>
+    <script type="module" src="/app/main.js"></script>
 
     <div id="doc-preview-modal" class="modal" style="display: none;">
         <div class="modal-content doc-modal-content">
@@ -180,8 +263,8 @@
         <div class="modal-content settings-modal-content">
             <div class="settings-header">
                 <div>
-                    <h3>Настройки движка</h3>
-                    <p>Изменения сохраняются в <code>.env</code>, а для применения требуется перезапуск.</p>
+                    <h3 id="settings-modal-title">Настройки движка</h3>
+                    <p id="settings-modal-subtitle">Изменения сохраняются в <code>.env</code>, а для системных параметров требуется перезапуск.</p>
                 </div>
                 <button id="settings-close-btn" class="icon-btn">
                     <i class="fa-solid fa-xmark"></i>
@@ -237,6 +320,34 @@
             <div class="modal-actions">
                 <button class="btn btn-ghost" id="app-dialog-cancel-btn" style="display: none;">Отмена</button>
                 <button class="btn btn-primary" id="app-dialog-confirm-btn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="chat-modal" class="modal" style="display: none;">
+        <div class="modal-content doc-modal-content chat-modal-content">
+            <div class="doc-modal-header">
+                <div class="doc-modal-title-block">
+                    <i class="fa-solid fa-comments"></i>
+                    <div>
+                        <h3 id="chat-modal-title">Полноэкранный чат</h3>
+                        <span id="chat-modal-meta">Чат с RAG-контекстом через MCP</span>
+                    </div>
+                </div>
+                <button id="chat-modal-close-btn" class="icon-btn">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="chat-modal-body">
+                <div id="chat-modal-messages" class="chat-messages"></div>
+                <div class="chat-composer chat-composer-modal">
+                    <textarea id="chat-modal-input" rows="5" placeholder="Спросите что-нибудь по библиотеке документов..."></textarea>
+                    <div class="chat-composer-actions">
+                        <button class="btn btn-primary" id="send-chat-modal-btn">
+                            <i class="fa-solid fa-paper-plane"></i> Отправить
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

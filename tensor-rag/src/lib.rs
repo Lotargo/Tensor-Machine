@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod db;
 pub mod ir;
 pub mod mcp;

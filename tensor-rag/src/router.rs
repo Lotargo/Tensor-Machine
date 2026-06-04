@@ -1,6 +1,7 @@
 use crate::mcp::{McpRequest, McpResponse};
 use axum::{
-    extract::{Json, Multipart, State},
+    body::Body,
+    extract::{Json, Multipart, Path as AxumPath, State},
     routing::post,
     Router,
 };
@@ -24,29 +25,284 @@ pub struct AppState {
     pub control: Arc<ServerControl>,
 }
 
-const EDITABLE_SETTINGS: &[(&str, &str, &str)] = &[
-    ("MISTRAL_API_KEY", "Mistral API Key", "Credentials for OCR extraction."),
-    ("EMBEDDING_SERVER_URL", "Embedding Server URL", "Base URL for the local embedding endpoint."),
-    ("EMBEDDING_MODEL_NAME", "Embedding Model Name", "The model identifier to pass to the embedding server."),
-    ("EMBEDDING_QUERY_PREFIX", "Embedding Query Prefix", "Instruction prefix for query embeddings."),
-    ("EMBEDDING_PASSAGE_PREFIX", "Embedding Passage Prefix", "Instruction prefix for passage embeddings."),
-    ("EMBEDDING_DIM", "Embedding Dimension", "Expected embedding vector size."),
-    ("QDRANT_COLLECTION", "Qdrant Collection", "Target Qdrant collection name."),
-    ("MCP_RATE_LIMIT", "MCP Rate Limit", "Token bucket capacity for MCP requests."),
-    ("MCP_RATE_LIMIT_REFILL", "MCP Rate Refill", "Refill rate per second for MCP rate limiting."),
-    ("MCP_SEARCH_DEFAULT_TOP_K", "Default Search Top-K", "Default number of results returned by MCP search."),
-    ("MCP_SEARCH_MAX_TOP_K", "Maximum Search Top-K", "Upper bound for MCP search top-k."),
-    ("MCP_SEARCH_MAX_RESPONSE_TOKENS", "Search Response Token Budget", "Soft token budget for MCP search responses."),
-    ("MCP_READ_DOCUMENT_MAX_TOKENS", "Read Document Token Limit", "Hard token budget for full document reads."),
-    ("TOKENIZER_MODEL", "Tokenizer Model", "Tokenizer used for chunking and response token accounting."),
-    ("CB_FAILURE_THRESHOLD", "Circuit Breaker Threshold", "Failures before a backend circuit opens."),
-    ("CB_COOLDOWN_SECS", "Circuit Breaker Cooldown", "Cooldown in seconds before half-open state."),
-    ("TENSOR_VM_BACKEND", "VM Backend", "Execution backend: simd, cpu, or gpu."),
-    ("VM_MAX_INSTRUCTIONS", "VM Instruction Limit", "Watchdog limit for VM instruction count."),
-    ("TENSOR_VM_SOCKET_PATH", "VM Socket Path", "IPC socket path for the VM worker."),
-    ("DATABASE_URL", "PostgreSQL URL", "PostgreSQL connection string."),
-    ("QDRANT_URL", "Qdrant URL", "Qdrant service URL."),
+const AI_PROVIDER_OPTIONS: &[(&str, &str)] = &[
+    ("openai", "OpenAI"),
+    ("gemini", "Gemini"),
+    ("openrouter", "OpenRouter"),
+    ("local", "Ollama / LM Studio"),
+    ("custom", "Custom OpenAI-compatible"),
 ];
+
+struct SettingDescriptor {
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    category: &'static str,
+    field_type: &'static str,
+    placeholder: &'static str,
+    options: &'static [(&'static str, &'static str)],
+}
+
+const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
+    SettingDescriptor {
+        key: "AI_PROVIDER",
+        label: "AI Provider",
+        description: "Select the chat provider preset. Gemini uses its official OpenAI-compatible endpoint.",
+        category: "ai",
+        field_type: "select",
+        placeholder: "",
+        options: AI_PROVIDER_OPTIONS,
+    },
+    SettingDescriptor {
+        key: "AI_BASE_URL",
+        label: "AI Base URL",
+        description: "OpenAI-compatible base URL for chat completions. Leave the preset value unless you use a custom provider.",
+        category: "ai",
+        field_type: "text",
+        placeholder: "https://api.openai.com/v1",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_MODEL",
+        label: "AI Model",
+        description: "Chat model identifier passed to the provider.",
+        category: "ai",
+        field_type: "text",
+        placeholder: "gpt-4.1-mini",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_API_KEY",
+        label: "AI API Key",
+        description: "API key for the selected chat provider. Local providers may leave this blank.",
+        category: "ai",
+        field_type: "password",
+        placeholder: "",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_TEMPERATURE",
+        label: "AI Temperature",
+        description: "Sampling temperature for chat completions.",
+        category: "ai",
+        field_type: "number",
+        placeholder: "0.2",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_RAG_TOP_K",
+        label: "RAG Top-K",
+        description: "How many retrieved passages to pass into the chat context.",
+        category: "ai",
+        field_type: "number",
+        placeholder: "5",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_SYSTEM_PROMPT",
+        label: "AI System Prompt",
+        description: "High-level instruction for the chat assistant. Used together with retrieved RAG context.",
+        category: "ai",
+        field_type: "textarea",
+        placeholder: "",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MISTRAL_API_KEY",
+        label: "Mistral API Key",
+        description: "Credentials for OCR extraction.",
+        category: "ocr",
+        field_type: "password",
+        placeholder: "",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "EMBEDDING_SERVER_URL",
+        label: "Embedding Server URL",
+        description: "Base URL for the local embedding endpoint.",
+        category: "embeddings",
+        field_type: "text",
+        placeholder: "http://localhost:11434/v1/embeddings",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "EMBEDDING_MODEL_NAME",
+        label: "Embedding Model Name",
+        description: "The model identifier to pass to the embedding server.",
+        category: "embeddings",
+        field_type: "text",
+        placeholder: "nomic-embed-text",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "EMBEDDING_QUERY_PREFIX",
+        label: "Embedding Query Prefix",
+        description: "Instruction prefix for query embeddings.",
+        category: "embeddings",
+        field_type: "text",
+        placeholder: "query: ",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "EMBEDDING_PASSAGE_PREFIX",
+        label: "Embedding Passage Prefix",
+        description: "Instruction prefix for passage embeddings.",
+        category: "embeddings",
+        field_type: "text",
+        placeholder: "passage: ",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "EMBEDDING_DIM",
+        label: "Embedding Dimension",
+        description: "Expected embedding vector size.",
+        category: "embeddings",
+        field_type: "number",
+        placeholder: "768",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "QDRANT_COLLECTION",
+        label: "Qdrant Collection",
+        description: "Target Qdrant collection name.",
+        category: "vector",
+        field_type: "text",
+        placeholder: "default",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MCP_RATE_LIMIT",
+        label: "MCP Rate Limit",
+        description: "Token bucket capacity for MCP requests.",
+        category: "mcp",
+        field_type: "number",
+        placeholder: "100",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MCP_RATE_LIMIT_REFILL",
+        label: "MCP Rate Refill",
+        description: "Refill rate per second for MCP rate limiting.",
+        category: "mcp",
+        field_type: "number",
+        placeholder: "100.0",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MCP_SEARCH_DEFAULT_TOP_K",
+        label: "Default Search Top-K",
+        description: "Default number of results returned by MCP search.",
+        category: "mcp",
+        field_type: "number",
+        placeholder: "5",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MCP_SEARCH_MAX_TOP_K",
+        label: "Maximum Search Top-K",
+        description: "Upper bound for MCP search top-k.",
+        category: "mcp",
+        field_type: "number",
+        placeholder: "20",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MCP_SEARCH_MAX_RESPONSE_TOKENS",
+        label: "Search Response Token Budget",
+        description: "Soft token budget for MCP search responses.",
+        category: "mcp",
+        field_type: "number",
+        placeholder: "10000",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MCP_READ_DOCUMENT_MAX_TOKENS",
+        label: "Read Document Token Limit",
+        description: "Hard token budget for full document reads.",
+        category: "mcp",
+        field_type: "number",
+        placeholder: "10000",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "TOKENIZER_MODEL",
+        label: "Tokenizer Model",
+        description: "Tokenizer used for chunking and response token accounting.",
+        category: "mcp",
+        field_type: "text",
+        placeholder: "o200k_harmony",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "CB_FAILURE_THRESHOLD",
+        label: "Circuit Breaker Threshold",
+        description: "Failures before a backend circuit opens.",
+        category: "system",
+        field_type: "number",
+        placeholder: "5",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "CB_COOLDOWN_SECS",
+        label: "Circuit Breaker Cooldown",
+        description: "Cooldown in seconds before half-open state.",
+        category: "system",
+        field_type: "number",
+        placeholder: "30",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "TENSOR_VM_BACKEND",
+        label: "VM Backend",
+        description: "Execution backend: simd, cpu, or gpu.",
+        category: "system",
+        field_type: "text",
+        placeholder: "simd",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "VM_MAX_INSTRUCTIONS",
+        label: "VM Instruction Limit",
+        description: "Watchdog limit for VM instruction count.",
+        category: "system",
+        field_type: "number",
+        placeholder: "100000",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "TENSOR_VM_SOCKET_PATH",
+        label: "VM Socket Path",
+        description: "IPC socket path for the VM worker.",
+        category: "system",
+        field_type: "text",
+        placeholder: "tensor_rag_vm.sock",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "DATABASE_URL",
+        label: "PostgreSQL URL",
+        description: "PostgreSQL connection string.",
+        category: "database",
+        field_type: "text",
+        placeholder: "postgres://postgres:postgres@localhost:5432/tensor_rag",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "QDRANT_URL",
+        label: "Qdrant URL",
+        description: "Qdrant service URL.",
+        category: "database",
+        field_type: "text",
+        placeholder: "http://localhost:6334",
+        options: &[],
+    },
+];
+
+#[derive(serde::Serialize)]
+struct EditableSettingOption {
+    value: String,
+    label: String,
+}
 
 #[derive(serde::Serialize)]
 struct EditableSetting {
@@ -54,6 +310,10 @@ struct EditableSetting {
     label: String,
     description: String,
     value: String,
+    category: String,
+    field_type: String,
+    placeholder: String,
+    options: Vec<EditableSettingOption>,
 }
 
 #[derive(serde::Deserialize)]
@@ -66,6 +326,7 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/", axum::routing::get(serve_index))
         .route("/style.css", axum::routing::get(serve_css))
         .route("/app.js", axum::routing::get(serve_js))
+        .route("/app/*path", axum::routing::get(serve_app_asset))
         .route("/marked.min.js", axum::routing::get(serve_marked))
         .route("/katex.min.js", axum::routing::get(serve_katex_js))
         .route("/katex.min.css", axum::routing::get(serve_katex_css))
@@ -80,6 +341,8 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/settings/restart", post(handle_restart_server))
         .route("/hard-reset", post(handle_hard_reset_database))
         .route("/reindex", post(handle_reindex_database))
+        .route("/chat", post(handle_chat))
+        .route("/chat/stream", post(handle_chat_stream))
         .route("/mcp", post(handle_mcp))
         .route("/upload", post(handle_upload))
         .route("/clear", post(handle_clear_database))
@@ -205,14 +468,25 @@ async fn handle_get_settings(
     let env_values = read_env_file_map();
     let settings = EDITABLE_SETTINGS
         .iter()
-        .map(|(key, label, description)| EditableSetting {
-            key: (*key).to_string(),
-            label: (*label).to_string(),
-            description: (*description).to_string(),
+        .map(|setting| EditableSetting {
+            key: setting.key.to_string(),
+            label: setting.label.to_string(),
+            description: setting.description.to_string(),
             value: env_values
-                .get(*key)
+                .get(setting.key)
                 .cloned()
-                .unwrap_or_else(|| std::env::var(key).unwrap_or_default()),
+                .unwrap_or_else(|| std::env::var(setting.key).unwrap_or_default()),
+            category: setting.category.to_string(),
+            field_type: setting.field_type.to_string(),
+            placeholder: setting.placeholder.to_string(),
+            options: setting
+                .options
+                .iter()
+                .map(|(value, label)| EditableSettingOption {
+                    value: (*value).to_string(),
+                    label: (*label).to_string(),
+                })
+                .collect(),
         })
         .collect::<Vec<_>>();
 
@@ -229,7 +503,7 @@ async fn handle_update_settings(
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     let allowed_keys = EDITABLE_SETTINGS
         .iter()
-        .map(|(key, _, _)| *key)
+        .map(|setting| setting.key)
         .collect::<HashSet<_>>();
 
     let filtered = request
@@ -502,6 +776,38 @@ async fn serve_js() -> impl axum::response::IntoResponse {
     (headers, include_str!("../static/app.js"))
 }
 
+async fn serve_app_asset(
+    AxumPath(path): AxumPath<String>,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("static")
+        .join("app")
+        .canonicalize()
+        .map_err(|_| axum::http::StatusCode::NOT_FOUND)?;
+    let sanitized = path.trim_start_matches(['/', '\\']);
+    let candidate = base_dir.join(sanitized);
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|_| axum::http::StatusCode::NOT_FOUND)?;
+
+    if !resolved.starts_with(&base_dir) || !resolved.is_file() {
+        return Err(axum::http::StatusCode::NOT_FOUND);
+    }
+
+    let content = std::fs::read(&resolved).map_err(|_| axum::http::StatusCode::NOT_FOUND)?;
+    let content_type = match resolved.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+        "js" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        _ => "text/plain; charset=utf-8",
+    };
+
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, content_type)],
+        content,
+    ))
+}
+
 async fn handle_list_documents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
@@ -657,6 +963,86 @@ async fn handle_reindex_database(
         "status": "success",
         "message": "Reindexing complete. Qdrant collection was recreated and all existing document chunks were re-embedded."
     })))
+}
+
+async fn handle_chat(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<crate::ai::ChatRequest>,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    let settings = read_env_file_map();
+    match crate::ai::run_chat(state.db_pools.clone(), &settings, request).await {
+        Ok(response) => Ok((
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(response).map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?),
+        )),
+        Err(err) => {
+            error!("Chat request failed: {}", err);
+            let status = if err.contains("PERMISSION_DENIED") || err.contains("denied access") {
+                axum::http::StatusCode::FORBIDDEN
+            } else if err.contains("API key") || err.contains("Unauthorized") || err.contains("401") {
+                axum::http::StatusCode::UNAUTHORIZED
+            } else {
+                axum::http::StatusCode::BAD_GATEWAY
+            };
+
+            Ok((
+                status,
+                Json(serde_json::json!({
+                    "error": err
+                })),
+            ))
+        }
+    }
+}
+
+async fn handle_chat_stream(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<crate::ai::ChatRequest>,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    let settings = read_env_file_map();
+    let db_pools = state.db_pools.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::convert::Infallible>>(64);
+
+    tokio::spawn(async move {
+        let (sse_tx, mut sse_rx) = tokio::sync::mpsc::channel::<String>(64);
+
+        let worker = tokio::spawn(async move {
+            crate::ai::stream_chat(db_pools, &settings, request, sse_tx).await
+        });
+
+        while let Some(frame) = sse_rx.recv().await {
+            if tx.send(Ok(bytes::Bytes::from(frame))).await.is_err() {
+                return;
+            }
+        }
+
+        if let Ok(Err(err)) = worker.await {
+            let status = if err.contains("PERMISSION_DENIED") || err.contains("denied access") {
+                "forbidden"
+            } else if err.contains("API key") || err.contains("Unauthorized") || err.contains("401") {
+                "unauthorized"
+            } else {
+                "error"
+            };
+            let frame = format!(
+                "event: error\ndata: {}\n\n",
+                serde_json::json!({
+                    "status": status,
+                    "message": err
+                })
+            );
+            let _ = tx.send(Ok(bytes::Bytes::from(frame))).await;
+        }
+    });
+
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+            (axum::http::header::CONNECTION, "keep-alive"),
+        ],
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    ))
 }
 
 
