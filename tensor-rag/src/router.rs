@@ -33,6 +33,17 @@ const AI_PROVIDER_OPTIONS: &[(&str, &str)] = &[
     ("custom", "Custom OpenAI-compatible"),
 ];
 
+const AI_CHAT_MODE_OPTIONS: &[(&str, &str)] = &[
+    ("rag", "RAG prompt mode"),
+    ("agent", "Agent mode with MCP tools"),
+];
+
+const AI_CONTEXT_STRATEGY_OPTIONS: &[(&str, &str)] = &[
+    ("trim_middle", "Trim the middle"),
+    ("sliding_window", "Sliding window"),
+    ("stop", "Stop at limit"),
+];
+
 struct SettingDescriptor {
     key: &'static str,
     label: &'static str,
@@ -90,6 +101,15 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         options: &[],
     },
     SettingDescriptor {
+        key: "AI_CHAT_MODE",
+        label: "Chat Mode",
+        description: "RAG prompt mode always injects retrieved passages when retrieval is enabled. Agent mode lets the model decide whether to call MCP tools at all.",
+        category: "ai",
+        field_type: "select",
+        placeholder: "",
+        options: AI_CHAT_MODE_OPTIONS,
+    },
+    SettingDescriptor {
         key: "AI_RAG_TOP_K",
         label: "RAG Top-K",
         description: "How many retrieved passages to pass into the chat context.",
@@ -99,9 +119,36 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         options: &[],
     },
     SettingDescriptor {
+        key: "AI_CONTEXT_TOKEN_LIMIT",
+        label: "Chat Context Token Limit",
+        description: "Maximum prompt budget in tokens for the conversation context. Uses the project tokenizer.",
+        category: "ai",
+        field_type: "number",
+        placeholder: "16000",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_CONTEXT_STRATEGY",
+        label: "Overflow Strategy",
+        description: "What to do when the conversation exceeds the configured context token limit.",
+        category: "ai",
+        field_type: "select",
+        placeholder: "",
+        options: AI_CONTEXT_STRATEGY_OPTIONS,
+    },
+    SettingDescriptor {
+        key: "AI_AGENT_MAX_TOOL_ROUNDS",
+        label: "Agent Tool Rounds",
+        description: "Maximum number of MCP tool-calling rounds in agent mode before the model must answer.",
+        category: "ai",
+        field_type: "number",
+        placeholder: "4",
+        options: &[],
+    },
+    SettingDescriptor {
         key: "AI_SYSTEM_PROMPT",
         label: "AI System Prompt",
-        description: "High-level instruction for the chat assistant. Used together with retrieved RAG context.",
+        description: "High-level instruction for the chat assistant. Used in both RAG prompt mode and agent mode.",
         category: "ai",
         field_type: "textarea",
         placeholder: "",
@@ -324,9 +371,11 @@ struct SettingsUpdateRequest {
 pub fn mcp_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", axum::routing::get(serve_index))
+        .route("/favicon.ico", axum::routing::get(serve_favicon))
         .route("/style.css", axum::routing::get(serve_css))
         .route("/app.js", axum::routing::get(serve_js))
         .route("/app/*path", axum::routing::get(serve_app_asset))
+        .route("/assets/*path", axum::routing::get(serve_static_asset))
         .route("/marked.min.js", axum::routing::get(serve_marked))
         .route("/katex.min.js", axum::routing::get(serve_katex_js))
         .route("/katex.min.css", axum::routing::get(serve_katex_css))
@@ -779,9 +828,22 @@ async fn serve_js() -> impl axum::response::IntoResponse {
 async fn serve_app_asset(
     AxumPath(path): AxumPath<String>,
 ) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    serve_static_file("app", path).await
+}
+
+async fn serve_static_asset(
+    AxumPath(path): AxumPath<String>,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    serve_static_file("assets", path).await
+}
+
+async fn serve_static_file(
+    root: &str,
+    path: String,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
     let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("static")
-        .join("app")
+        .join(root)
         .canonicalize()
         .map_err(|_| axum::http::StatusCode::NOT_FOUND)?;
     let sanitized = path.trim_start_matches(['/', '\\']);
@@ -799,6 +861,11 @@ async fn serve_app_asset(
         "js" => "application/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "json" => "application/json; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
         _ => "text/plain; charset=utf-8",
     };
 
@@ -806,6 +873,10 @@ async fn serve_app_asset(
         [(axum::http::header::CONTENT_TYPE, content_type)],
         content,
     ))
+}
+
+async fn serve_favicon() -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    serve_static_file("assets/icons", "chat.png".to_string()).await
 }
 
 async fn handle_list_documents(

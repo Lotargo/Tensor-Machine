@@ -21,6 +21,10 @@ const PROVIDER_DEFAULTS = {
     custom: { baseUrl: '', model: '' },
 };
 
+let aiAutosaveTimer = null;
+let aiAutosaveInFlight = false;
+let aiAutosaveQueued = false;
+
 export function initSettings() {
     const modal = document.getElementById('settings-modal');
     document.getElementById('open-settings-btn').addEventListener('click', openSettingsModal);
@@ -32,7 +36,6 @@ export function initSettings() {
 
     document.getElementById('save-settings-btn').addEventListener('click', () => saveSettings({ scope: 'core', andRestart: false }));
     document.getElementById('save-restart-btn').addEventListener('click', () => saveSettings({ scope: 'core', andRestart: true }));
-    document.getElementById('save-ai-settings-btn').addEventListener('click', () => saveSettings({ scope: 'ai', andRestart: false }));
     document.getElementById('reindex-btn').addEventListener('click', reindexLibrary);
     document.getElementById('hard-reset-btn').addEventListener('click', hardReset);
 }
@@ -42,6 +45,7 @@ export async function loadSettings() {
     state.settings = data.settings || [];
     state.collectionHealth = data.collection_health || null;
     renderSettingsPanels();
+    document.dispatchEvent(new CustomEvent('tensor-rag:settings-loaded'));
 }
 
 async function openSettingsModal() {
@@ -68,6 +72,8 @@ function renderAiSettings() {
     form.innerHTML = '';
     aiSettings.forEach((setting) => form.appendChild(createSettingField(setting, 'ai')));
     bindProviderPresetBehavior(form);
+    bindAiAutosave(form);
+    setAiSaveState('idle');
 }
 
 function renderCoreSettings() {
@@ -184,6 +190,73 @@ function bindProviderPresetBehavior(form) {
     });
 }
 
+function bindAiAutosave(form) {
+    form.querySelectorAll('[data-key]').forEach((input) => {
+        const eventName = input.tagName === 'SELECT' ? 'change' : 'input';
+        input.addEventListener(eventName, () => scheduleAiAutosave(eventName === 'change' ? 80 : 500));
+        if (eventName !== 'change') {
+            input.addEventListener('change', () => scheduleAiAutosave(80));
+        }
+    });
+}
+
+function scheduleAiAutosave(delayMs) {
+    setAiSaveState('saving');
+    clearTimeout(aiAutosaveTimer);
+    aiAutosaveTimer = setTimeout(() => {
+        saveAiSettingsSilently();
+    }, delayMs);
+}
+
+async function saveAiSettingsSilently() {
+    if (aiAutosaveInFlight) {
+        aiAutosaveQueued = true;
+        return;
+    }
+
+    aiAutosaveInFlight = true;
+    try {
+        await fetchJson('/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ values: collectValues('ai') }),
+        });
+        await loadSettings();
+        setAiSaveState('saved');
+    } catch (_error) {
+        setAiSaveState('error');
+    } finally {
+        aiAutosaveInFlight = false;
+        if (aiAutosaveQueued) {
+            aiAutosaveQueued = false;
+            scheduleAiAutosave(120);
+        }
+    }
+}
+
+function setAiSaveState(status) {
+    const element = document.getElementById('ai-settings-save-state');
+    if (!element) return;
+
+    const messages = {
+        ru: {
+            idle: 'Изменения применяются автоматически.',
+            saving: 'Сохраняем изменения...',
+            saved: 'Настройки применены.',
+            error: 'Не удалось применить изменения.',
+        },
+        en: {
+            idle: 'Changes apply automatically.',
+            saving: 'Saving changes...',
+            saved: 'Settings applied.',
+            error: 'Could not apply changes.',
+        },
+    };
+    const lang = state.uiPrefs.language === 'ru' ? 'ru' : 'en';
+    element.dataset.state = status;
+    element.textContent = messages[lang][status] || messages[lang].idle;
+}
+
 function collectValues(scope) {
     const selectors = scope === 'ai'
         ? '#ai-settings-form [data-key]'
@@ -214,9 +287,7 @@ async function saveSettings({ scope, andRestart }) {
         }
 
         await loadSettings();
-        if (scope === 'ai') {
-            await showNotice(t('ai_settings_saved_title'), t('ai_settings_saved_message'), 'success');
-        } else {
+        if (scope !== 'ai') {
             await showNotice(t('settings_saved_title'), t('settings_saved_message'), 'success');
         }
     } catch (error) {

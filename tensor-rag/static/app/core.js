@@ -11,7 +11,7 @@ const TEXT = {
         system_settings: 'Системные настройки',
         upload_document: 'Загрузить документ',
         toggle_library: 'Библиотека',
-        toggle_ai: 'AI',
+        toggle_ai: 'Companion',
         dropzone_text: 'Перетащите файл сюда или нажмите кнопку <strong>Загрузить</strong>',
         dropzone_subtext: 'Поддерживаются изображения, PDF, TXT, Markdown и DOCX',
         processing_file: 'Обработка файла:',
@@ -133,7 +133,7 @@ const TEXT = {
         system_settings: 'System settings',
         upload_document: 'Upload document',
         toggle_library: 'Library',
-        toggle_ai: 'AI',
+        toggle_ai: 'Companion',
         dropzone_text: 'Drop a file here or click <strong>Upload</strong>',
         dropzone_subtext: 'Images, PDF, TXT, Markdown, and DOCX are supported',
         processing_file: 'Processing file:',
@@ -299,13 +299,13 @@ export function applyTranslations() {
     document.title = t('page_title');
     setText('#library-title', t('library'));
     setPlaceholder('#library-search', t('search_placeholder'));
-    setHtml('#clear-db-btn', `<i class="fa-solid fa-trash-can"></i> ${t('clear_library')}`);
+    setHtml('#clear-db-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/trash.png" alt=""> ${t('clear_library')}`);
     setText('#header-title', t('header_title'));
     setText('#header-subtitle', t('header_subtitle'));
-    setHtml('#toggle-library-btn', `<i class="fa-solid fa-panel-left"></i> ${t('toggle_library')}`);
-    setHtml('#toggle-ai-btn', `<i class="fa-solid fa-panel-right"></i> ${t('toggle_ai')}`);
-    setHtml('#open-settings-btn', `<i class="fa-solid fa-gear"></i> ${t('system_settings')}`);
-    setHtml('#upload-document-btn', `<i class="fa-solid fa-cloud-arrow-up"></i> ${t('upload_document')}`);
+    setHtml('#toggle-library-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/library.png" alt=""> ${t('toggle_library')}`);
+    setHtml('#toggle-ai-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/chat.png" alt=""> ${t('toggle_ai')}`);
+    setHtml('#open-settings-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/settings.png" alt=""> ${t('system_settings')}`);
+    setHtml('#upload-document-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/document.png" alt=""> ${t('upload_document')}`);
     setHtml('#dropzone-text', t('dropzone_text'));
     setText('#dropzone-subtext', t('dropzone_subtext'));
     setHtml('#status-title', `${escapeHtml(t('processing_file'))} <span id="status-filename">${escapeHtml(document.getElementById('status-filename')?.textContent || 'doc.txt')}</span>`);
@@ -321,6 +321,7 @@ export function applyTranslations() {
     setText('#empty-text', t('empty_text'));
     setText('#chat-panel-title', t('chat_title'));
     setText('#chat-panel-subtitle', t('chat_subtitle'));
+    setText('#ai-sidebar-title', 'AI Companion');
     setText('#chat-scope-label', t('chat_scope_label'));
     setText('#chat-rag-label', t('chat_rag_label'));
     setText('#chat-modal-title', t('chat_fullscreen'));
@@ -331,12 +332,18 @@ export function applyTranslations() {
     setHtml('#send-chat-modal-btn', `<i class="fa-solid fa-paper-plane"></i> ${t('chat_send')}`);
     setText('#ai-settings-title', t('ai_settings_title'));
     setText('#ai-settings-subtitle', t('ai_settings_subtitle'));
-    setHtml('#save-ai-settings-btn', `<i class="fa-solid fa-floppy-disk"></i> ${t('save_ai_settings')}`);
+    setText('#ai-settings-save-state', state.uiPrefs.language === 'ru' ? 'Изменения применяются автоматически.' : 'Changes apply automatically.');
     setText('#settings-modal-title', t('settings_title'));
     setHtml('#settings-modal-subtitle', `${escapeHtml(t('settings_subtitle'))}`);
     setText('#settings-cancel-btn', t('settings_close'));
     setHtml('#save-settings-btn', `<i class="fa-solid fa-floppy-disk"></i> ${t('settings_save')}`);
     setHtml('#save-restart-btn', `<i class="fa-solid fa-rotate-right"></i> ${t('settings_save_restart')}`);
+    setText('#ai-settings-save-state', state.uiPrefs.language === 'ru' ? 'Изменения применяются автоматически.' : 'Changes apply automatically.');
+    setText('#reindex-title-text', t('reindex_btn_text'));
+    setText('#reindex-desc-text', t('reindex_desc'));
+    setText('#hard-reset-title-text', t('hard_reset_title'));
+    setText('#hard-reset-desc-text', t('hard_reset_message'));
+    setHtml('#hard-reset-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/reset.png" alt=""> ${t('hard_reset_title')}`);
     setPlaceholder('#doc-modal-search', 'Search...');
     document.dispatchEvent(new CustomEvent('tensor-rag:translations-applied'));
 }

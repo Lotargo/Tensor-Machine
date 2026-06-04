@@ -21,6 +21,7 @@ export function initChat() {
 
     document.addEventListener('tensor-rag:chat-updated', renderChat);
     document.addEventListener('tensor-rag:selected-document', renderChatScope);
+    document.addEventListener('tensor-rag:settings-loaded', renderChatScope);
     document.addEventListener('tensor-rag:translations-applied', () => {
         renderChat();
         renderChatScope();
@@ -53,6 +54,10 @@ function getRagValue() {
     return document.getElementById('chat-rag-toggle').checked;
 }
 
+function getChatMode() {
+    return state.settings.find((setting) => setting.key === 'AI_CHAT_MODE')?.value || 'rag';
+}
+
 function getSelectedDocLabel() {
     if (!state.selectedDocUuid) return t('chat_scope_none');
     const doc = state.documentList.find((item) => item.doc_uuid === state.selectedDocUuid);
@@ -64,6 +69,12 @@ export function renderChatScope() {
     const caption = document.getElementById('chat-scope-caption');
     if (!getRagValue()) {
         caption.textContent = t('chat_scope_general');
+        return;
+    }
+    if (getChatMode() === 'agent') {
+        caption.textContent = getScopeValue() && state.selectedDocUuid
+            ? `${t('chat_scope_active')}: ${getSelectedDocLabel()}`
+            : 'Agent mode: the model will decide on its own whether to use MCP tools.';
         return;
     }
     caption.textContent = getScopeValue() && state.selectedDocUuid ? `${t('chat_scope_active')}: ${getSelectedDocLabel()}` : getSelectedDocLabel();
@@ -239,9 +250,9 @@ async function consumeSseResponse(response, outbound, userText) {
             if (!parsed) continue;
 
             if (parsed.event === 'thinking') {
-                const phaseLabel = parsed.data.phase === 'reasoning'
+                const phaseLabel = parsed.data.label || (parsed.data.phase === 'reasoning'
                     ? t('chat_thinking_reason')
-                    : t('chat_thinking_search');
+                    : t('chat_thinking_search'));
                 updateStreamingAssistant(outbound, userText, {
                     content: accumulated,
                     loading: true,
@@ -256,6 +267,14 @@ async function consumeSseResponse(response, outbound, userText) {
                     loading: true,
                     thinking: true,
                     thinkingLabel: t('chat_thinking_reason'),
+                    sources: collectedSources,
+                });
+            } else if (parsed.event === 'tool') {
+                updateStreamingAssistant(outbound, userText, {
+                    content: accumulated,
+                    loading: true,
+                    thinking: true,
+                    thinkingLabel: parsed.data.label || t('chat_thinking_reason'),
                     sources: collectedSources,
                 });
             } else if (parsed.event === 'token') {

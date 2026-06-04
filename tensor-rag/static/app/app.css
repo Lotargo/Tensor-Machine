@@ -52,6 +52,29 @@
     min-width: 0;
 }
 
+.ui-icon {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    flex: 0 0 auto;
+    vertical-align: middle;
+}
+
+.ui-icon-lg {
+    width: 26px;
+    height: 26px;
+}
+
+.btn .ui-icon,
+.icon-btn .ui-icon {
+    margin-right: 8px;
+}
+
+.icon-btn .ui-icon {
+    margin-right: 0;
+}
+
 .sidebar-collapse-btn {
     border-radius: 10px;
     width: 36px;
@@ -277,6 +300,25 @@
     flex-direction: column;
     gap: 14px;
     padding: 0 18px 14px 18px;
+}
+
+.settings-inline-state {
+    display: inline-flex;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.settings-inline-state[data-state="saving"] {
+    color: var(--color-primary);
+}
+
+.settings-inline-state[data-state="saved"] {
+    color: #2f9e67;
+}
+
+.settings-inline-state[data-state="error"] {
+    color: #d9485f;
 }
 
 .stacked-settings-form .settings-field,

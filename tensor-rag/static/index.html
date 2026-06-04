@@ -14,7 +14,7 @@
         <aside class="sidebar" id="library-sidebar">
             <div class="sidebar-header">
                 <div class="sidebar-heading">
-                    <i class="fa-solid fa-layer-group logo-icon"></i>
+                    <img class="ui-icon ui-icon-lg" src="/assets/icons/library.png" alt="">
                     <h2 id="library-title">Библиотека</h2>
                 </div>
                 <button class="icon-btn sidebar-collapse-btn" id="collapse-left-sidebar-btn" title="Скрыть библиотеку">
@@ -33,7 +33,7 @@
 
             <div class="sidebar-footer sidebar-footer-actions">
                 <button class="btn" id="clear-db-btn">
-                    <i class="fa-solid fa-trash-can"></i> Очистить библиотеку
+                    <img class="ui-icon ui-icon-sm" src="/assets/icons/trash.png" alt=""> Очистить библиотеку
                 </button>
             </div>
         </aside>
@@ -49,17 +49,17 @@
 
                 <div class="upload-btn-container header-actions">
                     <button class="btn btn-ghost" id="toggle-library-btn">
-                        <i class="fa-solid fa-panel-left"></i> Библиотека
+                        <img class="ui-icon ui-icon-sm" src="/assets/icons/library.png" alt=""> Библиотека
                     </button>
                     <button class="btn btn-ghost" id="toggle-ai-btn">
-                        <i class="fa-solid fa-panel-right"></i> AI
+                        <img class="ui-icon ui-icon-sm" src="/assets/icons/chat.png" alt=""> AI
                     </button>
                     <button class="btn btn-ghost" id="open-settings-btn">
-                        <i class="fa-solid fa-gear"></i> Системные настройки
+                        <img class="ui-icon ui-icon-sm" src="/assets/icons/settings.png" alt=""> Системные настройки
                     </button>
                     <input type="file" id="file-input" style="display: none;">
                     <button class="btn btn-primary" id="upload-document-btn">
-                        <i class="fa-solid fa-cloud-arrow-up"></i> Загрузить документ
+                        <img class="ui-icon ui-icon-sm" src="/assets/icons/document.png" alt=""> Загрузить документ
                     </button>
                 </div>
             </header>
@@ -159,8 +159,8 @@
         <aside class="sidebar secondary-sidebar" id="ai-sidebar">
             <div class="sidebar-header">
                 <div class="sidebar-heading">
-                    <i class="fa-solid fa-robot logo-icon"></i>
-                    <h2 id="ai-sidebar-title">AI Agent</h2>
+                    <img class="ui-icon ui-icon-lg" src="/assets/icons/chat.png" alt="">
+                    <h2 id="ai-sidebar-title">AI Companion</h2>
                 </div>
                 <button class="icon-btn sidebar-collapse-btn" id="collapse-right-sidebar-btn" title="Скрыть AI панель">
                     <i class="fa-solid fa-panel-right"></i>
@@ -176,10 +176,10 @@
                         </div>
                         <div class="chat-panel-actions">
                             <button class="icon-btn" id="open-chat-modal-btn" title="Открыть чат на весь экран">
-                                <i class="fa-solid fa-up-right-and-down-left-from-center"></i>
+                                <img class="ui-icon ui-icon-sm" src="/assets/icons/message.png" alt="">
                             </button>
                             <button class="icon-btn" id="clear-chat-btn" title="Очистить чат">
-                                <i class="fa-solid fa-broom"></i>
+                                <img class="ui-icon ui-icon-sm" src="/assets/icons/reset.png" alt="">
                             </button>
                         </div>
                     </div>
@@ -215,14 +215,10 @@
                         <div>
                             <strong id="ai-settings-title">AI настройки</strong>
                             <p id="ai-settings-subtitle">OpenAI-compatible провайдеры, включая Gemini.</p>
+                            <span id="ai-settings-save-state" class="settings-inline-state">Изменения применяются автоматически.</span>
                         </div>
                     </div>
                     <div id="ai-settings-form" class="stacked-settings-form"></div>
-                    <div class="settings-actions settings-actions-compact">
-                        <button class="btn btn-primary" id="save-ai-settings-btn">
-                            <i class="fa-solid fa-floppy-disk"></i> Сохранить AI настройки
-                        </button>
-                    </div>
                 </section>
             </div>
         </aside>
@@ -294,11 +290,11 @@
             <div class="settings-divider"></div>
             <div class="settings-danger">
                 <div>
-                    <strong>Hard Reset</strong>
-                    <p id="hard-reset-desc-text">Полностью очищает PostgreSQL и заново создаёт коллекцию Qdrant с актуальной размерностью.</p>
+                    <strong id="hard-reset-title-text">Hard reset</strong>
+                    <p id="hard-reset-desc-text">Hard reset удалит все данные PostgreSQL и пересоздаст коллекцию Qdrant. Продолжить?</p>
                 </div>
                 <button class="btn btn-danger" id="hard-reset-btn">
-                    <i class="fa-solid fa-bomb"></i> Hard Reset
+                    <img class="ui-icon ui-icon-sm" src="/assets/icons/reset.png" alt=""> Hard Reset
                 </button>
             </div>
         </div>

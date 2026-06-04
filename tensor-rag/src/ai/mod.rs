@@ -1,9 +1,14 @@
+mod agent;
+mod context;
+
 use crate::mcp::{SearchTextTool, ToolHandler};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+pub use context::{AiChatMode, ContextOverflowStrategy};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a grounded RAG assistant for the local document library. Answer clearly, stay close to the retrieved context, and say when the library does not contain enough evidence. When you rely on retrieved passages, cite them inline as [1], [2], and so on.";
 
@@ -60,6 +65,10 @@ pub struct AiConfig {
     pub temperature: f32,
     pub rag_top_k: usize,
     pub system_prompt: String,
+    pub chat_mode: AiChatMode,
+    pub context_strategy: ContextOverflowStrategy,
+    pub context_token_limit: usize,
+    pub agent_max_tool_rounds: usize,
 }
 
 pub fn ai_defaults_for_provider(provider: &str) -> (&'static str, &'static str) {
@@ -100,6 +109,20 @@ pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, St
         .max(1);
     let system_prompt =
         get_setting(settings, "AI_SYSTEM_PROMPT").unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+    let chat_mode = context::AiChatMode::from_setting(
+        &get_setting(settings, "AI_CHAT_MODE").unwrap_or_else(|| "rag".to_string()),
+    );
+    let context_strategy = context::ContextOverflowStrategy::from_setting(
+        &get_setting(settings, "AI_CONTEXT_STRATEGY").unwrap_or_else(|| "trim_middle".to_string()),
+    );
+    let context_token_limit = get_setting(settings, "AI_CONTEXT_TOKEN_LIMIT")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16000)
+        .max(1024);
+    let agent_max_tool_rounds = get_setting(settings, "AI_AGENT_MAX_TOOL_ROUNDS")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 12);
 
     if base_url.is_empty() {
         return Err("AI_BASE_URL is empty. Choose a provider or specify a custom base URL.".to_string());
@@ -116,6 +139,10 @@ pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, St
         temperature,
         rag_top_k,
         system_prompt,
+        chat_mode,
+        context_strategy,
+        context_token_limit,
+        agent_max_tool_rounds,
     })
 }
 
@@ -129,26 +156,40 @@ pub async fn run_chat(
     }
 
     let config = load_ai_config(settings)?;
-    let query = request
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "user")
-        .map(|message| message.content.trim().to_string())
-        .filter(|text| !text.is_empty())
-        .ok_or_else(|| "Chat request must include a non-empty user message.".to_string())?;
+    let query = last_user_query(&request.messages)?;
 
-    let sources = if request.use_retrieval {
-        let scoped_doc_uuid = if request.scope_to_selected_document {
-            request.doc_uuid.clone()
-        } else {
-            None
-        };
-        retrieve_sources(&db_pools, &query, scoped_doc_uuid, config.rag_top_k).await?
+    let (completion, sources) = if config.chat_mode == AiChatMode::Agent {
+        let messages = context::build_agent_messages(
+            &config,
+            &request.messages,
+            request.doc_uuid.as_deref(),
+            request.scope_to_selected_document,
+        )?;
+        agent::run_agent_completion(
+            &db_pools,
+            &config,
+            messages,
+            request.use_retrieval,
+            request.doc_uuid.as_deref(),
+            request.scope_to_selected_document,
+            None,
+        )
+        .await?
     } else {
-        Vec::new()
+        let sources = if request.use_retrieval {
+            let scoped_doc_uuid = if request.scope_to_selected_document {
+                request.doc_uuid.clone()
+            } else {
+                None
+            };
+            retrieve_sources(&db_pools, &query, scoped_doc_uuid, config.rag_top_k).await?
+        } else {
+            Vec::new()
+        };
+        let request_messages = context::build_completion_messages(&config, &request.messages, &sources)?;
+        let completion = request_completion_from_messages(&config, &request_messages).await?;
+        (completion, sources)
     };
-    let completion = request_completion(&config, &request.messages, &sources).await?;
 
     Ok(ChatResponse {
         message: ChatMessage {
@@ -172,60 +213,95 @@ pub async fn stream_chat(
     }
 
     let config = load_ai_config(settings)?;
-    let query = request
-        .messages
+    let query = last_user_query(&request.messages)?;
+
+    let done_event = if config.chat_mode == AiChatMode::Agent {
+        send_sse(
+            &tx,
+            "thinking",
+            &json!({
+                "phase": "reasoning",
+                "label": "Agent is deciding whether to call MCP tools"
+            }),
+        )
+        .await?;
+
+        let messages = context::build_agent_messages(
+            &config,
+            &request.messages,
+            request.doc_uuid.as_deref(),
+            request.scope_to_selected_document,
+        )?;
+        agent::stream_agent_completion(
+            &db_pools,
+            &config,
+            messages,
+            request.use_retrieval,
+            request.doc_uuid.as_deref(),
+            request.scope_to_selected_document,
+            &tx,
+        )
+        .await?
+    } else {
+        let sources = if request.use_retrieval {
+            send_sse(
+                &tx,
+                "thinking",
+                &json!({
+                    "phase": "retrieval",
+                    "label": "Searching the library for relevant passages"
+                }),
+            )
+            .await?;
+
+            let scoped_doc_uuid = if request.scope_to_selected_document {
+                request.doc_uuid.clone()
+            } else {
+                None
+            };
+            let sources = retrieve_sources(&db_pools, &query, scoped_doc_uuid, config.rag_top_k).await?;
+            send_sse(&tx, "sources", &serde_json::to_value(&sources).map_err(|e| e.to_string())?).await?;
+            sources
+        } else {
+            Vec::new()
+        };
+
+        send_sse(
+            &tx,
+            "thinking",
+            &json!({
+                "phase": "reasoning",
+                "label": "Reasoning over the retrieved context"
+            }),
+        )
+        .await?;
+
+        let request_messages = context::build_completion_messages(&config, &request.messages, &sources)?;
+        request_completion_stream_from_messages(&config, &request_messages, &tx).await?;
+        ChatDoneEvent {
+            provider: config.provider.clone(),
+            model: config.model.clone(),
+            sources,
+        }
+    };
+
+    send_sse(
+        &tx,
+        "done",
+        &serde_json::to_value(done_event).map_err(|e| e.to_string())?,
+    )
+    .await?;
+    Ok(())
+}
+
+fn last_user_query(messages: &[ChatMessage]) -> Result<String, String> {
+    messages
         .iter()
         .rev()
         .find(|message| message.role == "user")
         .map(|message| message.content.trim().to_string())
         .filter(|text| !text.is_empty())
-        .ok_or_else(|| "Chat request must include a non-empty user message.".to_string())?;
-
-    let sources = if request.use_retrieval {
-        send_sse(
-            &tx,
-            "thinking",
-            &json!({
-                "phase": "retrieval",
-                "label": "Searching the library for relevant passages"
-            }),
-        )
-        .await?;
-
-        let scoped_doc_uuid = if request.scope_to_selected_document {
-            request.doc_uuid.clone()
-        } else {
-            None
-        };
-        let sources = retrieve_sources(&db_pools, &query, scoped_doc_uuid, config.rag_top_k).await?;
-        send_sse(&tx, "sources", &serde_json::to_value(&sources).map_err(|e| e.to_string())?).await?;
-        sources
-    } else {
-        Vec::new()
-    };
-    send_sse(
-        &tx,
-        "thinking",
-        &json!({
-            "phase": "reasoning",
-            "label": "Reasoning over the retrieved context"
-        }),
-    )
-    .await?;
-
-    request_completion_stream(&config, &request.messages, &sources, &tx).await?;
-    send_sse(
-        &tx,
-        "done",
-        &serde_json::to_value(ChatDoneEvent {
-            provider: config.provider,
-            model: config.model,
-            sources,
-        })
-        .map_err(|e| e.to_string())?,
-    )
-    .await?;
-    Ok(())
+        .ok_or_else(|| "Chat request must include a non-empty user message.".to_string())
 }
 
 async fn retrieve_sources(
@@ -244,8 +320,13 @@ async fn retrieve_sources(
     }
 
     let bytes = search_tool.handle(args, db_pools, None).await?;
-    let payload: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|err| format!("Failed to decode MCP search response: {err}"))?;
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    parse_search_sources(&text)
+}
+
+pub(crate) fn parse_search_sources(payload_text: &str) -> Result<Vec<ChatSource>, String> {
+    let payload: serde_json::Value = serde_json::from_str(payload_text)
+        .map_err(|err| format!("Failed to decode MCP search response: {err}"))?;
 
     let documents = payload
         .get("documents")
@@ -297,93 +378,28 @@ fn parse_source_block(text: &str) -> (String, String) {
     ("Library result".to_string(), text.trim().to_string())
 }
 
-async fn request_completion(
+pub(crate) async fn request_completion_from_messages(
     config: &AiConfig,
-    messages: &[ChatMessage],
-    sources: &[ChatSource],
+    messages: &[serde_json::Value],
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let request_messages = build_request_messages(config, messages, sources);
-
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let mut builder = client.post(url).json(&json!({
-        "model": config.model,
-        "messages": request_messages,
-        "temperature": config.temperature
-    }));
-
-    if !config.api_key.is_empty() {
-        builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
-    }
-    if config.provider == "openrouter" {
-        builder = builder
-            .header("HTTP-Referer", "http://localhost:8080")
-            .header("X-Title", "Tensor RAG");
-    }
-
-    let response = builder
-        .send()
-        .await
-        .map_err(|err| format!("Failed to call AI provider: {err}"))?;
-    let status = response.status();
-    let payload: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|err| format!("Failed to decode AI provider response: {err}"))?;
-
-    if !status.is_success() {
-        return Err(payload
-            .get("error")
-            .and_then(|value| value.get("message"))
-            .and_then(|value| value.as_str())
-            .map(|message| format!("AI provider error: {message}"))
-            .unwrap_or_else(|| format!("AI provider request failed with status {status}")));
-    }
-
+    let payload = request_chat_payload(config, messages, None, false).await?;
     extract_message_content(&payload)
         .ok_or_else(|| "AI provider response does not contain an assistant message.".to_string())
 }
 
-async fn request_completion_stream(
+pub(crate) async fn request_completion_stream_from_messages(
     config: &AiConfig,
-    messages: &[ChatMessage],
-    sources: &[ChatSource],
+    messages: &[serde_json::Value],
     tx: &tokio::sync::mpsc::Sender<String>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let mut builder = client.post(url).json(&json!({
-        "model": config.model,
-        "messages": build_request_messages(config, messages, sources),
-        "temperature": config.temperature,
-        "stream": true
-    }));
-
-    if !config.api_key.is_empty() {
-        builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
-    }
-    if config.provider == "openrouter" {
-        builder = builder
-            .header("HTTP-Referer", "http://localhost:8080")
-            .header("X-Title", "Tensor RAG");
-    }
-
-    let response = builder
-        .send()
-        .await
-        .map_err(|err| format!("Failed to call AI provider: {err}"))?;
+    let response = send_chat_request(config, messages, None, true).await?;
     let status = response.status();
     if !status.is_success() {
         let payload: serde_json::Value = response
             .json()
             .await
             .map_err(|err| format!("Failed to decode AI provider response: {err}"))?;
-        return Err(payload
-            .get("error")
-            .and_then(|value| value.get("message"))
-            .and_then(|value| value.as_str())
-            .map(|message| format!("AI provider error: {message}"))
-            .unwrap_or_else(|| format!("AI provider request failed with status {status}")));
+        return Err(provider_error_message(status, &payload));
     }
 
     let mut buffer = String::new();
@@ -408,44 +424,69 @@ async fn request_completion_stream(
     Ok(())
 }
 
-fn build_request_messages(
+pub(crate) async fn request_chat_payload(
     config: &AiConfig,
-    messages: &[ChatMessage],
-    sources: &[ChatSource],
-) -> Vec<serde_json::Value> {
-    let mut request_messages = Vec::new();
-    request_messages.push(json!({
-        "role": "system",
-        "content": config.system_prompt
-    }));
+    messages: &[serde_json::Value],
+    tools: Option<Vec<serde_json::Value>>,
+    stream: bool,
+) -> Result<serde_json::Value, String> {
+    let response = send_chat_request(config, messages, tools, stream).await?;
+    let status = response.status();
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|err| format!("Failed to decode AI provider response: {err}"))?;
 
-    if !sources.is_empty() {
-        let context = sources
-            .iter()
-            .map(|source| format!("[{}] {}\n{}", source.index, source.title, source.excerpt))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        request_messages.push(json!({
-            "role": "system",
-            "content": format!(
-                "Retrieved context from the local RAG library:\n\n{}\n\nUse this context when it is relevant. If it is insufficient, say so explicitly.",
-                context
-            )
-        }));
+    if !status.is_success() {
+        return Err(provider_error_message(status, &payload));
     }
 
-    for message in messages {
-        let role = match message.role.as_str() {
-            "system" | "assistant" | "user" => message.role.as_str(),
-            _ => "user",
-        };
-        request_messages.push(json!({
-            "role": role,
-            "content": message.content
-        }));
+    Ok(payload)
+}
+
+async fn send_chat_request(
+    config: &AiConfig,
+    messages: &[serde_json::Value],
+    tools: Option<Vec<serde_json::Value>>,
+    stream: bool,
+) -> Result<reqwest::Response, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let mut body = json!({
+        "model": config.model,
+        "messages": messages,
+        "temperature": config.temperature,
+        "stream": stream
+    });
+
+    if let Some(tools) = tools {
+        body["tools"] = json!(tools);
+        body["tool_choice"] = json!("auto");
     }
 
-    request_messages
+    let mut builder = client.post(url).json(&body);
+    if !config.api_key.is_empty() {
+        builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
+    }
+    if config.provider == "openrouter" {
+        builder = builder
+            .header("HTTP-Referer", "http://localhost:8080")
+            .header("X-Title", "Tensor RAG");
+    }
+
+    builder
+        .send()
+        .await
+        .map_err(|err| format!("Failed to call AI provider: {err}"))
+}
+
+fn provider_error_message(status: reqwest::StatusCode, payload: &serde_json::Value) -> String {
+    payload
+        .get("error")
+        .and_then(|value| value.get("message"))
+        .and_then(|value| value.as_str())
+        .map(|message| format!("AI provider error: {message}"))
+        .unwrap_or_else(|| format!("AI provider request failed with status {status}"))
 }
 
 async fn process_provider_sse_frame(
@@ -504,7 +545,7 @@ fn extract_delta_content(delta: &serde_json::Value) -> Option<String> {
     }
 }
 
-async fn send_sse(
+pub(crate) async fn send_sse(
     tx: &tokio::sync::mpsc::Sender<String>,
     event: &str,
     payload: &serde_json::Value,
@@ -519,7 +560,7 @@ async fn send_sse(
         .map_err(|_| "SSE channel closed before the response was delivered.".to_string())
 }
 
-fn extract_message_content(payload: &serde_json::Value) -> Option<String> {
+pub(crate) fn extract_message_content(payload: &serde_json::Value) -> Option<String> {
     let message = payload.get("choices")?.get(0)?.get("message")?;
     let content = message.get("content")?;
 
