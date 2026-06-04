@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use regex::Regex;
+use once_cell::sync::Lazy;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -379,6 +381,78 @@ impl ToolHandler for SearchTool {
     }
 }
 
+async fn fetch_and_format_expanded_documents(
+    db_pools: &crate::db::DbPools,
+    indices: &[usize],
+) -> Vec<String> {
+    let details = match db_pools.fetch_chunk_details(indices).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("Failed to fetch chunk details: {}", e);
+            return db_pools.fetch_metadata(indices).await;
+        }
+    };
+
+    let mut neighbor_keys = Vec::new();
+    for d in &details {
+        if !d.doc_uuid.is_empty() {
+            neighbor_keys.push((d.doc_uuid.clone(), d.chunk_index - 1));
+            neighbor_keys.push((d.doc_uuid.clone(), d.chunk_index + 1));
+        }
+    }
+
+    let neighbors_map = if !neighbor_keys.is_empty() {
+        db_pools.fetch_neighbors(&neighbor_keys).await.unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let mut formatted_docs = Vec::new();
+    let mut details_map = std::collections::HashMap::new();
+    for d in details {
+        details_map.insert(d.id, d);
+    }
+
+    for &id in indices {
+        if let Some(detail) = details_map.get(&id) {
+            let prev_key = (detail.doc_uuid.clone(), detail.chunk_index - 1);
+            let next_key = (detail.doc_uuid.clone(), detail.chunk_index + 1);
+            
+            let prev_text = neighbors_map.get(&prev_key);
+            let next_text = neighbors_map.get(&next_key);
+
+            let mut context_window = detail.text.clone();
+            if let Some(prev) = prev_text {
+                if !prev.trim().is_empty() {
+                    context_window = format!("{} [...] {}", prev.trim(), context_window);
+                }
+            }
+            if let Some(next) = next_text {
+                if !next.trim().is_empty() {
+                    context_window = format!("{} [...] {}", context_window, next.trim());
+                }
+            }
+
+            let header = if !detail.filename.is_empty() {
+                let chap = if !detail.chapter_id.is_empty() {
+                    format!(" (Chapter: {})", detail.chapter_id)
+                } else {
+                    String::new()
+                };
+                format!("Source: {}{}\n", detail.filename, chap)
+            } else {
+                String::new()
+            };
+
+            formatted_docs.push(format!("{}{}", header, context_window));
+        } else {
+            formatted_docs.push(format!("Metadata for doc {}", id));
+        }
+    }
+
+    formatted_docs
+}
+
 pub struct SearchTextTool;
 
 impl ToolHandler for SearchTextTool {
@@ -442,7 +516,7 @@ impl ToolHandler for SearchTextTool {
 
             match result {
                 Some(crate::vm::Value::Result(topk)) => {
-                    let metadata = db_pools.fetch_metadata(&topk.indices).await;
+                    let metadata = fetch_and_format_expanded_documents(db_pools, &topk.indices).await;
                     let response_json = trim_search_payload(topk.indices, topk.scores, metadata);
 
                     if let Some(m) = &metrics {
@@ -873,6 +947,23 @@ impl McpServer {
     }
 }
 
+fn extract_chapter_id(query: &str) -> Option<String> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)(?:Chapter|Part|Глава|Часть)\s+((?:\d+|\b[IVXLCDM]+\b|[a-zA-Z\p{Cyrillic}]+))").unwrap()
+    });
+    if let Some(caps) = RE.captures(query) {
+        if let Some(m) = caps.get(1) {
+            let raw = m.as_str();
+            if let Some(num) = crate::chunker::parse_text_number(raw) {
+                return Some(num);
+            } else {
+                return Some(crate::chunker::normalize_chapter_id(raw));
+            }
+        }
+    }
+    None
+}
+
 // async executor
 pub fn execute_program<'a>(
     program: &'a crate::ir::Program,
@@ -901,8 +992,23 @@ pub fn execute_program<'a>(
                     let query_vec = db_pools.get_embedding(query, true).await?;
                     vm.query_vector = query_vec.clone();
 
+                    let mut updated_filters = filters.clone().unwrap_or_default();
+                    let chapter_filter = extract_chapter_id(query);
+                    if let Some(ref chap) = chapter_filter {
+                        updated_filters.push(crate::ir::Filter {
+                            field: "chapter_id".to_string(),
+                            operator: "==".to_string(),
+                            value: serde_json::Value::String(chap.clone()),
+                        });
+                    }
+                    let filters_opt = if !updated_filters.is_empty() {
+                        Some(updated_filters)
+                    } else {
+                        None
+                    };
+
                     let (mut ids, mut vectors) =
-                        db_pools.search_qdrant(&query_vec, filters, *top_k).await?;
+                        db_pools.search_qdrant(&query_vec, &filters_opt, *top_k).await?;
 
                     // Also retrieve keyword-matching candidates from Postgres and merge them
                     let clean_query = query
@@ -917,7 +1023,7 @@ pub fn execute_program<'a>(
                         if let Some(pool) = &db_pools.postgres {
                             // Extract doc_uuid filter if present
                             let mut postgres_doc_uuid = None;
-                            if let Some(f_list) = filters {
+                            if let Some(f_list) = &filters_opt {
                                 for filter in f_list {
                                     if filter.field == "doc_uuid" && (filter.operator == "==" || filter.operator == "=") {
                                         if let Some(val_str) = filter.value.as_str() {
@@ -928,25 +1034,52 @@ pub fn execute_program<'a>(
                             }
 
                             let rows = if let Some(uuid) = postgres_doc_uuid {
-                                sqlx::query(
-                                    "SELECT id FROM documents 
-                                     WHERE doc_uuid = $1 
-                                       AND to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
-                                     LIMIT 50"
-                                )
-                                .bind(uuid)
-                                .bind(&clean_query)
-                                .fetch_all(pool)
-                                .await
+                                if let Some(ref chap) = chapter_filter {
+                                    sqlx::query(
+                                        "SELECT id FROM documents 
+                                         WHERE doc_uuid = $1 AND chapter_id = $2
+                                           AND to_tsvector('simple', text) @@ to_tsquery('simple', $3) 
+                                         LIMIT 50"
+                                    )
+                                    .bind(uuid)
+                                    .bind(chap)
+                                    .bind(&clean_query)
+                                    .fetch_all(pool)
+                                    .await
+                                } else {
+                                    sqlx::query(
+                                        "SELECT id FROM documents 
+                                         WHERE doc_uuid = $1 
+                                           AND to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
+                                         LIMIT 50"
+                                    )
+                                    .bind(uuid)
+                                    .bind(&clean_query)
+                                    .fetch_all(pool)
+                                    .await
+                                }
                             } else {
-                                sqlx::query(
-                                    "SELECT id FROM documents 
-                                     WHERE to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
-                                     LIMIT 50"
-                                )
-                                .bind(&clean_query)
-                                .fetch_all(pool)
-                                .await
+                                if let Some(ref chap) = chapter_filter {
+                                    sqlx::query(
+                                        "SELECT id FROM documents 
+                                         WHERE chapter_id = $1
+                                           AND to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
+                                         LIMIT 50"
+                                    )
+                                    .bind(chap)
+                                    .bind(&clean_query)
+                                    .fetch_all(pool)
+                                    .await
+                                } else {
+                                    sqlx::query(
+                                        "SELECT id FROM documents 
+                                         WHERE to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
+                                         LIMIT 50"
+                                    )
+                                    .bind(&clean_query)
+                                    .fetch_all(pool)
+                                    .await
+                                }
                             };
 
                             if let Ok(rows) = rows {

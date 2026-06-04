@@ -338,19 +338,17 @@ async fn handle_upload(
         }
     };
 
-    use crate::chunker::{Chunker, TokenChunker};
-    let chunker = TokenChunker::default();
+    use crate::chunker::SmartChunker;
+    let chunker = SmartChunker::new(1000, 200);
     let chunks = chunker.chunk(&ocr_text);
 
     info!("Split document into {} chunks.", chunks.len());
 
     let mut doc_ids = Vec::new();
     let doc_uuid = uuid::Uuid::new_v4().to_string();
-    for chunk in chunks {
-        if chunk.trim().is_empty() {
-            continue;
-        }
-        let vector = match state.db_pools.get_embedding(&chunk, false).await {
+    for item in chunks {
+        let augmented = format!("File: {}. Chapter: {}. {}", filename, item.chapter_id, item.text);
+        let vector = match state.db_pools.get_embedding(&augmented, false).await {
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to generate vector embedding: {}", e);
@@ -365,7 +363,7 @@ async fn handle_upload(
         };
         match state
             .db_pools
-            .insert_document(&chunk, vector, &filename, &doc_uuid)
+            .insert_document(&item.text, vector, &filename, &doc_uuid, &item.chapter_id, item.chunk_index)
             .await
         {
             Ok(id) => doc_ids.push(id),

@@ -77,6 +77,16 @@ pub struct StoredDocument {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct ChunkDetail {
+    pub id: usize,
+    pub text: String,
+    pub filename: String,
+    pub doc_uuid: String,
+    pub chapter_id: String,
+    pub chunk_index: i32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CollectionHealth {
     pub collection_name: String,
     pub exists: bool,
@@ -169,6 +179,15 @@ impl DbPools {
             .execute(&pool)
             .await;
         let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS chapter_id TEXT;")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_index INTEGER;")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_documents_group ON documents(doc_uuid, chunk_index);")
             .execute(&pool)
             .await;
 
@@ -382,15 +401,19 @@ impl DbPools {
         vector: ndarray::Array1<f32>,
         filename: &str,
         doc_uuid: &str,
+        chapter_id: &str,
+        chunk_index: i32,
     ) -> Result<usize, String> {
         // 1. Write to Postgres
         let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
 
-        let row = sqlx::query("INSERT INTO documents (text, bm25_score, filename, doc_uuid) VALUES ($1, $2, $3, $4) RETURNING id")
+        let row = sqlx::query("INSERT INTO documents (text, bm25_score, filename, doc_uuid, chapter_id, chunk_index) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id")
             .bind(text)
             .bind(0.0f32)
             .bind(filename)
             .bind(doc_uuid)
+            .bind(chapter_id)
+            .bind(chunk_index)
             .fetch_one(pool)
             .await
             .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
@@ -405,6 +428,8 @@ impl DbPools {
         let mut payload = std::collections::HashMap::new();
         payload.insert("filename".to_string(), serde_json::Value::String(filename.to_string()));
         payload.insert("doc_uuid".to_string(), serde_json::Value::String(doc_uuid.to_string()));
+        payload.insert("chapter_id".to_string(), serde_json::Value::String(chapter_id.to_string()));
+        payload.insert("chunk_index".to_string(), serde_json::Value::Number(serde_json::Number::from(chunk_index)));
 
         let collection = crate::config::get_qdrant_collection();
         let point = PointStruct::new(
@@ -911,6 +936,74 @@ impl DbPools {
         ids.iter()
             .map(|id| format!("Metadata for doc {}", id))
             .collect()
+    }
+
+    pub async fn fetch_chunk_details(&self, ids: &[usize]) -> Result<Vec<ChunkDetail>, String> {
+        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        use sqlx::Row;
+        let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
+        let rows = sqlx::query("SELECT id, text, COALESCE(filename, '') as filename, COALESCE(doc_uuid, '') as doc_uuid, COALESCE(chapter_id, '') as chapter_id, COALESCE(chunk_index, 0) as chunk_index FROM documents WHERE id = ANY($1)")
+            .bind(&ids_i64[..])
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch chunk details: {}", e))?;
+
+        let mut details = Vec::new();
+        for row in rows {
+            let id: i64 = row.try_get("id").unwrap_or(-1);
+            let text: String = row.try_get("text").unwrap_or_default();
+            let filename: String = row.try_get("filename").unwrap_or_default();
+            let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
+            let chapter_id: String = row.try_get("chapter_id").unwrap_or_default();
+            let chunk_index: i32 = row.try_get("chunk_index").unwrap_or(0);
+            details.push(ChunkDetail {
+                id: id as usize,
+                text,
+                filename,
+                doc_uuid,
+                chapter_id,
+                chunk_index,
+            });
+        }
+        Ok(details)
+    }
+
+    pub async fn fetch_neighbors(
+        &self,
+        keys: &[(String, i32)],
+    ) -> Result<std::collections::HashMap<(String, i32), String>, String> {
+        let pool = self.postgres.as_ref().ok_or("PostgreSQL pool not initialized")?;
+        if keys.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let mut query_str = String::from("SELECT doc_uuid, chunk_index, text FROM documents WHERE ");
+        for i in 0..keys.len() {
+            if i > 0 {
+                query_str.push_str(" OR ");
+            }
+            query_str.push_str(&format!("(doc_uuid = ${} AND chunk_index = ${})", i * 2 + 1, i * 2 + 2));
+        }
+
+        let mut query = sqlx::query(&query_str);
+        for (uuid, idx) in keys {
+            query = query.bind(uuid).bind(*idx);
+        }
+
+        let rows = query.fetch_all(pool).await.map_err(|e| format!("Failed to fetch neighbors: {}", e))?;
+        
+        use sqlx::Row;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let doc_uuid: String = r.try_get("doc_uuid").unwrap_or_default();
+            let chunk_index: i32 = r.try_get("chunk_index").unwrap_or(-1);
+            let text: String = r.try_get("text").unwrap_or_default();
+            map.insert((doc_uuid, chunk_index), text);
+        }
+        Ok(map)
     }
 
     pub async fn fetch_document_by_uuid(

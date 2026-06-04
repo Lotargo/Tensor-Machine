@@ -50,7 +50,7 @@ function handleMessage(msg) {
         tools: [
           {
             name: "search",
-            description: "Perform a hybrid semantic (vector) and lexical (BM25) search on the document library. Best used to retrieve passages, documents, or answers to questions. Formulate the query in the SAME language as the user's message/question (e.g., Russian, English, Chinese, etc.). DO NOT use search engine question words (such as 'what', 'how', 'why', 'что', 'как', 'почему', etc.). Always query using only descriptive search keywords or phrases in the matching language. Examples: 'Arrow Flight connection speed' (English) or 'скорость подключения Arrow Flight' (Russian). You can optionally filter results to a specific document by providing its `doc_uuid`.",
+            description: "PRIMARY RETRIEVAL TOOL: Use this tool first to find specific information, answers, quotes, or passages in the document library. This is the most reliable tool because it retrieves focused passages and avoids token limits. Formulate the query in the SAME language as the user's message/question (e.g., Russian, English, Chinese). DO NOT use question words (such as 'what', 'how', 'why', 'что', 'как', 'почему'). Always query using only descriptive search keywords/phrases in the matching language. Examples: 'Arrow Flight connection speed' (English) or 'скорость подключения Arrow Flight' (Russian). You can optionally filter results to a specific document by providing its `doc_uuid`.",
             inputSchema: {
               type: "object",
               properties: {
@@ -83,7 +83,7 @@ function handleMessage(msg) {
           },
           {
             name: "read_document",
-            description: "Read the full reconstructed content of a single indexed document by its doc_uuid. If the document exceeds the configured full-read token limit, the tool returns a warning instead of the content.",
+            description: "CRITICAL WARNING: DO NOT USE THIS TOOL for large documents (e.g. books, logs, long reports) as it will exceed the token budget and FAIL with a limit exceeded warning. Use this tool ONLY for reading very small files in full (e.g., under 1-2 pages). For retrieving specific facts, answers, or quotes from ANY document (including large ones), ALWAYS use the 'search' tool instead.",
             inputSchema: {
               type: "object",
               properties: {
