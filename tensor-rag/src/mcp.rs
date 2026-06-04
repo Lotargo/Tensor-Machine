@@ -233,8 +233,6 @@ impl VmIpcClient {
 
 pub struct SearchTool;
 
-
-
 impl ToolHandler for SearchTool {
     fn handle<'a>(
         &'a self,
@@ -337,8 +335,6 @@ impl ToolHandler for SearchTool {
     }
 }
 
-
-
 pub struct SearchTextTool;
 
 impl ToolHandler for SearchTextTool {
@@ -404,12 +400,9 @@ impl ToolHandler for SearchTextTool {
 
             match result {
                 Some(crate::vm::Value::Result(topk)) => {
-                    let response_json = crate::response::build_search_response(
-                        db_pools,
-                        topk.indices,
-                        topk.scores,
-                    )
-                    .await?;
+                    let response_json =
+                        crate::response::build_search_response(db_pools, topk.indices, topk.scores)
+                            .await?;
 
                     if let Some(m) = &metrics {
                         let count = response_json

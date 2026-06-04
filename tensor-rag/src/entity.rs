@@ -8,18 +8,35 @@ static NAMED_ENTITY_RE: Lazy<Regex> = Lazy::new(|| {
 static TOKEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[\p{L}\d]+").unwrap());
 
 pub fn extract_entities(text: &str) -> Vec<String> {
+    extract_entities_with_limits(text, 12_000, 32)
+}
+
+pub fn extract_entities_with_limits(
+    text: &str,
+    max_chars: usize,
+    max_entities: usize,
+) -> Vec<String> {
+    let limited_text = if text.chars().count() > max_chars {
+        text.chars().take(max_chars).collect::<String>()
+    } else {
+        text.to_string()
+    };
+
     let mut entities = BTreeSet::new();
-    for mat in NAMED_ENTITY_RE.find_iter(text) {
+    for mat in NAMED_ENTITY_RE.find_iter(&limited_text) {
         let candidate = mat.as_str().trim();
-        if candidate.chars().count() < 3 || is_sentence_start(text, mat.start()) {
+        if candidate.chars().count() < 3 || is_sentence_start(&limited_text, mat.start()) {
             continue;
         }
         if crate::normalizer::is_stopword(candidate) {
             continue;
         }
         entities.insert(candidate.to_string());
+        if entities.len() >= max_entities {
+            break;
+        }
     }
-    entities.into_iter().take(32).collect()
+    entities.into_iter().collect()
 }
 
 pub fn extract_query_entities(query: &str) -> Vec<String> {
@@ -72,5 +89,12 @@ mod tests {
         let entities = extract_entities("We met Alice Liddell near White Rabbit. Then she left.");
         assert!(entities.iter().any(|e| e == "Alice Liddell"));
         assert!(entities.iter().any(|e| e == "White Rabbit"));
+    }
+
+    #[test]
+    fn respects_entity_limit() {
+        let text = "Alice Liddell met White Rabbit. Mad Hatter saw Queen Hearts. Cheshire Cat joined March Hare.";
+        let entities = extract_entities_with_limits(text, 1_000, 2);
+        assert_eq!(entities.len(), 2);
     }
 }

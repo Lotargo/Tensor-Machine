@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
 use crate::db::DbPools;
+use std::collections::{HashMap, HashSet};
 
 pub fn bucket_sort_contexts(mut docs: Vec<(usize, f32, String)>) -> Vec<(usize, f32, String)> {
     docs.sort_by(|a, b| {
@@ -87,7 +87,9 @@ pub async fn build_search_response(
     // For each unique doc, check if we have a chunk with index 0
     let mut summary_keys = Vec::new();
     for doc_uuid in &unique_docs {
-        let has_summary = details.iter().any(|d| d.doc_uuid == *doc_uuid && d.chunk_index == 0);
+        let has_summary = details
+            .iter()
+            .any(|d| d.doc_uuid == *doc_uuid && d.chunk_index == 0);
         if !has_summary {
             summary_keys.push((doc_uuid.clone(), 0));
         }
@@ -95,7 +97,10 @@ pub async fn build_search_response(
 
     // Fetch summary chunks (chunk_index = 0)
     let summary_chunks = if !summary_keys.is_empty() {
-        db_pools.fetch_parent_chunks(&summary_keys).await.unwrap_or_default()
+        db_pools
+            .fetch_parent_chunks(&summary_keys)
+            .await
+            .unwrap_or_default()
     } else {
         HashMap::new()
     };
@@ -116,13 +121,19 @@ pub async fn build_search_response(
     }
 
     let neighbors_map = if !neighbor_keys.is_empty() {
-        db_pools.fetch_neighbors(&neighbor_keys).await.unwrap_or_default()
+        db_pools
+            .fetch_neighbors(&neighbor_keys)
+            .await
+            .unwrap_or_default()
     } else {
         HashMap::new()
     };
 
     let parents_map = if !parent_keys.is_empty() {
-        db_pools.fetch_parent_chunks(&parent_keys).await.unwrap_or_default()
+        db_pools
+            .fetch_parent_chunks(&parent_keys)
+            .await
+            .unwrap_or_default()
     } else {
         HashMap::new()
     };
@@ -142,7 +153,9 @@ pub async fn build_search_response(
 
     // Helper to add processed chunk to its document group
     let mut add_to_group = |doc_uuid: String, filename: String, pc: ProcessedChunk| {
-        let entry = doc_groups.entry(doc_uuid.clone()).or_insert_with(|| (filename, Vec::new()));
+        let entry = doc_groups
+            .entry(doc_uuid.clone())
+            .or_insert_with(|| (filename, Vec::new()));
         entry.1.push(pc);
     };
 
@@ -224,9 +237,9 @@ pub async fn build_search_response(
         chunks.sort_by(|a, b| b.text.len().cmp(&a.text.len()));
         let mut unique_chunks: Vec<ProcessedChunk> = Vec::new();
         for chunk in chunks {
-            let is_subset = unique_chunks.iter().any(|existing| {
-                existing.text.contains(&chunk.text)
-            });
+            let is_subset = unique_chunks
+                .iter()
+                .any(|existing| existing.text.contains(&chunk.text));
             if !is_subset {
                 unique_chunks.push(chunk);
             }
@@ -236,7 +249,11 @@ pub async fn build_search_response(
         unique_chunks.sort_by_key(|c| c.chunk_index);
 
         let max_score = unique_chunks.iter().map(|c| c.score).fold(0.0f32, f32::max);
-        let best_rank = unique_chunks.iter().map(|c| c.rank).min().unwrap_or(usize::MAX);
+        let best_rank = unique_chunks
+            .iter()
+            .map(|c| c.rank)
+            .min()
+            .unwrap_or(usize::MAX);
 
         groups.push(DocumentGroup {
             _doc_uuid: doc_uuid,
@@ -255,6 +272,7 @@ pub async fn build_search_response(
     let mut returned_documents = Vec::new();
     let mut returned_indices = Vec::new();
     let mut returned_scores = Vec::new();
+    let mut returned_doc_scores = Vec::new();
     let mut total_tokens = 0;
     let mut trimmed = false;
 
@@ -270,6 +288,11 @@ pub async fn build_search_response(
     total_tokens += toc_tokens;
 
     for (doc_idx, g) in groups.into_iter().enumerate() {
+        let doc_max_score = g
+            .chunks
+            .iter()
+            .map(|c| c.score)
+            .fold(0.0f32, |a, b| a.max(b));
         let mut doc_text = String::new();
         let doc_num = doc_idx + 1;
         doc_text.push_str(&format!(">>> НАЧАЛО ДОКУМЕНТА [DOC_{}] <<<\n", doc_num));
@@ -288,7 +311,7 @@ pub async fn build_search_response(
 
         for chunk in g.chunks {
             let mut chunk_text = chunk.text.clone();
-            
+
             if chunk.is_summary {
                 doc_text.push_str(">>> Summary: <<<\n");
             } else {
@@ -301,7 +324,10 @@ pub async fn build_search_response(
                 // Context change detection
                 if let Some(ref last_headers) = last_header_chain {
                     if last_headers != &chunk.header_chain && !chunk.header_chain.is_empty() {
-                        doc_text.push_str(&format!(">>> Context: {} <<<\n", chunk.header_chain.join(" > ")));
+                        doc_text.push_str(&format!(
+                            ">>> Context: {} <<<\n",
+                            chunk.header_chain.join(" > ")
+                        ));
                     }
                 }
                 // Trim overlap with previous chunk
@@ -333,6 +359,7 @@ pub async fn build_search_response(
 
         total_tokens += doc_tokens;
         returned_documents.push(doc_text);
+        returned_doc_scores.push(doc_max_score);
     }
 
     // Prepend Table of Contents if we returned any documents
@@ -352,6 +379,7 @@ pub async fn build_search_response(
     Ok(serde_json::json!({
         "indices": returned_indices,
         "scores": returned_scores,
+        "document_scores": returned_doc_scores,
         "documents": returned_documents,
         "token_limit": token_limit,
         "returned_tokens": total_tokens,
@@ -363,7 +391,7 @@ fn trim_overlap(prev: &str, curr: &str) -> String {
     let prev_chars: Vec<char> = prev.chars().collect();
     let curr_chars: Vec<char> = curr.chars().collect();
     let max_len = prev_chars.len().min(curr_chars.len());
-    
+
     for len in (10..=max_len).rev() {
         let suffix = &prev_chars[prev_chars.len() - len..];
         let prefix = &curr_chars[..len];
@@ -407,7 +435,9 @@ mod tests {
     #[tokio::test]
     async fn test_build_search_response_empty() {
         let db_pools = DbPools::new();
-        let result = build_search_response(&db_pools, vec![], vec![]).await.unwrap();
+        let result = build_search_response(&db_pools, vec![], vec![])
+            .await
+            .unwrap();
         assert_eq!(result["indices"].as_array().unwrap().len(), 0);
         assert_eq!(result["documents"].as_array().unwrap().len(), 0);
     }

@@ -53,7 +53,7 @@ pub async fn get_document_neighborhood(
         SELECT DISTINCT doc_uuid, filename, metadata 
         FROM documents 
         WHERE doc_uuid = ANY($1)
-        "#
+        "#,
     )
     .bind(&doc_uuids[..])
     .fetch_all(pool)
@@ -93,7 +93,7 @@ pub async fn get_document_neighborhood(
         FROM edges 
         WHERE source_doc_uuid = ANY($1) AND target_doc_uuid = ANY($1)
         ORDER BY id ASC
-        "#
+        "#,
     )
     .bind(&doc_uuids[..])
     .fetch_all(pool)
@@ -207,7 +207,7 @@ pub async fn auto_link_by_shared_entities(
             HAVING COUNT(de1.entity) >= $1::BIGINT
         )
         SELECT doc1, doc2, shared_count, shared_entities FROM shared_entity_pairs;
-        "#
+        "#,
     )
     .bind(threshold as i64)
     .fetch_all(pool)
@@ -221,7 +221,9 @@ pub async fn auto_link_by_shared_entities(
         let doc1: String = r.try_get("doc1").unwrap_or_default();
         let doc2: String = r.try_get("doc2").unwrap_or_default();
         let count: i64 = r.try_get("shared_count").unwrap_or(0);
-        let shared: serde_json::Value = r.try_get("shared_entities").unwrap_or(serde_json::json!([]));
+        let shared: serde_json::Value = r
+            .try_get("shared_entities")
+            .unwrap_or(serde_json::json!([]));
 
         let metadata = serde_json::json!({
             "shared_count": count,
@@ -261,12 +263,17 @@ pub async fn delete_document_edges(pool: &PgPool, doc_uuid: &str) -> Result<(), 
         r#"
         DELETE FROM edges 
         WHERE source_doc_uuid = $1 OR target_doc_uuid = $1
-        "#
+        "#,
     )
     .bind(doc_uuid)
     .execute(pool)
     .await
-    .map_err(|e| format!("Failed to delete edges associated with document '{}': {}", doc_uuid, e))?;
+    .map_err(|e| {
+        format!(
+            "Failed to delete edges associated with document '{}': {}",
+            doc_uuid, e
+        )
+    })?;
 
     Ok(())
 }

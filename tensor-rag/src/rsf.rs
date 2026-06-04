@@ -24,12 +24,30 @@ pub struct RsfConfig {
 impl Default for RsfConfig {
     fn default() -> Self {
         Self {
-            dense_weight: 0.50,
-            bm25_weight: 0.15,
-            entity_weight: 0.10,
-            structural_weight: 0.05,
-            recency_weight: 0.05,
-            cluster_weight: 0.10,
+            dense_weight: std::env::var("RSF_DENSE_WEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.50),
+            bm25_weight: std::env::var("RSF_BM25_WEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.15),
+            entity_weight: std::env::var("RSF_ENTITY_WEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.10),
+            structural_weight: std::env::var("RSF_STRUCTURAL_WEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.05),
+            recency_weight: std::env::var("RSF_RECENCY_WEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.05),
+            cluster_weight: std::env::var("RSF_CLUSTER_WEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.10),
         }
     }
 }

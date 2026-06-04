@@ -67,6 +67,7 @@ use qdrant_client::qdrant::{
 };
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::collections::HashMap;
+use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -115,6 +116,26 @@ pub struct DbPools {
 }
 
 impl DbPools {
+    fn format_embedding_input(text: &str, is_query: bool) -> String {
+        if is_query {
+            let template =
+                std::env::var("EMBEDDING_QUERY_PREFIX").unwrap_or_else(|_| "query: ".to_string());
+            if template.contains("{}") {
+                template.replace("{}", text)
+            } else {
+                format!("{}{}", template, text)
+            }
+        } else {
+            let template = std::env::var("EMBEDDING_PASSAGE_PREFIX")
+                .unwrap_or_else(|_| "passage: ".to_string());
+            if template.contains("{}") {
+                template.replace("{}", text)
+            } else {
+                format!("{}{}", template, text)
+            }
+        }
+    }
+
     async fn recreate_default_collection(client: &Qdrant, collection: &str) -> Result<(), String> {
         client
             .create_collection(qdrant_client::qdrant::CreateCollection {
@@ -361,45 +382,69 @@ impl DbPools {
         text: &str,
         is_query: bool,
     ) -> Result<ndarray::Array1<f32>, String> {
+        let mut vectors = self.get_embeddings(&[text.to_string()], is_query).await?;
+        vectors
+            .pop()
+            .ok_or_else(|| "Embedding response data vector is empty".to_string())
+    }
+
+    pub async fn get_embeddings(
+        &self,
+        texts: &[String],
+        is_query: bool,
+    ) -> Result<Vec<ndarray::Array1<f32>>, String> {
         let dim = crate::config::get_embedding_dim();
         if cfg!(test) {
-            return Ok(ndarray::Array1::from_elem(dim, 0.1));
+            return Ok(texts
+                .iter()
+                .map(|_| ndarray::Array1::from_elem(dim, 0.1))
+                .collect());
+        }
+
+        if texts.is_empty() {
+            return Ok(Vec::new());
         }
 
         if self.ml_cb.is_open() {
             return Err("ML server circuit breaker is open".to_string());
         }
 
-        // Configure E5 instructions dynamically (with fallback to default E5 format)
-        let formatted_text = if is_query {
-            let template =
-                std::env::var("EMBEDDING_QUERY_PREFIX").unwrap_or_else(|_| "query: ".to_string());
-            if template.contains("{}") {
-                template.replace("{}", text)
-            } else {
-                format!("{}{}", template, text)
-            }
-        } else {
-            let template = std::env::var("EMBEDDING_PASSAGE_PREFIX")
-                .unwrap_or_else(|_| "passage: ".to_string());
-            if template.contains("{}") {
-                template.replace("{}", text)
-            } else {
-                format!("{}{}", template, text)
-            }
-        };
-
-        tracing::debug!("E5 model embedding input text: {:?}", formatted_text);
+        let formatted_inputs: Vec<String> = texts
+            .iter()
+            .map(|text| Self::format_embedding_input(text, is_query))
+            .collect();
 
         let url = std::env::var("EMBEDDING_SERVER_URL")
             .unwrap_or_else(|_| "http://localhost:11434/v1/embeddings".to_string());
         let model = crate::config::get_embedding_model_name();
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(
+                crate::config::get_http_connect_timeout_secs(),
+            ))
+            .timeout(Duration::from_secs(
+                crate::config::get_embedding_request_timeout_secs(),
+            ))
+            .build()
+            .map_err(|e| format!("Failed to build embedding HTTP client: {}", e))?;
+        let input_payload = if formatted_inputs.len() == 1 {
+            serde_json::Value::String(formatted_inputs[0].clone())
+        } else {
+            serde_json::json!(formatted_inputs)
+        };
         let payload = serde_json::json!({
-            "input": formatted_text,
+            "input": input_payload,
             "model": model
         });
+
+        tracing::info!(
+            "Requesting embeddings from '{}' with model '{}' (batch_size={}, total_chars={}, is_query={})",
+            url,
+            model,
+            texts.len(),
+            texts.iter().map(|text| text.len()).sum::<usize>(),
+            is_query
+        );
 
         match client.post(&url).json(&payload).send().await {
             Ok(resp) => {
@@ -424,33 +469,51 @@ impl DbPools {
 
                 match resp.json::<EmbeddingResponse>().await {
                     Ok(res_body) => {
-                        if let Some(first) = res_body.data.first() {
-                            if first.embedding.len() == dim {
-                                self.ml_cb.record_success();
-                                return Ok(ndarray::Array1::from(first.embedding.clone()));
-                            } else {
+                        if res_body.data.is_empty() {
+                            self.ml_cb.record_failure();
+                            return Err("Embedding response data vector is empty".to_string());
+                        }
+
+                        if res_body.data.len() != texts.len() {
+                            self.ml_cb.record_failure();
+                            return Err(format!(
+                                "Embedding batch size mismatch: requested {}, got {}",
+                                texts.len(),
+                                res_body.data.len()
+                            ));
+                        }
+
+                        let mut vectors = Vec::with_capacity(res_body.data.len());
+                        for item in res_body.data {
+                            if item.embedding.len() != dim {
                                 self.ml_cb.record_failure();
                                 return Err(format!(
                                     "Embedding dimension mismatch: expected {}, got {}",
                                     dim,
-                                    first.embedding.len()
+                                    item.embedding.len()
                                 ));
                             }
-                        } else {
-                            self.ml_cb.record_failure();
-                            return Err("Embedding response data vector is empty".to_string());
+                            vectors.push(ndarray::Array1::from(item.embedding));
                         }
+
+                        self.ml_cb.record_success();
+                        tracing::info!(
+                            "Embedding batch completed successfully (batch_size={}, dim={})",
+                            vectors.len(),
+                            dim
+                        );
+                        Ok(vectors)
                     }
                     Err(e) => {
                         self.ml_cb.record_failure();
-                        return Err(format!("Failed to parse embedding response JSON: {}", e));
+                        Err(format!("Failed to parse embedding response JSON: {}", e))
                     }
                 }
             }
             Err(e) => {
                 tracing::error!("Failed to fetch embedding: {}", e);
                 self.ml_cb.record_failure();
-                return Err(format!("Failed to connect to embedding server: {}", e));
+                Err(format!("Failed to connect to embedding server: {}", e))
             }
         }
     }
@@ -628,10 +691,24 @@ impl DbPools {
             None => None,
         };
 
+        let mut anchor_ids_to_delete = Vec::new();
         let ids_to_delete: Vec<i64> = if let Some(ref uuid_str) = doc_uuid {
             if !uuid_str.is_empty() {
                 // Delete associated graph edges first
                 crate::graph::delete_document_edges(pool, uuid_str).await?;
+
+                // Collect anchor IDs so their embeddings can be removed from Qdrant too
+                let anchor_rows = sqlx::query("SELECT id FROM anchors WHERE doc_uuid = $1")
+                    .bind(uuid_str)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| format!("Failed to fetch anchor IDs for uuid: {}", e))?;
+                use sqlx::Row;
+                anchor_ids_to_delete = anchor_rows
+                    .into_iter()
+                    .map(|r| r.try_get::<i64, _>("id").unwrap_or(0))
+                    .filter(|id| *id > 0)
+                    .collect();
 
                 // Find all document IDs with the same doc_uuid
                 let rows = sqlx::query("SELECT id FROM documents WHERE doc_uuid = $1")
@@ -639,7 +716,6 @@ impl DbPools {
                     .fetch_all(pool)
                     .await
                     .map_err(|e| format!("Failed to fetch doc IDs for uuid: {}", e))?;
-                use sqlx::Row;
                 rows.into_iter()
                     .map(|r| r.try_get::<i64, _>("id").unwrap_or(0))
                     .collect()
@@ -656,6 +732,16 @@ impl DbPools {
             .execute(pool)
             .await
             .map_err(|e| format!("PostgreSQL delete failed: {}", e))?;
+
+        if let Some(ref uuid_str) = doc_uuid {
+            if !uuid_str.is_empty() {
+                sqlx::query("DELETE FROM anchors WHERE doc_uuid = $1")
+                    .bind(uuid_str)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| format!("Anchor delete failed: {}", e))?;
+            }
+        }
 
         // 3. Delete all from Qdrant
         if let Some(client) = self.qdrant_clients.get("default") {
@@ -680,6 +766,30 @@ impl DbPools {
                     ..Default::default()
                 })
                 .await;
+
+            if !anchor_ids_to_delete.is_empty() {
+                let anchors_collection = crate::config::get_qdrant_anchors_collection();
+                let anchor_points: Vec<PointId> = anchor_ids_to_delete
+                    .iter()
+                    .map(|&id| PointId {
+                        point_id_options: Some(PointIdOptions::Num(id as u64)),
+                    })
+                    .collect();
+
+                let _ = client
+                    .delete_points(qdrant_client::qdrant::DeletePoints {
+                        collection_name: anchors_collection,
+                        points: Some(qdrant_client::qdrant::PointsSelector {
+                            points_selector_one_of: Some(
+                                qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Points(
+                                    qdrant_client::qdrant::PointsIdsList { ids: anchor_points },
+                                ),
+                            ),
+                        }),
+                        ..Default::default()
+                    })
+                    .await;
+            }
         }
 
         Ok(())
@@ -691,16 +801,30 @@ impl DbPools {
             .postgres
             .as_ref()
             .ok_or("PostgreSQL pool not initialized")?;
-        sqlx::query("TRUNCATE TABLE documents RESTART IDENTITY")
+        sqlx::query("TRUNCATE TABLE documents, anchors, edges RESTART IDENTITY")
             .execute(pool)
             .await
             .map_err(|e| format!("PostgreSQL truncate failed: {}", e))?;
 
         if let Some(client) = self.qdrant_clients.get("default") {
             let collection = crate::config::get_qdrant_collection();
+            let anchors_collection = crate::config::get_qdrant_anchors_collection();
             let _ = client
                 .delete_points(qdrant_client::qdrant::DeletePoints {
                     collection_name: collection.clone(),
+                    points: Some(qdrant_client::qdrant::PointsSelector {
+                        points_selector_one_of: Some(
+                            qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Filter(
+                                qdrant_client::qdrant::Filter::default(),
+                            ),
+                        ),
+                    }),
+                    ..Default::default()
+                })
+                .await;
+            let _ = client
+                .delete_points(qdrant_client::qdrant::DeletePoints {
+                    collection_name: anchors_collection,
                     points: Some(qdrant_client::qdrant::PointsSelector {
                         points_selector_one_of: Some(
                             qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Filter(

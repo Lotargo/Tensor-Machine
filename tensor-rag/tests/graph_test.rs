@@ -1,22 +1,36 @@
-use std::env;
 use sqlx::Row;
+use std::env;
 
 #[tokio::test]
 async fn test_graph_operations() {
     // 1. Initialize environment and DB pool
     dotenvy::dotenv().ok();
-    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://postgres:postgres@localhost:5432/tensor_rag".to_string()
-    });
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/tensor_rag".to_string());
 
     let mut db_pools = tensor_rag::db::DbPools::new();
-    db_pools.init_postgres(&database_url).await.expect("Failed to initialize database");
-    let pool = db_pools.postgres.as_ref().expect("Postgres pool not loaded");
+    db_pools
+        .init_postgres(&database_url)
+        .await
+        .expect("Failed to initialize database");
+    let pool = db_pools
+        .postgres
+        .as_ref()
+        .expect("Postgres pool not loaded");
 
     // 2. Clean up tables
-    sqlx::query("DELETE FROM edges").execute(pool).await.unwrap();
-    sqlx::query("DELETE FROM documents").execute(pool).await.unwrap();
-    sqlx::query("DELETE FROM anchors").execute(pool).await.unwrap();
+    sqlx::query("DELETE FROM edges")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM documents")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM anchors")
+        .execute(pool)
+        .await
+        .unwrap();
 
     // 3. Insert mock documents with entities
     // Doc A: shares "rust" with Doc B (1 shared), shares "database", "graph" with Doc C (2 shared)
@@ -88,89 +102,127 @@ async fn test_graph_operations() {
 
     // 4. Insert manual edges to form path A -> B -> C
     // Doc D remains disconnected
-    sqlx::query("INSERT INTO edges (source_doc_uuid, target_doc_uuid, edge_type) VALUES ($1, $2, $3)")
-        .bind(doc_a_uuid)
-        .bind(doc_b_uuid)
-        .bind("shares_topic")
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO edges (source_doc_uuid, target_doc_uuid, edge_type) VALUES ($1, $2, $3)",
+    )
+    .bind(doc_a_uuid)
+    .bind(doc_b_uuid)
+    .bind("shares_topic")
+    .execute(pool)
+    .await
+    .unwrap();
 
-    sqlx::query("INSERT INTO edges (source_doc_uuid, target_doc_uuid, edge_type) VALUES ($1, $2, $3)")
-        .bind(doc_b_uuid)
-        .bind(doc_c_uuid)
-        .bind("references")
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO edges (source_doc_uuid, target_doc_uuid, edge_type) VALUES ($1, $2, $3)",
+    )
+    .bind(doc_b_uuid)
+    .bind(doc_c_uuid)
+    .bind("references")
+    .execute(pool)
+    .await
+    .unwrap();
 
     // 5. Test get_document_neighborhood
     // Depth 1: Should retrieve A and B, plus 1 edge (A -> B)
-    let graph_depth_1 = tensor_rag::graph::get_document_neighborhood(pool, doc_a_uuid, 1).await.unwrap();
+    let graph_depth_1 = tensor_rag::graph::get_document_neighborhood(pool, doc_a_uuid, 1)
+        .await
+        .unwrap();
     let nodes_1 = graph_depth_1.get("nodes").unwrap().as_array().unwrap();
     let edges_1 = graph_depth_1.get("edges").unwrap().as_array().unwrap();
 
     // A and B must be in nodes
-    let node_uuids_1: Vec<&str> = nodes_1.iter().map(|n| n.get("doc_uuid").unwrap().as_str().unwrap()).collect();
+    let node_uuids_1: Vec<&str> = nodes_1
+        .iter()
+        .map(|n| n.get("doc_uuid").unwrap().as_str().unwrap())
+        .collect();
     assert!(node_uuids_1.contains(&doc_a_uuid));
     assert!(node_uuids_1.contains(&doc_b_uuid));
     assert!(!node_uuids_1.contains(&doc_c_uuid)); // C is 2 hops away, shouldn't be here
     assert_eq!(edges_1.len(), 1);
 
     // Depth 2: Should retrieve A, B and C, plus 2 edges (A -> B, B -> C)
-    let graph_depth_2 = tensor_rag::graph::get_document_neighborhood(pool, doc_a_uuid, 2).await.unwrap();
+    let graph_depth_2 = tensor_rag::graph::get_document_neighborhood(pool, doc_a_uuid, 2)
+        .await
+        .unwrap();
     let nodes_2 = graph_depth_2.get("nodes").unwrap().as_array().unwrap();
     let edges_2 = graph_depth_2.get("edges").unwrap().as_array().unwrap();
 
-    let node_uuids_2: Vec<&str> = nodes_2.iter().map(|n| n.get("doc_uuid").unwrap().as_str().unwrap()).collect();
+    let node_uuids_2: Vec<&str> = nodes_2
+        .iter()
+        .map(|n| n.get("doc_uuid").unwrap().as_str().unwrap())
+        .collect();
     assert!(node_uuids_2.contains(&doc_a_uuid));
     assert!(node_uuids_2.contains(&doc_b_uuid));
     assert!(node_uuids_2.contains(&doc_c_uuid));
     assert_eq!(edges_2.len(), 2);
 
     // Depth 1 for Doc D: Should return only Doc D, 0 edges
-    let graph_d = tensor_rag::graph::get_document_neighborhood(pool, doc_d_uuid, 1).await.unwrap();
+    let graph_d = tensor_rag::graph::get_document_neighborhood(pool, doc_d_uuid, 1)
+        .await
+        .unwrap();
     let nodes_d = graph_d.get("nodes").unwrap().as_array().unwrap();
     let edges_d = graph_d.get("edges").unwrap().as_array().unwrap();
     assert_eq!(nodes_d.len(), 1);
-    assert_eq!(nodes_d[0].get("doc_uuid").unwrap().as_str().unwrap(), doc_d_uuid);
+    assert_eq!(
+        nodes_d[0].get("doc_uuid").unwrap().as_str().unwrap(),
+        doc_d_uuid
+    );
     assert!(edges_d.is_empty());
 
     // 6. Test find_shortest_path
     // Path A -> C (length 3, through B)
-    let path_a_c = tensor_rag::graph::find_shortest_path(pool, doc_a_uuid, doc_c_uuid).await.unwrap();
-    assert_eq!(path_a_c, vec![doc_a_uuid.to_string(), doc_b_uuid.to_string(), doc_c_uuid.to_string()]);
+    let path_a_c = tensor_rag::graph::find_shortest_path(pool, doc_a_uuid, doc_c_uuid)
+        .await
+        .unwrap();
+    assert_eq!(
+        path_a_c,
+        vec![
+            doc_a_uuid.to_string(),
+            doc_b_uuid.to_string(),
+            doc_c_uuid.to_string()
+        ]
+    );
 
     // Path A -> D (disconnected, should return empty)
-    let path_a_d = tensor_rag::graph::find_shortest_path(pool, doc_a_uuid, doc_d_uuid).await.unwrap();
+    let path_a_d = tensor_rag::graph::find_shortest_path(pool, doc_a_uuid, doc_d_uuid)
+        .await
+        .unwrap();
     assert!(path_a_d.is_empty());
 
     // 7. Test auto_link_by_shared_entities
     // Running auto-linker with threshold 2 should link A and C (share "database", "graph")
     // A and B share only "rust" (1), so they are not linked.
-    let linked_count = tensor_rag::graph::auto_link_by_shared_entities(pool, 2).await.unwrap();
+    let linked_count = tensor_rag::graph::auto_link_by_shared_entities(pool, 2)
+        .await
+        .unwrap();
     assert_eq!(linked_count, 1); // Edge A <-> C created
 
     // Check if new edge is stored
-    let edge_check = sqlx::query(
-        "SELECT id, metadata FROM edges WHERE edge_type = 'shares_entities'"
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap();
+    let edge_check =
+        sqlx::query("SELECT id, metadata FROM edges WHERE edge_type = 'shares_entities'")
+            .fetch_all(pool)
+            .await
+            .unwrap();
     assert_eq!(edge_check.len(), 1);
     let meta: serde_json::Value = edge_check[0].try_get("metadata").unwrap();
     assert_eq!(meta.get("shared_count").unwrap().as_i64().unwrap(), 2);
 
     // Running again should not create duplicate edges
-    let linked_count_repeat = tensor_rag::graph::auto_link_by_shared_entities(pool, 2).await.unwrap();
+    let linked_count_repeat = tensor_rag::graph::auto_link_by_shared_entities(pool, 2)
+        .await
+        .unwrap();
     assert_eq!(linked_count_repeat, 0);
 
     // 8. Test delete_document_edges
     // Deleting Doc B should clear all its edges (A -> B, B -> C)
-    tensor_rag::graph::delete_document_edges(pool, doc_b_uuid).await.unwrap();
+    tensor_rag::graph::delete_document_edges(pool, doc_b_uuid)
+        .await
+        .unwrap();
 
-    let edges_after_delete = sqlx::query("SELECT id FROM edges").fetch_all(pool).await.unwrap();
+    let edges_after_delete = sqlx::query("SELECT id FROM edges")
+        .fetch_all(pool)
+        .await
+        .unwrap();
     // Only the auto-linked A -> C shares_entities edge should remain
     assert_eq!(edges_after_delete.len(), 1);
 }

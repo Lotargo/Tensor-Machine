@@ -143,8 +143,44 @@
                     </div>
 
                     <div class="rendered-pane">
-                        <div class="pane-title" id="rendered-content-title">Содержимое документа (Markdown / LaTeX / Mermaid)</div>
-                        <div id="rendered-content" class="markdown-body"></div>
+                        <div class="rendered-pane-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                            <div class="pane-title" id="rendered-content-title" style="margin-bottom: 0;">Содержимое документа (Markdown / LaTeX / Mermaid)</div>
+                            <div class="viewer-tabs" style="display: flex; gap: 4px; background: rgba(0, 0, 0, 0.15); padding: 3px; border-radius: 8px; border: 1px solid var(--border-color);">
+                                <button class="tab-btn active" data-tab="content">Текст</button>
+                                <button class="tab-btn" data-tab="hierarchy">Иерархия</button>
+                                <button class="tab-btn" data-tab="entities">Сущности</button>
+                                <button class="tab-btn" data-tab="graph">Граф связей</button>
+                            </div>
+                        </div>
+                        <div id="tab-content-content" class="tab-content active">
+                            <div id="rendered-content" class="markdown-body"></div>
+                        </div>
+                        <div id="tab-content-hierarchy" class="tab-content" style="display: none;">
+                            <div id="hierarchy-tree-container" class="hierarchy-tree" style="max-height: 520px; overflow-y: auto; padding: 12px; background: rgba(0, 0, 0, 0.1); border-radius: 8px; border: 1px solid var(--border-color);"></div>
+                        </div>
+                        <div id="tab-content-entities" class="tab-content" style="display: none;">
+                            <div id="entities-tags-container" style="padding: 16px; background: rgba(0, 0, 0, 0.1); border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 16px;">
+                                <div>
+                                    <h4 id="entities-header" style="margin-top: 0; margin-bottom: 8px; color: var(--text-primary); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Извлечённые сущности (Entities)</h4>
+                                    <div id="entities-list" class="tag-cloud" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
+                                </div>
+                                <div>
+                                    <h4 id="keywords-header" style="margin-top: 0; margin-bottom: 8px; color: var(--text-primary); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Ключевые слова (Keywords)</h4>
+                                    <div id="keywords-list" class="tag-cloud" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="tab-content-graph" class="tab-content" style="display: none;">
+                            <div id="graph-container" style="width: 100%; height: 500px; background: rgba(0, 0, 0, 0.1); border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; justify-content: space-between; padding: 12px; overflow: hidden;">
+                                <div id="graph-canvas-wrapper" style="flex-grow: 1; position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center;">
+                                    <div id="graph-canvas" style="width: 100%; height: 100%;"></div>
+                                </div>
+                                <div id="graph-controls" style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); padding-top: 8px; margin-top: 8px; font-size: 11px; color: var(--text-secondary); flex-wrap: wrap; gap: 6px;">
+                                    <span id="graph-help-text">Навигация: перетаскивайте вершины мышкой</span>
+                                    <button class="btn btn-ghost" id="btn-rebuild-graph" style="font-size: 11px; padding: 4px 8px; height: 26px;"><i class="fa-solid fa-arrows-rotate"></i> Обновить граф</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -733,11 +733,7 @@ impl VM {
                     channels.push((crate::rsf::RsfChannel::Cluster, cluster_scores));
                 }
 
-                let fused = crate::rsf::compute_rsf(
-                    &ids,
-                    &channels,
-                    config,
-                );
+                let fused = crate::rsf::compute_rsf(&ids, &channels, config);
                 let indices: Vec<usize> = fused.iter().map(|(idx, _)| *idx).collect();
                 let scores: Vec<f32> = fused.iter().map(|(_, score)| *score).collect();
                 self.stack.push(Value::Result(TopKResult {

@@ -689,7 +689,13 @@ fn join_spans(buffer: &[TextSpan]) -> String {
 }
 
 fn finish_chunk(chunk: &mut HierarchicalChunkItem, filename: &str) {
-    chunk.entities = crate::entity::extract_entities(&chunk.text);
+    let (max_chars, max_entities) = match chunk.level {
+        ChunkLevel::Macro => (12_000, 32),
+        ChunkLevel::Medium => (8_000, 24),
+        ChunkLevel::Micro => (2_000, 8),
+    };
+    chunk.entities =
+        crate::entity::extract_entities_with_limits(&chunk.text, max_chars, max_entities);
     let chain = if chunk.header_chain.is_empty() {
         String::new()
     } else {

@@ -2,6 +2,8 @@ export const state = {
     documentList: [],
     rawChunks: [],
     selectedDocUuid: null,
+    selectedDocDetails: null,
+    activeTab: 'content',
     currentPreviewDoc: null,
     collectionHealth: null,
     settings: [],

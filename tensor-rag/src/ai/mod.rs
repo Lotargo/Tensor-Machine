@@ -37,6 +37,7 @@ fn default_use_retrieval() -> bool {
 pub struct ChatSource {
     pub index: usize,
     pub title: String,
+    pub context: Option<String>,
     pub excerpt: String,
     pub score: Option<f32>,
 }
@@ -344,52 +345,112 @@ pub(crate) fn parse_search_sources(payload_text: &str) -> Result<Vec<ChatSource>
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    let doc_scores = payload
+        .get("document_scores")
+        .and_then(|value| value.as_array())
+        .cloned();
     let scores = payload
         .get("scores")
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
 
-    Ok(documents
-        .iter()
-        .enumerate()
-        .filter_map(|(index, value)| {
-            let text = value.as_str()?.trim();
-            if text.is_empty() {
-                return None;
-            }
-            let (title, excerpt) = parse_source_block(text);
-            let score = scores
-                .get(index)
+    let mut chat_sources = Vec::new();
+    let mut doc_counter = 0;
+
+    for value in documents {
+        let text = match value.as_str() {
+            Some(t) => t.trim(),
+            None => continue,
+        };
+        // Skip Table of Contents and empty blocks
+        if text.is_empty() || text.starts_with("=== ДОКУМЕНТЫ В ПОИСКЕ ===") {
+            continue;
+        }
+
+        let (title, context, excerpt) = parse_source_block(text);
+
+        let score = if let Some(ref ds) = doc_scores {
+            ds.get(doc_counter)
                 .and_then(|score| score.as_f64())
-                .map(|score| score as f32);
-            Some(ChatSource {
-                index: index + 1,
-                title,
-                excerpt,
-                score,
-            })
-        })
-        .collect())
+                .map(|score| score as f32)
+        } else {
+            scores
+                .get(doc_counter)
+                .and_then(|score| score.as_f64())
+                .map(|score| score as f32)
+        };
+
+        chat_sources.push(ChatSource {
+            index: doc_counter + 1,
+            title,
+            context,
+            excerpt,
+            score,
+        });
+
+        doc_counter += 1;
+    }
+
+    Ok(chat_sources)
 }
 
-fn parse_source_block(text: &str) -> (String, String) {
+fn parse_source_block(text: &str) -> (String, Option<String>, String) {
     let mut lines = text.lines();
+    let mut title = "Library result".to_string();
+    let mut context = None;
+    let mut body_lines = Vec::new();
+
     if let Some(first_line) = lines.next() {
-        if let Some(source) = first_line.strip_prefix("Source: ") {
-            let excerpt = lines.collect::<Vec<_>>().join("\n").trim().to_string();
-            return (
-                source.trim().to_string(),
-                if excerpt.is_empty() {
-                    text.trim().to_string()
+        if first_line.starts_with(">>> НАЧАЛО ДОКУМЕНТА") {
+            if let Some(second_line) = lines.next() {
+                if let Some(t) = second_line.strip_prefix("Title: ") {
+                    title = t.trim().to_string();
                 } else {
-                    excerpt
-                },
-            );
+                    body_lines.push(second_line);
+                }
+            }
+            if let Some(third_line) = lines.next() {
+                if let Some(c) = third_line.strip_prefix("Context: ") {
+                    context = Some(c.trim().to_string());
+                } else {
+                    body_lines.push(third_line);
+                }
+            }
+
+            for line in lines {
+                if !line.starts_with(">>> КОНЕЦ ДОКУМЕНТА") {
+                    body_lines.push(line);
+                }
+            }
+
+            return (title, context, body_lines.join("\n").trim().to_string());
+        } else {
+            body_lines.push(first_line);
         }
     }
 
-    ("Library result".to_string(), text.trim().to_string())
+    for line in lines {
+        body_lines.push(line);
+    }
+
+    let fallback_text = body_lines.join("\n").trim().to_string();
+    if let Some(source) = fallback_text
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("Source: "))
+    {
+        let excerpt = fallback_text
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+        return (source.trim().to_string(), None, excerpt);
+    }
+
+    (title, None, fallback_text)
 }
 
 pub(crate) async fn request_completion_from_messages(

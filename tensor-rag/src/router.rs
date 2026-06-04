@@ -8,6 +8,7 @@ use axum::{
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -119,6 +120,60 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         options: &[],
     },
     SettingDescriptor {
+        key: "RSF_DENSE_WEIGHT",
+        label: "RSF Vector (Dense) Weight",
+        description: "Weight for vector semantic matching (0.0 to 1.0).",
+        category: "rsf",
+        field_type: "number",
+        placeholder: "0.50",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "RSF_BM25_WEIGHT",
+        label: "RSF Keyword (BM25) Weight",
+        description: "Weight for keyword matching (0.0 to 1.0).",
+        category: "rsf",
+        field_type: "number",
+        placeholder: "0.15",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "RSF_ENTITY_WEIGHT",
+        label: "RSF Entity Weight",
+        description: "Weight for extracted entity boosting (0.0 to 1.0).",
+        category: "rsf",
+        field_type: "number",
+        placeholder: "0.10",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "RSF_STRUCTURAL_WEIGHT",
+        label: "RSF Structural Weight",
+        description: "Weight for document structural headers context (0.0 to 1.0).",
+        category: "rsf",
+        field_type: "number",
+        placeholder: "0.05",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "RSF_RECENCY_WEIGHT",
+        label: "RSF Recency Weight",
+        description: "Weight for document recency bias (0.0 to 1.0).",
+        category: "rsf",
+        field_type: "number",
+        placeholder: "0.05",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "RSF_CLUSTER_WEIGHT",
+        label: "RSF Cluster (Density) Weight",
+        description: "Weight for dense cluster semantic bonus (0.0 to 1.0).",
+        category: "rsf",
+        field_type: "number",
+        placeholder: "0.10",
+        options: &[],
+    },
+    SettingDescriptor {
         key: "AI_CONTEXT_TOKEN_LIMIT",
         label: "Chat Context Token Limit",
         description: "Maximum prompt budget in tokens for the conversation context. Uses the project tokenizer.",
@@ -179,6 +234,15 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         category: "embeddings",
         field_type: "text",
         placeholder: "nomic-embed-text",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "EMBEDDING_BATCH_SIZE",
+        label: "Embedding Batch Size",
+        description: "How many chunks to send in one embedding request during ingestion.",
+        category: "embeddings",
+        field_type: "number",
+        placeholder: "32",
         options: &[],
     },
     SettingDescriptor {
@@ -382,9 +446,22 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/mermaid.min.js", axum::routing::get(serve_mermaid))
         .route("/mammoth.browser.min.js", axum::routing::get(serve_mammoth))
         .route("/documents", axum::routing::get(handle_list_documents))
-        .route("/documents/path", axum::routing::get(handle_find_shortest_path))
-        .route("/documents/auto-link", axum::routing::post(handle_auto_link_documents))
-        .route("/documents/:doc_uuid/graph", axum::routing::get(handle_get_document_graph))
+        .route(
+            "/documents/path",
+            axum::routing::get(handle_find_shortest_path),
+        )
+        .route(
+            "/documents/auto-link",
+            axum::routing::post(handle_auto_link_documents),
+        )
+        .route(
+            "/documents/:doc_uuid/graph",
+            axum::routing::get(handle_get_document_graph),
+        )
+        .route(
+            "/documents/:doc_uuid/details",
+            axum::routing::get(handle_get_document_details),
+        )
         .route(
             "/documents/:id",
             axum::routing::delete(handle_delete_document),
@@ -667,6 +744,12 @@ async fn handle_upload(
         }
     };
 
+    info!(
+        "OCR phase complete for '{}'. Extracted {} characters.",
+        filename,
+        ocr_text.len()
+    );
+
     use crate::chunker::HierarchicalChunker;
     let chunker = HierarchicalChunker::default();
     let chunks = chunker.chunk(&ocr_text, &filename);
@@ -675,64 +758,114 @@ async fn handle_upload(
 
     let mut doc_ids = Vec::new();
     let doc_uuid = uuid::Uuid::new_v4().to_string();
-    for item in chunks {
-        let vector = match state
+    let total_chunks = chunks.len();
+    let embedding_batch_size = crate::config::get_embedding_batch_size();
+    info!(
+        "Starting batched embedding for '{}' with batch_size={} across {} chunks.",
+        filename, embedding_batch_size, total_chunks
+    );
+    for (batch_idx, batch) in chunks.chunks(embedding_batch_size).enumerate() {
+        let batch_start = batch_idx * embedding_batch_size;
+        let batch_end = batch_start + batch.len();
+        info!(
+            "Embedding batch {}/{} for '{}' covering chunks {}..{}",
+            batch_idx + 1,
+            total_chunks.div_ceil(embedding_batch_size),
+            filename,
+            batch_start + 1,
+            batch_end
+        );
+
+        let embedding_inputs: Vec<String> = batch
+            .iter()
+            .map(|item| item.embedding_text.clone())
+            .collect();
+        let vectors = match state
             .db_pools
-            .get_embedding(&item.embedding_text, false)
+            .get_embeddings(&embedding_inputs, false)
             .await
         {
             Ok(v) => v,
             Err(e) => {
-                error!("Failed to generate vector embedding: {}", e);
+                error!("Failed to generate batched vector embeddings: {}", e);
                 return (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
                         "status": "error",
-                        "error": format!("Failed to generate vector embedding: {}. Please check that the embedding server is running and configured correctly.", e)
+                        "error": format!("Failed to generate vector embeddings: {}. Please check that the embedding server is running and configured correctly.", e)
                     })),
                 );
             }
         };
-        match state
-            .db_pools
-            .insert_document_enriched(
-                &item.text,
-                vector,
-                &filename,
-                &doc_uuid,
-                &item.chapter_id,
-                item.chunk_index,
+
+        for (offset, (item, vector)) in batch.iter().zip(vectors.into_iter()).enumerate() {
+            let global_idx = batch_start + offset;
+            info!(
+                "Storing chunk {}/{} for '{}' (level={}, chunk_index={}, text_len={})",
+                global_idx + 1,
+                total_chunks,
+                filename,
                 item.level.as_str(),
-                item.parent_chunk_index,
-                item.macro_index,
-                item.medium_index,
-                &item.header_chain,
-                &item.zone_keywords,
-                &item.entities,
-            )
-            .await
-        {
-            Ok(id) => doc_ids.push(id),
-            Err(e) => {
-                error!("Failed to store document chunk: {}", e);
-                return (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "status": "error",
-                        "error": format!("Failed to store a document chunk in the database: {}", e)
-                    })),
-                );
+                item.chunk_index,
+                item.text.len()
+            );
+            match state
+                .db_pools
+                .insert_document_enriched(
+                    &item.text,
+                    vector,
+                    &filename,
+                    &doc_uuid,
+                    &item.chapter_id,
+                    item.chunk_index,
+                    item.level.as_str(),
+                    item.parent_chunk_index,
+                    item.macro_index,
+                    item.medium_index,
+                    &item.header_chain,
+                    &item.zone_keywords,
+                    &item.entities,
+                )
+                .await
+            {
+                Ok(id) => {
+                    info!(
+                        "Stored chunk {}/{} for '{}' as document row id {}",
+                        global_idx + 1,
+                        total_chunks,
+                        filename,
+                        id
+                    );
+                    doc_ids.push(id)
+                }
+                Err(e) => {
+                    error!("Failed to store document chunk: {}", e);
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "error": format!("Failed to store a document chunk in the database: {}", e)
+                        })),
+                    );
+                }
             }
         }
     }
 
     // Auto-extract anchors from headings in the OCR text
+    info!("Starting anchor extraction for '{}'.", filename);
     let anchor_count = state
         .db_pools
         .auto_extract_anchors(&doc_uuid, &ocr_text)
         .await
         .map(|ids| ids.len())
         .unwrap_or(0);
+    info!(
+        "Upload pipeline complete for '{}'. Stored {} chunks and {} anchors.",
+        filename,
+        doc_ids.len(),
+        anchor_count
+    );
 
     (
         axum::http::StatusCode::OK,
@@ -747,7 +880,20 @@ async fn handle_upload(
 }
 
 async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let connect_timeout = Duration::from_secs(crate::config::get_http_connect_timeout_secs());
+    let upload_timeout = Duration::from_secs(crate::config::get_mistral_upload_timeout_secs());
+    let ocr_timeout = Duration::from_secs(crate::config::get_mistral_ocr_timeout_secs());
+
+    let upload_client = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(upload_timeout)
+        .build()
+        .map_err(|e| format!("Failed to build Mistral upload client: {}", e))?;
+    let ocr_client = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(ocr_timeout)
+        .build()
+        .map_err(|e| format!("Failed to build Mistral OCR client: {}", e))?;
 
     let part = reqwest::multipart::Part::bytes(data)
         .file_name(filename.to_string())
@@ -763,7 +909,12 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
         id: String,
     }
 
-    let file_resp = client
+    info!(
+        "Sending file '{}' to Mistral /v1/files with timeout={}s",
+        filename,
+        upload_timeout.as_secs()
+    );
+    let file_resp = upload_client
         .post("https://api.mistral.ai/v1/files")
         .header("Authorization", format!("Bearer {}", api_key))
         .multipart(form)
@@ -804,8 +955,12 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
         pages: Vec<OcrPage>,
     }
 
-    info!("Sending OCR extraction request to Mistral...");
-    let ocr_resp = client
+    info!(
+        "Sending OCR extraction request to Mistral for file_id={} with timeout={}s",
+        file_info.id,
+        ocr_timeout.as_secs()
+    );
+    let ocr_resp = ocr_client
         .post("https://api.mistral.ai/v1/ocr")
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&ocr_payload)
@@ -823,6 +978,12 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
         .json::<OcrResponse>()
         .await
         .map_err(|e| format!("Failed to parse OCR response: {}", e))?;
+
+    info!(
+        "Mistral OCR completed for '{}' with {} pages.",
+        filename,
+        ocr_result.pages.len()
+    );
 
     Ok(ocr_result
         .pages
@@ -934,6 +1095,110 @@ async fn handle_get_document_graph(
         })?;
 
     Ok(Json(graph_data))
+}
+
+async fn handle_get_document_details(
+    State(state): State<Arc<AppState>>,
+    AxumPath(doc_uuid): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let pool = state
+        .db_pools
+        .postgres
+        .as_ref()
+        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    use sqlx::Row;
+
+    // 1. Fetch chunks
+    let chunk_rows = sqlx::query(
+        "SELECT id, text, chunk_index, chunk_level, parent_chunk_index, macro_index, medium_index, header_chain, zone_keywords, entities FROM documents WHERE doc_uuid = $1 ORDER BY chunk_index ASC"
+    )
+    .bind(&doc_uuid)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch document chunks: {}", e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut chunks = Vec::new();
+    for r in chunk_rows {
+        let id: i64 = r.try_get("id").unwrap_or(0);
+        let text: String = r.try_get("text").unwrap_or_default();
+        let chunk_index: i32 = r.try_get("chunk_index").unwrap_or(0);
+        let chunk_level: String = r.try_get("chunk_level").unwrap_or_default();
+        let parent_chunk_index: Option<i32> = r.try_get("parent_chunk_index").ok();
+        let macro_index: Option<i32> = r.try_get("macro_index").ok();
+        let medium_index: Option<i32> = r.try_get("medium_index").ok();
+        let header_chain: serde_json::Value =
+            r.try_get("header_chain").unwrap_or(serde_json::json!([]));
+        let zone_keywords: serde_json::Value =
+            r.try_get("zone_keywords").unwrap_or(serde_json::json!([]));
+        let entities: serde_json::Value = r.try_get("entities").unwrap_or(serde_json::json!([]));
+
+        chunks.push(serde_json::json!({
+            "id": id,
+            "text": text,
+            "chunk_index": chunk_index,
+            "chunk_level": chunk_level,
+            "parent_chunk_index": parent_chunk_index,
+            "macro_index": macro_index,
+            "medium_index": medium_index,
+            "header_chain": header_chain,
+            "zone_keywords": zone_keywords,
+            "entities": entities
+        }));
+    }
+
+    // 2. Fetch anchors
+    let anchor_rows =
+        sqlx::query("SELECT name, text FROM anchors WHERE doc_uuid = $1 ORDER BY id ASC")
+            .bind(&doc_uuid)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| {
+                error!("Failed to fetch anchors: {}", e);
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+    let anchors: Vec<serde_json::Value> = anchor_rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.try_get::<String, _>("name").unwrap_or_default(),
+                "text": r.try_get::<String, _>("text").unwrap_or_default()
+            })
+        })
+        .collect();
+
+    // 3. Fetch edges
+    let edge_rows = sqlx::query(
+        "SELECT id, source_doc_uuid, target_doc_uuid, edge_type, metadata FROM edges WHERE source_doc_uuid = $1 OR target_doc_uuid = $1 ORDER BY id ASC"
+    )
+    .bind(&doc_uuid)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch edges: {}", e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let edges: Vec<serde_json::Value> = edge_rows.iter().map(|r| {
+        serde_json::json!({
+            "id": r.try_get::<i64, _>("id").unwrap_or(0),
+            "source": r.try_get::<String, _>("source_doc_uuid").unwrap_or_default(),
+            "target": r.try_get::<String, _>("target_doc_uuid").unwrap_or_default(),
+            "type": r.try_get::<String, _>("edge_type").unwrap_or_default(),
+            "metadata": r.try_get::<serde_json::Value, _>("metadata").unwrap_or(serde_json::json!({}))
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "doc_uuid": doc_uuid,
+        "chunks": chunks,
+        "anchors": anchors,
+        "edges": edges
+    })))
 }
 
 #[derive(serde::Deserialize)]

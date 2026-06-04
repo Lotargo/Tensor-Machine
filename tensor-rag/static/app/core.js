@@ -122,6 +122,14 @@ const TEXT = {
         ai_chat_failed_message: 'Не удалось получить ответ модели: {message}',
         ai_settings_saved_title: 'AI настройки сохранены',
         ai_settings_saved_message: 'AI настройки сохранены и применяются для новых запросов без перезапуска.',
+        tab_text: 'Текст',
+        tab_hierarchy: 'Иерархия',
+        tab_entities: 'Сущности',
+        tab_graph: 'Граф связей',
+        entities_header: 'Извлечённые сущности (Entities)',
+        keywords_header: 'Ключевые слова (Keywords)',
+        graph_help_text: 'Навигация: перетаскивайте вершины мышкой',
+        graph_rebuild_btn: 'Обновить граф',
     },
     en: {
         page_title: 'Tensor Machine: Document Portal',
@@ -244,6 +252,14 @@ const TEXT = {
         ai_chat_failed_message: 'Failed to get a model response: {message}',
         ai_settings_saved_title: 'AI settings saved',
         ai_settings_saved_message: 'AI settings were saved and will apply to new chat requests immediately.',
+        tab_text: 'Text',
+        tab_hierarchy: 'Hierarchy',
+        tab_entities: 'Entities',
+        tab_graph: 'Connections Graph',
+        entities_header: 'Extracted Entities',
+        keywords_header: 'Key Terms & Keywords',
+        graph_help_text: 'Navigation: drag nodes to reposition them',
+        graph_rebuild_btn: 'Refresh Graph',
     },
 };
 
@@ -345,6 +361,21 @@ export function applyTranslations() {
     setText('#hard-reset-desc-text', t('hard_reset_message'));
     setHtml('#hard-reset-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/reset.png" alt=""> ${t('hard_reset_title')}`);
     setPlaceholder('#doc-modal-search', 'Search...');
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    tabBtns.forEach(btn => {
+        const tab = btn.getAttribute('data-tab');
+        if (tab === 'content') btn.textContent = t('tab_text');
+        else if (tab === 'hierarchy') btn.textContent = t('tab_hierarchy');
+        else if (tab === 'entities') btn.textContent = t('tab_entities');
+        else if (tab === 'graph') btn.textContent = t('tab_graph');
+    });
+    setText('#entities-header', t('entities_header'));
+    setText('#keywords-header', t('keywords_header'));
+    setText('#graph-help-text', t('graph_help_text'));
+    const rebuildBtn = document.getElementById('btn-rebuild-graph');
+    if (rebuildBtn) {
+        rebuildBtn.innerHTML = `<i class="fa-solid fa-arrows-rotate"></i> ${t('graph_rebuild_btn')}`;
+    }
     document.dispatchEvent(new CustomEvent('tensor-rag:translations-applied'));
 }
 
@@ -480,6 +511,13 @@ export async function waitForReconnect() {
     }
     hideReconnectOverlay();
     throw new Error(t('reconnect_timeout_message'));
+}
+
+export function renderContextPath(contextStr) {
+    if (!contextStr) return '';
+    const parts = contextStr.split(/[>➔]/).map(p => p.trim()).filter(Boolean);
+    if (parts.length === 0) return '';
+    return parts.map(part => `<span class="context-part">${escapeHtml(part)}</span>`).join('<i class="fa-solid fa-angle-right context-separator"></i>');
 }
 
 export function escapeHtml(value) {

@@ -1,5 +1,5 @@
 import { state, setChatMessages } from './state.js';
-import { escapeHtml, showNotice, t, saveUiPref } from './core.js';
+import { escapeHtml, showNotice, t, saveUiPref, renderContextPath } from './core.js';
 
 let activeStreamController = null;
 
@@ -115,10 +115,21 @@ function renderMessagesInto(container) {
             const sources = document.createElement('div');
             sources.className = 'chat-sources';
             message.sources.forEach((source) => {
+                const titleLower = (source.title || '').toLowerCase();
+                const excerptLower = (source.excerpt || '').toLowerCase();
+                if (titleLower.includes("документы в поиске") || 
+                    titleLower.includes("table of contents") || 
+                    excerptLower.includes("=== документы в поиске ===")) {
+                    return;
+                }
                 const card = document.createElement('div');
                 card.className = 'chat-source-card';
+                let titleHtml = `[${source.index}] ${escapeHtml(source.title)}`;
+                if (source.context) {
+                    titleHtml += ` <span class="source-context-path">${renderContextPath(source.context)}</span>`;
+                }
                 card.innerHTML = `
-                    <strong>[${source.index}] ${escapeHtml(source.title)}</strong>
+                    <strong>${titleHtml}</strong>
                     <p>${escapeHtml(source.excerpt)}</p>
                 `;
                 sources.appendChild(card);

@@ -124,6 +124,11 @@ pub fn get_embedding_model_name() -> String {
         .clone()
 }
 
+pub fn get_embedding_batch_size() -> usize {
+    static EMBEDDING_BATCH_SIZE: OnceLock<usize> = OnceLock::new();
+    *EMBEDDING_BATCH_SIZE.get_or_init(|| get_usize_env("EMBEDDING_BATCH_SIZE", 32).max(1))
+}
+
 pub fn get_qdrant_anchors_collection() -> String {
     static QDRANT_ANCHORS: OnceLock<String> = OnceLock::new();
     QDRANT_ANCHORS
@@ -131,4 +136,25 @@ pub fn get_qdrant_anchors_collection() -> String {
             std::env::var("QDRANT_ANCHORS_COLLECTION").unwrap_or_else(|_| "anchors".to_string())
         })
         .clone()
+}
+
+pub fn get_http_connect_timeout_secs() -> u64 {
+    static HTTP_CONNECT_TIMEOUT_SECS: OnceLock<u64> = OnceLock::new();
+    *HTTP_CONNECT_TIMEOUT_SECS.get_or_init(|| get_u64_env("HTTP_CONNECT_TIMEOUT_SECS", 15))
+}
+
+pub fn get_embedding_request_timeout_secs() -> u64 {
+    static EMBEDDING_REQUEST_TIMEOUT_SECS: OnceLock<u64> = OnceLock::new();
+    *EMBEDDING_REQUEST_TIMEOUT_SECS
+        .get_or_init(|| get_u64_env("EMBEDDING_REQUEST_TIMEOUT_SECS", 120))
+}
+
+pub fn get_mistral_upload_timeout_secs() -> u64 {
+    static MISTRAL_UPLOAD_TIMEOUT_SECS: OnceLock<u64> = OnceLock::new();
+    *MISTRAL_UPLOAD_TIMEOUT_SECS.get_or_init(|| get_u64_env("MISTRAL_UPLOAD_TIMEOUT_SECS", 120))
+}
+
+pub fn get_mistral_ocr_timeout_secs() -> u64 {
+    static MISTRAL_OCR_TIMEOUT_SECS: OnceLock<u64> = OnceLock::new();
+    *MISTRAL_OCR_TIMEOUT_SECS.get_or_init(|| get_u64_env("MISTRAL_OCR_TIMEOUT_SECS", 300))
 }
