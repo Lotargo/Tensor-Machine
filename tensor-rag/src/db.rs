@@ -104,6 +104,22 @@ pub struct CollectionHealth {
     pub dimension_matches: bool,
 }
 
+pub struct EnrichedDocumentInsert<'a> {
+    pub text: &'a str,
+    pub vector: ndarray::Array1<f32>,
+    pub filename: &'a str,
+    pub doc_uuid: &'a str,
+    pub chapter_id: &'a str,
+    pub chunk_index: i32,
+    pub chunk_level: &'a str,
+    pub parent_chunk_index: Option<i32>,
+    pub macro_index: Option<i32>,
+    pub medium_index: Option<i32>,
+    pub header_chain: &'a [String],
+    pub zone_keywords: &'a [String],
+    pub entities: &'a [String],
+}
+
 /// A simple connection pool manager for various databases and external ML services.
 #[derive(Clone)]
 pub struct DbPools {
@@ -528,22 +544,26 @@ impl DbPools {
         chapter_id: &str,
         chunk_index: i32,
     ) -> Result<usize, String> {
-        self.insert_document_enriched(
-            text,
-            vector,
-            filename,
-            doc_uuid,
-            chapter_id,
-            chunk_index,
-            "medium",
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            &[],
-        )
-        .await
+        let ids = self
+            .insert_documents_enriched_batch(vec![EnrichedDocumentInsert {
+                text,
+                vector,
+                filename,
+                doc_uuid,
+                chapter_id,
+                chunk_index,
+                chunk_level: "medium",
+                parent_chunk_index: None,
+                macro_index: None,
+                medium_index: None,
+                header_chain: &[],
+                zone_keywords: &[],
+                entities: &[],
+            }])
+            .await?;
+        ids.into_iter()
+            .next()
+            .ok_or_else(|| "Document insert returned no ids".to_string())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -563,53 +583,39 @@ impl DbPools {
         zone_keywords: &[String],
         entities: &[String],
     ) -> Result<usize, String> {
-        // 1. Write to Postgres
-        let pool = self
-            .postgres
-            .as_ref()
-            .ok_or("PostgreSQL pool not initialized")?;
+        let ids = self
+            .insert_documents_enriched_batch(vec![EnrichedDocumentInsert {
+                text,
+                vector,
+                filename,
+                doc_uuid,
+                chapter_id,
+                chunk_index,
+                chunk_level,
+                parent_chunk_index,
+                macro_index,
+                medium_index,
+                header_chain,
+                zone_keywords,
+                entities,
+            }])
+            .await?;
+        ids.into_iter()
+            .next()
+            .ok_or_else(|| "Document insert returned no ids".to_string())
+    }
 
-        let header_chain_json = serde_json::json!(header_chain);
-        let zone_keywords_json = serde_json::json!(zone_keywords);
-        let entities_json = serde_json::json!(entities);
-
-        let row = sqlx::query(
-            "INSERT INTO documents (
-                text, bm25_score, filename, doc_uuid, chapter_id, chunk_index,
-                chunk_level, parent_chunk_index, macro_index, medium_index,
-                header_chain, zone_keywords, entities
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-             RETURNING id",
-        )
-        .bind(text)
-        .bind(0.0f32)
-        .bind(filename)
-        .bind(doc_uuid)
-        .bind(chapter_id)
-        .bind(chunk_index)
-        .bind(chunk_level)
-        .bind(parent_chunk_index)
-        .bind(macro_index)
-        .bind(medium_index)
-        .bind(&header_chain_json)
-        .bind(&zone_keywords_json)
-        .bind(&entities_json)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
-
-        use sqlx::Row;
-        let id: i64 = row
-            .try_get("id")
-            .map_err(|e| format!("Failed to get inserted id: {}", e))?;
-        let doc_id = id as usize;
-
-        // 2. Write vector to Qdrant
-        let client = self
-            .qdrant_clients
-            .get("default")
-            .ok_or("Qdrant client not initialized")?;
-
+    fn build_document_payload(
+        filename: &str,
+        doc_uuid: &str,
+        chapter_id: &str,
+        chunk_index: i32,
+        chunk_level: &str,
+        parent_chunk_index: Option<i32>,
+        macro_index: Option<i32>,
+        medium_index: Option<i32>,
+        entities_json: serde_json::Value,
+    ) -> std::collections::HashMap<String, serde_json::Value> {
         let mut payload = std::collections::HashMap::new();
         payload.insert(
             "filename".to_string(),
@@ -650,21 +656,99 @@ impl DbPools {
             );
         }
         payload.insert("entities".to_string(), entities_json);
+        payload
+    }
 
+    pub async fn insert_documents_enriched_batch(
+        &self,
+        documents: Vec<EnrichedDocumentInsert<'_>>,
+    ) -> Result<Vec<usize>, String> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 1. Write rows to Postgres so Qdrant point IDs match database IDs.
+        let pool = self
+            .postgres
+            .as_ref()
+            .ok_or("PostgreSQL pool not initialized")?;
+
+        use sqlx::Row;
+        let mut doc_ids = Vec::with_capacity(documents.len());
+        let mut points = Vec::with_capacity(documents.len());
+
+        for document in documents {
+            let header_chain_json = serde_json::json!(document.header_chain);
+            let zone_keywords_json = serde_json::json!(document.zone_keywords);
+            let entities_json = serde_json::json!(document.entities);
+
+            let row = sqlx::query(
+                "INSERT INTO documents (
+                    text, bm25_score, filename, doc_uuid, chapter_id, chunk_index,
+                    chunk_level, parent_chunk_index, macro_index, medium_index,
+                    header_chain, zone_keywords, entities
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 RETURNING id",
+            )
+            .bind(document.text)
+            .bind(0.0f32)
+            .bind(document.filename)
+            .bind(document.doc_uuid)
+            .bind(document.chapter_id)
+            .bind(document.chunk_index)
+            .bind(document.chunk_level)
+            .bind(document.parent_chunk_index)
+            .bind(document.macro_index)
+            .bind(document.medium_index)
+            .bind(&header_chain_json)
+            .bind(&zone_keywords_json)
+            .bind(&entities_json)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
+
+            let id: i64 = row
+                .try_get("id")
+                .map_err(|e| format!("Failed to get inserted id: {}", e))?;
+            let doc_id = id as usize;
+            doc_ids.push(doc_id);
+
+            let payload = Self::build_document_payload(
+                document.filename,
+                document.doc_uuid,
+                document.chapter_id,
+                document.chunk_index,
+                document.chunk_level,
+                document.parent_chunk_index,
+                document.macro_index,
+                document.medium_index,
+                entities_json,
+            );
+            points.push(PointStruct::new(
+                doc_id as u64,
+                document.vector.to_vec(),
+                payload,
+            ));
+        }
+
+        // 2. Write vectors to Qdrant in one upsert for the whole embedding batch.
+        let client = self
+            .qdrant_clients
+            .get("default")
+            .ok_or("Qdrant client not initialized")?;
         let collection = crate::config::get_qdrant_collection();
-        let point = PointStruct::new(doc_id as u64, vector.to_vec(), payload);
 
         let upsert_result = client
             .upsert_points(UpsertPoints {
                 collection_name: collection.clone(),
-                points: vec![point],
-                wait: Some(true),
+                points,
+                wait: Some(crate::config::get_qdrant_upsert_wait()),
                 ..Default::default()
             })
             .await;
 
         match upsert_result {
-            Ok(_) => Ok(doc_id),
+            Ok(_) => Ok(doc_ids),
             Err(e) => Err(format!("Qdrant upsert failed: {}", e)),
         }
     }
@@ -1836,29 +1920,45 @@ impl DbPools {
         doc_uuid: &str,
         name: &str,
     ) -> Result<(), String> {
+        self.insert_anchor_embeddings_batch(vec![(anchor_id, vector, doc_uuid, name)])
+            .await
+    }
+
+    pub async fn insert_anchor_embeddings_batch(
+        &self,
+        anchors: Vec<(i64, ndarray::Array1<f32>, &str, &str)>,
+    ) -> Result<(), String> {
+        if anchors.is_empty() {
+            return Ok(());
+        }
+
         let client = self
             .qdrant_clients
             .get("default")
             .ok_or("Qdrant client not initialized")?;
         let anchors_collection = crate::config::get_qdrant_anchors_collection();
 
-        let mut payload = std::collections::HashMap::new();
-        payload.insert(
-            "doc_uuid".to_string(),
-            serde_json::Value::String(doc_uuid.to_string()),
-        );
-        payload.insert(
-            "anchor_name".to_string(),
-            serde_json::Value::String(name.to_string()),
-        );
-
-        let point = PointStruct::new(anchor_id as u64, vector.to_vec(), payload);
+        let points = anchors
+            .into_iter()
+            .map(|(anchor_id, vector, doc_uuid, name)| {
+                let mut payload = std::collections::HashMap::new();
+                payload.insert(
+                    "doc_uuid".to_string(),
+                    serde_json::Value::String(doc_uuid.to_string()),
+                );
+                payload.insert(
+                    "anchor_name".to_string(),
+                    serde_json::Value::String(name.to_string()),
+                );
+                PointStruct::new(anchor_id as u64, vector.to_vec(), payload)
+            })
+            .collect();
 
         client
             .upsert_points(UpsertPoints {
                 collection_name: anchors_collection.clone(),
-                points: vec![point],
-                wait: Some(true),
+                points,
+                wait: Some(crate::config::get_qdrant_upsert_wait()),
                 ..Default::default()
             })
             .await
@@ -2109,18 +2209,25 @@ impl DbPools {
             let texts: Vec<String> = batch.iter().map(|(_, _, text)| text.clone()).collect();
             match self.get_embeddings(&texts, false).await {
                 Ok(vectors) => {
-                    for ((anchor_id, name, _), vector) in batch.iter().zip(vectors.into_iter()) {
-                        if let Err(error) = self
-                            .insert_anchor_embedding(*anchor_id, vector, doc_uuid, name)
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to store anchor embedding '{}' (id={}): {}",
-                                name,
-                                anchor_id,
-                                error
-                            );
-                        }
+                    let anchor_points = batch
+                        .iter()
+                        .zip(vectors.into_iter())
+                        .map(|((anchor_id, name, _), vector)| {
+                            (*anchor_id, vector, doc_uuid, name.as_str())
+                        })
+                        .collect();
+                    if let Err(error) = self.insert_anchor_embeddings_batch(anchor_points).await {
+                        let anchor_names = batch
+                            .iter()
+                            .map(|(_, name, _)| name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        tracing::warn!(
+                            "Failed to store anchor embedding batch for document {} [{}]: {}",
+                            doc_uuid,
+                            anchor_names,
+                            error
+                        );
                     }
                 }
                 Err(error) => {

@@ -49,6 +49,8 @@ The goal is to fix the system iteratively instead of attempting a full rewrite i
 
 - `fixed` Batched anchor embeddings instead of embedding anchors one by one at the tail of ingestion.
 
+- `fixed` Batched Qdrant upserts for chunk and anchor embeddings during ingestion, and made Qdrant upsert waiting configurable via `QDRANT_UPSERT_WAIT`.
+
 - `fixed` Replaced the `/documents` raw chunk listing with grouped document metadata so UI chunk counts are no longer truncated by the old `LIMIT 1000` path.
 
 - `fixed` Removed legacy retrieval response artifacts:
@@ -85,10 +87,11 @@ Confirmed causes:
 Completed in this area:
 - Main chunk embeddings are batched.
 - Anchor embeddings are now batched too.
+- Qdrant upserts for chunks and anchors are batched per embedding batch.
+- Qdrant upsert waiting is configurable with `QDRANT_UPSERT_WAIT` and defaults to non-blocking writes.
 
 Follow-up work:
-- Batch Qdrant upserts.
-- Reduce synchronous `wait=true` behavior where safe.
+- Validate ingestion throughput against a large real document with Qdrant enabled.
 - Introduce pipelining between:
   - chunk preparation
   - embedding requests

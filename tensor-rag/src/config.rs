@@ -21,6 +21,17 @@ fn get_u64_env(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+fn get_bool_env(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
+}
+
 fn get_f64_env(key: &str, default: f64) -> f64 {
     std::env::var(key)
         .ok()
@@ -136,6 +147,11 @@ pub fn get_qdrant_anchors_collection() -> String {
             std::env::var("QDRANT_ANCHORS_COLLECTION").unwrap_or_else(|_| "anchors".to_string())
         })
         .clone()
+}
+
+pub fn get_qdrant_upsert_wait() -> bool {
+    static QDRANT_UPSERT_WAIT: OnceLock<bool> = OnceLock::new();
+    *QDRANT_UPSERT_WAIT.get_or_init(|| get_bool_env("QDRANT_UPSERT_WAIT", false))
 }
 
 pub fn get_http_connect_timeout_secs() -> u64 {

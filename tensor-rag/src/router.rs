@@ -282,6 +282,15 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         options: &[],
     },
     SettingDescriptor {
+        key: "QDRANT_UPSERT_WAIT",
+        label: "Qdrant Upsert Wait",
+        description: "Whether ingestion waits for Qdrant writes to be applied before continuing.",
+        category: "vector",
+        field_type: "text",
+        placeholder: "false",
+        options: &[],
+    },
+    SettingDescriptor {
         key: "MCP_RATE_LIMIT",
         label: "MCP Rate Limit",
         description: "Token bucket capacity for MCP requests.",
@@ -798,56 +807,57 @@ async fn handle_upload(
             }
         };
 
-        for (offset, (item, vector)) in batch.iter().zip(vectors.into_iter()).enumerate() {
-            let global_idx = batch_start + offset;
-            info!(
-                "Storing chunk {}/{} for '{}' (level={}, chunk_index={}, text_len={})",
-                global_idx + 1,
-                total_chunks,
-                filename,
-                item.level.as_str(),
-                item.chunk_index,
-                item.text.len()
-            );
-            match state
-                .db_pools
-                .insert_document_enriched(
-                    &item.text,
-                    vector,
-                    &filename,
-                    &doc_uuid,
-                    &item.chapter_id,
-                    item.chunk_index,
-                    item.level.as_str(),
-                    item.parent_chunk_index,
-                    item.macro_index,
-                    item.medium_index,
-                    &item.header_chain,
-                    &item.zone_keywords,
-                    &item.entities,
-                )
-                .await
-            {
-                Ok(id) => {
-                    info!(
-                        "Stored chunk {}/{} for '{}' as document row id {}",
-                        global_idx + 1,
-                        total_chunks,
-                        filename,
-                        id
-                    );
-                    doc_ids.push(id)
-                }
-                Err(e) => {
-                    error!("Failed to store document chunk: {}", e);
-                    return (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "status": "error",
-                            "error": format!("Failed to store a document chunk in the database: {}", e)
-                        })),
-                    );
-                }
+        let documents: Vec<crate::db::EnrichedDocumentInsert<'_>> = batch
+            .iter()
+            .zip(vectors.into_iter())
+            .map(|(item, vector)| crate::db::EnrichedDocumentInsert {
+                text: &item.text,
+                vector,
+                filename: &filename,
+                doc_uuid: &doc_uuid,
+                chapter_id: &item.chapter_id,
+                chunk_index: item.chunk_index,
+                chunk_level: item.level.as_str(),
+                parent_chunk_index: item.parent_chunk_index,
+                macro_index: item.macro_index,
+                medium_index: item.medium_index,
+                header_chain: &item.header_chain,
+                zone_keywords: &item.zone_keywords,
+                entities: &item.entities,
+            })
+            .collect();
+
+        info!(
+            "Storing chunk batch {}/{} for '{}' ({} chunks) into PostgreSQL and Qdrant.",
+            batch_idx + 1,
+            total_chunks.div_ceil(embedding_batch_size),
+            filename,
+            documents.len()
+        );
+        match state
+            .db_pools
+            .insert_documents_enriched_batch(documents)
+            .await
+        {
+            Ok(ids) => {
+                info!(
+                    "Stored chunk batch {}/{} for '{}' as {} document rows.",
+                    batch_idx + 1,
+                    total_chunks.div_ceil(embedding_batch_size),
+                    filename,
+                    ids.len()
+                );
+                doc_ids.extend(ids);
+            }
+            Err(e) => {
+                error!("Failed to store document chunk batch: {}", e);
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "error": format!("Failed to store a document chunk batch in the database: {}", e)
+                    })),
+                );
             }
         }
     }
