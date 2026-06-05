@@ -1,6 +1,14 @@
 use sqlx::PgPool;
 use sqlx::Row;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SharedEntityPair {
+    doc1: String,
+    doc2: String,
+    shared_keys: Vec<String>,
+    shared_labels: Vec<String>,
+}
 
 /// Fetches the sub-graph neighborhood (nodes and edges) up to max_depth hops around a starting doc_uuid.
 pub async fn get_document_neighborhood(
@@ -187,47 +195,39 @@ pub async fn auto_link_by_shared_entities(
     pool: &PgPool,
     threshold: usize,
 ) -> Result<usize, String> {
-    // 1. Find pairs of documents sharing at least the threshold number of entities
     let rows = sqlx::query(
         r#"
-        WITH doc_entities AS (
-            SELECT DISTINCT doc_uuid, jsonb_array_elements_text(entities) as entity
-            FROM documents
-            WHERE entities IS NOT NULL AND jsonb_typeof(entities) = 'array'
-        ),
-        shared_entity_pairs AS (
-            SELECT 
-                de1.doc_uuid as doc1,
-                de2.doc_uuid as doc2,
-                COUNT(de1.entity) as shared_count,
-                jsonb_agg(de1.entity) as shared_entities
-            FROM doc_entities de1
-            JOIN doc_entities de2 ON de1.entity = de2.entity AND de1.doc_uuid < de2.doc_uuid
-            GROUP BY de1.doc_uuid, de2.doc_uuid
-            HAVING COUNT(de1.entity) >= $1::BIGINT
-        )
-        SELECT doc1, doc2, shared_count, shared_entities FROM shared_entity_pairs;
+        SELECT doc_uuid, COALESCE(entities, '[]'::jsonb) as entities
+        FROM documents
+        WHERE entities IS NOT NULL
+          AND jsonb_typeof(entities) = 'array'
+          AND jsonb_array_length(entities) > 0
         "#,
     )
-    .bind(threshold as i64)
     .fetch_all(pool)
     .await
-    .map_err(|e| format!("Failed to find shared entity pairs: {}", e))?;
+    .map_err(|e| format!("Failed to fetch document entities for graph linking: {}", e))?;
+
+    let documents = rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.try_get::<String, _>("doc_uuid").unwrap_or_default(),
+                json_array_to_strings(row.try_get("entities").unwrap_or(serde_json::json!([]))),
+            )
+        })
+        .filter(|(doc_uuid, entities)| !doc_uuid.is_empty() && !entities.is_empty())
+        .collect::<Vec<_>>();
+
+    let pairs = shared_entity_pairs(&documents, threshold);
 
     let mut new_edges_count = 0;
 
-    // 2. Insert edge for each pair if it doesn't exist yet
-    for r in rows {
-        let doc1: String = r.try_get("doc1").unwrap_or_default();
-        let doc2: String = r.try_get("doc2").unwrap_or_default();
-        let count: i64 = r.try_get("shared_count").unwrap_or(0);
-        let shared: serde_json::Value = r
-            .try_get("shared_entities")
-            .unwrap_or(serde_json::json!([]));
-
+    for pair in pairs {
         let metadata = serde_json::json!({
-            "shared_count": count,
-            "shared_entities": shared,
+            "shared_count": pair.shared_keys.len(),
+            "shared_entity_keys": pair.shared_keys,
+            "shared_entities": pair.shared_labels,
             "auto_linked": true
         });
 
@@ -242,8 +242,8 @@ pub async fn auto_link_by_shared_entities(
             )
             "#
         )
-        .bind(&doc1)
-        .bind(&doc2)
+        .bind(&pair.doc1)
+        .bind(&pair.doc2)
         .bind(&metadata)
         .execute(pool)
         .await
@@ -255,6 +255,81 @@ pub async fn auto_link_by_shared_entities(
     }
 
     Ok(new_edges_count)
+}
+
+fn shared_entity_pairs(
+    documents: &[(String, Vec<String>)],
+    threshold: usize,
+) -> Vec<SharedEntityPair> {
+    if threshold == 0 {
+        return Vec::new();
+    }
+
+    let mut by_doc: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
+    for (doc_uuid, entities) in documents {
+        let doc_entities = by_doc.entry(doc_uuid.clone()).or_default();
+        for entity in entities {
+            let key = crate::normalizer::stem_phrase(entity);
+            if key.is_empty() {
+                continue;
+            }
+            doc_entities
+                .entry(key)
+                .or_default()
+                .insert(entity.trim().to_string());
+        }
+    }
+
+    let docs = by_doc.into_iter().collect::<Vec<_>>();
+    let mut pairs = Vec::new();
+    for left_idx in 0..docs.len() {
+        for right_idx in (left_idx + 1)..docs.len() {
+            let (doc1, left_entities) = &docs[left_idx];
+            let (doc2, right_entities) = &docs[right_idx];
+            let shared_keys = left_entities
+                .keys()
+                .filter(|key| right_entities.contains_key(*key))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            if shared_keys.len() < threshold {
+                continue;
+            }
+
+            let shared_labels = shared_keys
+                .iter()
+                .flat_map(|key| {
+                    left_entities
+                        .get(key)
+                        .into_iter()
+                        .chain(right_entities.get(key))
+                        .flat_map(|labels| labels.iter().cloned())
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+
+            pairs.push(SharedEntityPair {
+                doc1: doc1.clone(),
+                doc2: doc2.clone(),
+                shared_keys,
+                shared_labels,
+            });
+        }
+    }
+    pairs
+}
+
+fn json_array_to_strings(value: serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|value| value.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Deletes all edges associated with a document (both incoming and outgoing).
@@ -276,4 +351,51 @@ pub async fn delete_document_edges(pool: &PgPool, doc_uuid: &str) -> Result<(), 
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_entity_pairs_match_inflected_forms() {
+        let documents = vec![
+            (
+                "doc-a".to_string(),
+                vec!["кошками".to_string(), "Белый Кролик".to_string()],
+            ),
+            (
+                "doc-b".to_string(),
+                vec!["кошка".to_string(), "Белого Кролика".to_string()],
+            ),
+            ("doc-c".to_string(), vec!["unrelated".to_string()]),
+        ];
+
+        let pairs = shared_entity_pairs(&documents, 2);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].doc1, "doc-a");
+        assert_eq!(pairs[0].doc2, "doc-b");
+        assert_eq!(pairs[0].shared_keys.len(), 2);
+        assert!(pairs[0].shared_labels.contains(&"кошками".to_string()));
+        assert!(pairs[0].shared_labels.contains(&"кошка".to_string()));
+    }
+
+    #[test]
+    fn shared_entity_pairs_deduplicate_chunk_entities_per_document() {
+        let documents = vec![
+            (
+                "doc-a".to_string(),
+                vec!["database".to_string(), "database".to_string()],
+            ),
+            ("doc-a".to_string(), vec!["databases".to_string()]),
+            ("doc-b".to_string(), vec!["database".to_string()]),
+        ];
+
+        let pairs = shared_entity_pairs(&documents, 1);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].shared_keys, vec!["databas".to_string()]);
+        assert_eq!(pairs[0].shared_labels.len(), 2);
+    }
 }

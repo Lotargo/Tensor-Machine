@@ -331,7 +331,8 @@ Impact:
 - The feature exists visually but does not help analysis.
 
 Follow-up work:
-- Verify graph data population first.
+- `fixed` Graph auto-linking now groups shared entities by hot-path normalized keys instead of raw labels, so inflected RU/EN forms can create `shares_entities` edges.
+- Verify graph data population against real documents in the running app.
 - Add fullscreen / expanded graph mode.
 - Reconsider layout and navigation model.
 - Possibly move to a richer visualization approach once the backend graph is actually meaningful.
@@ -483,6 +484,7 @@ Impact:
 Follow-up work:
 - `fixed` Introduced library-backed hot-path stemming for Russian and English with `rust-stemmers`.
 - `fixed` Entity retrieval boosting now compares stemmed entity keys instead of only raw lowercase labels.
+- `fixed` Graph auto-linking now uses stemmed entity keys to reduce fragmentation across word forms.
 - Do not rely on hand-written suffix lists as the long-term solution.
 - Add cold canonicalization to merge inflected forms and aliases using local ML or LLM-backed enrichment.
 - Store canonical entity IDs/keys separately from display labels and raw mentions.
