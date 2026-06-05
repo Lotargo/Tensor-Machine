@@ -11,6 +11,7 @@ import {
 
 let graphAnimationId = null;
 let activeDocumentRequestId = 0;
+const ENTITY_RENDER_LIMIT = 200;
 
 export function initLibrary() {
     document.getElementById('library-search').addEventListener('input', (event) => filterLibrary(event.target.value));
@@ -51,35 +52,25 @@ export function initLibrary() {
     initUpload();
 }
 
-export function getGroupedDocuments(chunks) {
-    const grouped = {};
-    chunks.forEach((chunk) => {
-        const uuid = chunk.doc_uuid || `legacy-${chunk.id}`;
-        if (!grouped[uuid]) {
-            grouped[uuid] = {
-                doc_uuid: uuid,
-                filename: chunk.filename || 'Legacy Chunk',
-                chunks: [],
-            };
-        }
-        grouped[uuid].chunks.push(chunk);
-    });
-
-    const docs = Object.values(grouped);
-    docs.forEach((doc) => {
-        doc.chunks.sort((a, b) => a.id - b.id);
-        doc.text = doc.chunks.map((chunk) => chunk.text).join('\n\n');
-        doc.id = doc.chunks[0].id;
-    });
-    return docs;
+export function getGroupedDocuments(documents) {
+    return (documents || []).map((doc) => ({
+        id: doc.id,
+        doc_uuid: doc.doc_uuid || `legacy-${doc.id}`,
+        filename: doc.filename || 'Unknown document',
+        chunk_count: Number(doc.chunk_count || 0),
+        char_count: Number(doc.char_count || 0),
+        approx_tokens: Number(doc.approx_tokens || Math.round(Number(doc.char_count || 0) / 4)),
+        preview_text: doc.preview_text || '',
+        text: doc.preview_text || '',
+    }));
 }
 
 export async function fetchDocuments() {
     try {
         const data = await fetchJson('/documents');
-        state.rawChunks = data.documents || [];
+        state.rawChunks = [];
         state.collectionHealth = data.collection_health || null;
-        state.documentList = getGroupedDocuments(state.rawChunks);
+        state.documentList = getGroupedDocuments(data.documents);
         renderWarningBanner(buildLocalizedWarning(state.collectionHealth) || data.warning || null);
         renderDocumentList(state.documentList);
 
@@ -116,7 +107,7 @@ export function renderDocumentList(docs) {
             <div class="document-item-title" title="${escapeHtml(doc.filename)}">${escapeHtml(doc.filename)}</div>
             <div class="document-item-meta">
                 <span style="font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">UUID: ${escapeHtml(doc.doc_uuid)}</span>
-                <span>${escapeHtml(t('chunks_label'))}: ${doc.chunks.length}</span>
+                <span>${escapeHtml(t('chunks_label'))}: ${doc.chunk_count}</span>
             </div>
         `;
         item.addEventListener('click', () => selectDocument(doc.doc_uuid));
@@ -134,7 +125,7 @@ export function filterLibrary(query) {
     const filtered = state.documentList.filter((doc) =>
         doc.filename.toLowerCase().includes(lower) ||
         doc.doc_uuid.toLowerCase().includes(lower) ||
-        doc.text.toLowerCase().includes(lower)
+        (doc.preview_text || '').toLowerCase().includes(lower)
     );
     renderDocumentList(filtered);
 }
@@ -162,10 +153,10 @@ export async function selectDocument(docUuid) {
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('viewer-title').textContent = doc.filename;
 
-    const charCount = doc.text.length;
-    const tokenEstimate = Math.round(charCount / 4);
+    const charCount = doc.char_count || doc.text.length;
+    const tokenEstimate = doc.approx_tokens || Math.round(charCount / 4);
     document.getElementById('viewer-meta').textContent =
-        `${t('chunks_label')}: ${doc.chunks.length} | ${t('length_label')}: ${charCount} ${t('chars_label')} | ${t('tokens_label')}: ${tokenEstimate} | UUID: ${doc.doc_uuid}`;
+        `${t('chunks_label')}: ${doc.chunk_count} | ${t('length_label')}: ${charCount} ${t('chars_label')} | ${t('tokens_label')}: ${tokenEstimate} | UUID: ${doc.doc_uuid}`;
 
     updateMiniPreview(doc);
     renderDocumentList(state.documentList);
@@ -178,15 +169,34 @@ export async function selectDocument(docUuid) {
             return;
         }
         state.selectedDocDetails = details;
+        hydrateDocumentFromDetails(doc, details);
     } catch (error) {
         console.error('Failed to fetch document details:', error);
         if (requestId !== activeDocumentRequestId || state.selectedDocUuid !== docUuid) {
             return;
         }
-        state.selectedDocDetails = { chunks: doc.chunks, anchors: [], edges: [] };
+        state.selectedDocDetails = { chunks: [], anchors: [], edges: [] };
     }
 
+    updateViewerMeta(doc);
+    updateMiniPreview(doc);
     renderActiveTab();
+}
+
+function hydrateDocumentFromDetails(doc, details) {
+    const chunks = Array.isArray(details?.chunks) ? [...details.chunks] : [];
+    chunks.sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0));
+    doc.text = chunks.map((chunk) => chunk.text || '').join('\n\n');
+    doc.chunk_count = chunks.length;
+    doc.char_count = doc.text.length;
+    doc.approx_tokens = Math.round(doc.char_count / 4);
+}
+
+function updateViewerMeta(doc) {
+    const charCount = doc.char_count || doc.text.length;
+    const tokenEstimate = doc.approx_tokens || Math.round(charCount / 4);
+    document.getElementById('viewer-meta').textContent =
+        `${t('chunks_label')}: ${doc.chunk_count} | ${t('length_label')}: ${charCount} ${t('chars_label')} | ${t('tokens_label')}: ${tokenEstimate} | UUID: ${doc.doc_uuid}`;
 }
 
 function renderMarkdownInto(container, text) {
@@ -245,7 +255,7 @@ export function openDocPreviewModal() {
     document.getElementById('doc-modal-search-count').textContent = '';
     document.getElementById('doc-modal-title').textContent = doc.filename;
     document.getElementById('doc-modal-meta').textContent =
-        `${t('chunks_label')}: ${doc.chunks.length} | ${t('length_label')}: ${doc.text.length} ${t('chars_label')} | UUID: ${doc.doc_uuid}`;
+        `${t('chunks_label')}: ${doc.chunk_count} | ${t('length_label')}: ${doc.char_count || doc.text.length} ${t('chars_label')} | UUID: ${doc.doc_uuid}`;
 
     rerenderPreviewModal('');
     const modal = document.getElementById('doc-preview-modal');
@@ -625,43 +635,52 @@ function createHierarchyItem(chunk, type) {
     header.appendChild(title);
 
     li.appendChild(header);
+    let content = null;
+    let didBuildContent = false;
 
-    const content = document.createElement('div');
-    content.className = 'hierarchy-item-content';
-    content.style.display = 'none';
+    function ensureContent() {
+        if (didBuildContent) return content;
+        didBuildContent = true;
 
-    const textDiv = document.createElement('div');
-    textDiv.className = 'chunk-full-text';
-    textDiv.textContent = chunk.text;
-    content.appendChild(textDiv);
+        content = document.createElement('div');
+        content.className = 'hierarchy-item-content';
+        content.style.display = 'none';
 
-    const metaFooter = document.createElement('div');
-    metaFooter.className = 'chunk-meta-footer';
-    let metaParts = [];
-    if (chunk.chunk_index !== undefined) metaParts.push(`Index: ${chunk.chunk_index}`);
-    if (chunk.zone_keywords && chunk.zone_keywords.length > 0) {
-        metaParts.push(`Keywords: ${chunk.zone_keywords.slice(0, 5).join(', ')}`);
+        const textDiv = document.createElement('div');
+        textDiv.className = 'chunk-full-text';
+        textDiv.textContent = chunk.text;
+        content.appendChild(textDiv);
+
+        const metaFooter = document.createElement('div');
+        metaFooter.className = 'chunk-meta-footer';
+        const metaParts = [];
+        if (chunk.chunk_index !== undefined) metaParts.push(`Index: ${chunk.chunk_index}`);
+        if (chunk.zone_keywords && chunk.zone_keywords.length > 0) {
+            metaParts.push(`Keywords: ${chunk.zone_keywords.slice(0, 5).join(', ')}`);
+        }
+        metaFooter.textContent = metaParts.join(' | ');
+        content.appendChild(metaFooter);
+
+        if (hasChildren) {
+            const subList = document.createElement('ul');
+            subList.className = 'hierarchy-sublist';
+            chunk.children.forEach(child => {
+                const childType = (child.chunk_level || 'medium').toLowerCase();
+                const childItem = createHierarchyItem(child, childType);
+                subList.appendChild(childItem);
+            });
+            content.appendChild(subList);
+        }
+
+        li.appendChild(content);
+        return content;
     }
-    metaFooter.textContent = metaParts.join(' | ');
-    content.appendChild(metaFooter);
-
-    if (hasChildren) {
-        const subList = document.createElement('ul');
-        subList.className = 'hierarchy-sublist';
-        chunk.children.forEach(child => {
-            const childType = (child.chunk_level || 'medium').toLowerCase();
-            const childItem = createHierarchyItem(child, childType);
-            subList.appendChild(childItem);
-        });
-        content.appendChild(subList);
-    }
-
-    li.appendChild(content);
 
     header.addEventListener('click', (event) => {
         event.stopPropagation();
-        const isCollapsed = content.style.display === 'none';
-        content.style.display = isCollapsed ? 'block' : 'none';
+        const contentNode = ensureContent();
+        const isCollapsed = contentNode.style.display === 'none';
+        contentNode.style.display = isCollapsed ? 'block' : 'none';
         
         if (hasChildren) {
             const icon = header.querySelector('.toggle-icon');
@@ -825,8 +844,12 @@ function renderEntities(container, chunks) {
         });
     });
 
-    const sortedEntities = Object.entries(entityCounts).sort((a, b) => b[1] - a[1]);
-    const sortedKeywords = Object.entries(keywordCounts).sort((a, b) => b[1] - a[1]);
+    const sortedEntities = Object.entries(entityCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, ENTITY_RENDER_LIMIT);
+    const sortedKeywords = Object.entries(keywordCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, ENTITY_RENDER_LIMIT);
 
     if (sortedEntities.length === 0) {
         entitiesList.innerHTML = '<div style="color: var(--text-secondary);">No entities.</div>';

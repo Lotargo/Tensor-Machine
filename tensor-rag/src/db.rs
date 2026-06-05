@@ -65,7 +65,7 @@ use qdrant_client::qdrant::{
     UpsertPoints, VectorsOutput, WithVectorsSelector, condition::ConditionOneOf,
     r#match::MatchValue, point_id::PointIdOptions,
 };
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{PgPool, Postgres, QueryBuilder, postgres::PgPoolOptions};
 use std::collections::HashMap;
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
@@ -1169,23 +1169,38 @@ impl DbPools {
         if let Some(pool) = &self.postgres {
             use sqlx::Row;
             let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
+            let lexical_terms = tokenize_lexical_query(query);
+            let tsquery_or = build_tsquery_or(&lexical_terms);
+            let phrase_query = query.trim();
+            let phrase_pattern = format!("%{}%", escape_like_pattern(phrase_query));
 
-            let clean_query = query
-                .split_whitespace()
-                .filter(|w| !w.is_empty())
-                .map(|w| w.replace(|c: char| !c.is_alphanumeric(), ""))
-                .filter(|w| !w.is_empty())
-                .collect::<Vec<_>>()
-                .join(" | ");
-
-            let rows = if !clean_query.is_empty() {
+            let rows = if !tsquery_or.is_empty() || !phrase_query.is_empty() {
                 sqlx::query(
-                    "SELECT id, ts_rank_cd(to_tsvector('simple', text), to_tsquery('simple', $2)) as rank 
-                     FROM documents 
-                     WHERE id = ANY($1)"
+                    r#"
+                    SELECT
+                        id,
+                        (
+                            CASE
+                                WHEN $2 <> '' AND lower(text) LIKE lower($3) ESCAPE '\' THEN 5.0
+                                ELSE 0.0
+                            END
+                            + CASE
+                                WHEN $2 <> '' THEN ts_rank_cd(to_tsvector('simple', text), websearch_to_tsquery('simple', $2))
+                                ELSE 0.0
+                            END
+                            + CASE
+                                WHEN $4 <> '' THEN ts_rank_cd(to_tsvector('simple', text), to_tsquery('simple', $4))
+                                ELSE 0.0
+                            END
+                        )::real AS rank
+                    FROM documents
+                    WHERE id = ANY($1)
+                    "#,
                 )
                 .bind(&ids_i64[..])
-                .bind(&clean_query)
+                .bind(phrase_query)
+                .bind(&phrase_pattern)
+                .bind(&tsquery_or)
                 .fetch_all(pool)
                 .await
             } else {
@@ -1216,6 +1231,101 @@ impl DbPools {
             }
         }
         vec![0.0; ids.len()]
+    }
+
+    pub async fn search_keyword_candidate_ids(
+        &self,
+        query: &str,
+        doc_uuid: Option<&str>,
+        chapter_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<usize> {
+        let Some(pool) = &self.postgres else {
+            return Vec::new();
+        };
+
+        let phrase_query = query.trim();
+        let lexical_terms = tokenize_lexical_query(query);
+        let tsquery_or = build_tsquery_or(&lexical_terms);
+        if phrase_query.is_empty() && tsquery_or.is_empty() {
+            return Vec::new();
+        }
+
+        let phrase_pattern = format!("%{}%", escape_like_pattern(phrase_query));
+        let mut builder = QueryBuilder::<Postgres>::new(
+            r#"
+            SELECT id
+            FROM documents
+            WHERE 1=1
+            "#,
+        );
+
+        if let Some(uuid) = doc_uuid {
+            builder.push(" AND doc_uuid = ").push_bind(uuid);
+        }
+        if let Some(chapter) = chapter_id {
+            builder.push(" AND chapter_id = ").push_bind(chapter);
+        }
+        builder
+            .push(" AND (")
+            .push("lower(text) LIKE lower(")
+            .push_bind(&phrase_pattern)
+            .push(") ESCAPE '\\'")
+            .push(" OR to_tsvector('simple', text) @@ websearch_to_tsquery('simple', ")
+            .push_bind(phrase_query)
+            .push(")")
+            .push(" OR to_tsvector('simple', text) @@ to_tsquery('simple', ")
+            .push_bind(&tsquery_or)
+            .push("))")
+            .push(
+                r#"
+                ORDER BY (
+                    CASE
+                        WHEN lower(text) LIKE lower("#,
+            )
+            .push_bind(&phrase_pattern)
+            .push(
+                r#") ESCAPE '\' THEN 100.0 ELSE 0.0 END
+                    + CASE
+                        WHEN "#,
+            )
+            .push_bind(phrase_query)
+            .push(
+                r#" <> '' THEN ts_rank_cd(to_tsvector('simple', text), websearch_to_tsquery('simple', "#,
+            )
+            .push_bind(phrase_query)
+            .push(
+                r#")) ELSE 0.0 END
+                    + CASE
+                        WHEN "#,
+            )
+            .push_bind(&tsquery_or)
+            .push(
+                r#" <> '' THEN ts_rank_cd(to_tsvector('simple', text), to_tsquery('simple', "#,
+            )
+            .push_bind(&tsquery_or)
+            .push(
+                r#")) ELSE 0.0 END
+                ) DESC,
+                chunk_index ASC
+                LIMIT "#,
+            );
+        builder.push_bind(limit as i64);
+
+        let query = builder.build();
+        match query.fetch_all(pool).await {
+            Ok(rows) => {
+                use sqlx::Row;
+                rows.into_iter()
+                    .filter_map(|row| row.try_get::<i64, _>("id").ok())
+                    .map(|id| id as usize)
+                    .collect()
+            }
+            Err(error) => {
+                tracing::warn!("Keyword candidate search failed: {}", error);
+                Vec::new()
+            }
+        }
     }
 
     /// Fetches metadata from Postgres for the given ids
@@ -1986,23 +2096,47 @@ impl DbPools {
     ) -> Result<Vec<i64>, String> {
         let anchors = Self::extract_anchors_from_markdown(markdown_text);
         let mut inserted_ids = Vec::new();
+        let mut embedding_jobs = Vec::new();
 
         for (name, text) in anchors {
             let anchor_id = self.insert_anchor(doc_uuid, &name, &text).await?;
+            inserted_ids.push(anchor_id);
+            embedding_jobs.push((anchor_id, name, text));
+        }
 
-            // Get embedding for anchor text
-            match self.get_embedding(&text, false).await {
-                Ok(vector) => {
-                    let _ = self
-                        .insert_anchor_embedding(anchor_id, vector, doc_uuid, &name)
-                        .await;
+        let batch_size = crate::config::get_embedding_batch_size().max(1);
+        for batch in embedding_jobs.chunks(batch_size) {
+            let texts: Vec<String> = batch.iter().map(|(_, _, text)| text.clone()).collect();
+            match self.get_embeddings(&texts, false).await {
+                Ok(vectors) => {
+                    for ((anchor_id, name, _), vector) in batch.iter().zip(vectors.into_iter()) {
+                        if let Err(error) = self
+                            .insert_anchor_embedding(*anchor_id, vector, doc_uuid, name)
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to store anchor embedding '{}' (id={}): {}",
+                                name,
+                                anchor_id,
+                                error
+                            );
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to embed anchor '{}': {}", name, e);
+                Err(error) => {
+                    let anchor_names = batch
+                        .iter()
+                        .map(|(_, name, _)| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    tracing::warn!(
+                        "Failed to embed anchor batch for document {} [{}]: {}",
+                        doc_uuid,
+                        anchor_names,
+                        error
+                    );
                 }
             }
-
-            inserted_ids.push(anchor_id);
         }
 
         Ok(inserted_ids)
@@ -2083,4 +2217,31 @@ fn json_array_to_strings(value: serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn tokenize_lexical_query(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .filter(|word| !word.is_empty())
+        .map(|word| word.replace(|c: char| !c.is_alphanumeric(), ""))
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn build_tsquery_or(terms: &[String]) -> String {
+    terms.join(" | ")
+}
+
+fn escape_like_pattern(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }

@@ -1268,7 +1268,19 @@ async fn handle_list_documents(
         .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let rows = sqlx::query(
-        "SELECT id, text, bm25_score, filename, doc_uuid FROM documents ORDER BY id DESC LIMIT 1000",
+        r#"
+        SELECT
+            doc_uuid,
+            MIN(id) AS id,
+            MAX(filename) AS filename,
+            COUNT(*) AS chunk_count,
+            SUM(char_length(text)) AS char_count,
+            COALESCE((ARRAY_AGG(text ORDER BY chunk_index ASC))[1], '') AS preview_text,
+            MAX(id) AS last_id
+        FROM documents
+        GROUP BY doc_uuid
+        ORDER BY last_id DESC
+        "#,
     )
     .fetch_all(pool)
     .await
@@ -1281,14 +1293,17 @@ async fn handle_list_documents(
     let mut docs = Vec::new();
     for row in rows {
         let id: i64 = row.try_get("id").unwrap_or(0);
-        let text: String = row.try_get("text").unwrap_or_default();
-        let bm25_score: f32 = row.try_get("bm25_score").unwrap_or(0.0);
+        let char_count: i64 = row.try_get("char_count").unwrap_or(0);
+        let chunk_count: i64 = row.try_get("chunk_count").unwrap_or(0);
+        let preview_text: String = row.try_get("preview_text").unwrap_or_default();
         let filename: Option<String> = row.try_get("filename").ok();
         let doc_uuid: Option<String> = row.try_get("doc_uuid").ok();
         docs.push(serde_json::json!({
             "id": id,
-            "text": text,
-            "bm25_score": bm25_score,
+            "preview_text": preview_text,
+            "char_count": char_count,
+            "chunk_count": chunk_count,
+            "approx_tokens": ((char_count as f64) / 4.0).round() as i64,
             "filename": filename.unwrap_or_else(|| "Unknown".to_string()),
             "doc_uuid": doc_uuid.unwrap_or_default()
         }));

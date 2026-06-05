@@ -47,6 +47,23 @@ The goal is to fix the system iteratively instead of attempting a full rewrite i
 
 - `fixed` Added defensive limits for entity extraction by chunk size / entity count to avoid runaway CPU work.
 
+- `fixed` Batched anchor embeddings instead of embedding anchors one by one at the tail of ingestion.
+
+- `fixed` Replaced the `/documents` raw chunk listing with grouped document metadata so UI chunk counts are no longer truncated by the old `LIMIT 1000` path.
+
+- `fixed` Removed legacy retrieval response artifacts:
+  - synthetic summary injection
+  - internal `=== ДОКУМЕНТЫ В ПОИСКЕ ===` TOC block
+  - user-facing `Proximity Gap` markers
+
+- `in_progress` Tightened lexical retrieval with explicit exact/substring matching boosts and a stronger keyword candidate fallback path.
+
+- `in_progress` Reduced frontend chat/tab rendering cost by:
+  - throttling streaming chat rerenders
+  - lazily building hierarchy nodes
+  - capping rendered entity/keyword badges
+  - removing the empty tool-use bubble artifact
+
 ---
 
 ## P0 - Critical issues
@@ -63,10 +80,13 @@ Symptoms:
 Confirmed causes:
 - Embeddings were originally sent one chunk at a time.
 - Even after embedding batching, the rest of the ingest pipeline still has serial phases.
-- Tail work, including anchor embedding and writes, still degrades utilization.
+- Tail work, especially storage writes, still degrades utilization.
+
+Completed in this area:
+- Main chunk embeddings are batched.
+- Anchor embeddings are now batched too.
 
 Follow-up work:
-- Batch anchor embeddings.
 - Batch Qdrant upserts.
 - Reduce synchronous `wait=true` behavior where safe.
 - Introduce pipelining between:
@@ -81,7 +101,7 @@ Notes:
 
 ### 2. Retrieval quality is currently unacceptable
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Exact phrase lookup can fail even when the phrase is present in the document.
@@ -92,15 +112,19 @@ Examples:
 - Query about a known mention of `Лиза` failed even though the document reportedly contains a direct match.
 - The system often answers from broad nearby context rather than exact supporting spans.
 
-Hypotheses:
+Current status:
+- Exact/substring lexical scoring was strengthened.
+- Keyword candidate fallback was strengthened.
+- Legacy context-bloat from summary injection / TOC artifact / proximity markers was removed.
+
+Remaining hypotheses:
 - BM25 / dense / entity fusion is still poorly calibrated.
-- Parent-context expansion is overwhelming precision.
-- The current response builder passes too much text and too little ranking discipline.
+- Dense-first retrieval may still hide some exact matches before rerank/fusion does its job.
+- The current response builder is cleaner now, but still may pass more text than needed for targeted QA.
 
 Follow-up work:
 - Re-check exact-match retrieval path.
-- Tighten lexical search behavior.
-- Reduce macro-context flooding.
+- Validate exact-match behavior against known failing examples.
 - Revisit RSF / BM25 weighting and exact-match boosts.
 
 ---
@@ -109,14 +133,15 @@ Follow-up work:
 
 ### 3. Chunk count / indexing count mismatch in UI
 
-Status: `open`
+Status: `fixed`
 
 Symptoms:
 - Real ingestion processed `3971` chunks.
 - The frontend showed only `1000` segments.
 
-Likely cause:
-- `/documents` currently uses a hard limit and the frontend groups only what it receives.
+Resolution:
+- `/documents` no longer exposes the raw limited chunk list as the source of truth.
+- The backend now returns grouped document metadata and the frontend uses that directly.
 
 Impact:
 - The UI lies about document size.
@@ -124,14 +149,13 @@ Impact:
 - It becomes harder to reason about document completeness and order.
 
 Follow-up work:
-- Stop using the raw limited chunk list as the source of truth for document stats.
-- Return grouped document metadata from the backend.
+- Keep validating counts against very large documents after future pagination/virtualization work.
 
 ---
 
 ### 4. Token accounting and display are inconsistent
 
-Status: `open`
+Status: `fixed`
 
 Symptoms:
 - Some UI/meta values are still based on `chars` while the project already uses `o200k_harmony`.
@@ -181,8 +205,10 @@ Impact:
 - Pollutes context.
 - Adds confusing fake structure.
 
+Resolution:
+- Current summary injection was removed.
+
 Decision:
-- Remove current summary injection.
 - Do not replace it with BM25 / TF-IDF pseudo-summary generation.
 - If summaries are needed later, use a real pipeline such as RAPTOR or model-generated hierarchy summaries.
 
@@ -190,7 +216,7 @@ Decision:
 
 ### 7. Legacy TOC/search artifact is still present
 
-Status: `open`
+Status: `fixed`
 
 Symptoms:
 - Search responses still build an internal `=== ДОКУМЕНТЫ В ПОИСКЕ ===` block.
@@ -200,14 +226,14 @@ Impact:
 - Pollutes the retrieval response format.
 - Leaks implementation details into the UX.
 
-Decision:
-- Remove this compatibility artifact entirely.
+Resolution:
+- This compatibility artifact was removed from user-facing retrieval responses.
 
 ---
 
 ### 8. Proximity gap artifact leaks into results
 
-Status: `open`
+Status: `fixed`
 
 Symptoms:
 - Search/document output visibly contains `... [Proximity Gap] ...`
@@ -217,14 +243,14 @@ Impact:
 - Distracts from content.
 - Feels like a debugging marker rather than a product behavior.
 
-Decision:
-- Remove from user-facing output or replace with a non-intrusive structural rendering strategy.
+Resolution:
+- Removed from user-facing retrieval output.
 
 ---
 
 ### 9. Scrolling is broken or missing in multiple views
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Downward scrolling works reliably only in the modal text preview.
@@ -284,6 +310,12 @@ Impact:
 - The UI feels unstable and slow even when the backend is functioning.
 - Large documents become difficult to inspect interactively.
 
+Completed in this area:
+- Streaming chat updates are now throttled instead of forcing a full rerender on every token.
+- The empty tool-use bubble artifact was removed.
+- Hierarchy nodes are now built lazily on expand instead of eagerly.
+- Entity/keyword badge rendering is capped to reduce heavy tab payloads.
+
 Follow-up work:
 - Add view-level profiling for tab switches and chat rendering.
 - Introduce virtualization or pagination for large lists and clouds.
@@ -302,7 +334,7 @@ Notes:
 
 ### 11. Entity extraction is too noisy
 
-Status: `open`
+Status: `fixed`
 
 Symptoms:
 - Non-entities appear as entities.
@@ -367,8 +399,8 @@ Symptoms:
 Impact:
 - Visual glitch.
 
-Follow-up work:
-- Audit loading/thinking bubble rendering path in chat UI.
+Resolution:
+- The empty tool-use bubble artifact in chat was removed.
 
 ---
 
@@ -416,17 +448,16 @@ Notes:
 ## Proposed iterative order
 
 ### Phase 1
-- Finish ingestion performance work:
-  - batch anchor embeddings
+- Continue ingestion performance work:
   - batch vector writes
   - reduce serial waits
-  - improve document metadata accuracy in UI
+  - improve token-accurate document metadata in UI
 
 ### Phase 2
-- Fix retrieval correctness:
-  - exact match behavior
-  - reduce context flooding
-  - remove fake summary / legacy TOC artifacts
+- Continue retrieval correctness work:
+  - validate exact match behavior
+  - tune fusion / rerank weights
+  - reduce remaining context flooding where needed
 
 ### Phase 3
 - Restore document structure:

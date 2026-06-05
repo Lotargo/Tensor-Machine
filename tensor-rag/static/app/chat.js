@@ -2,6 +2,8 @@ import { state, setChatMessages } from './state.js';
 import { escapeHtml, showNotice, t, saveUiPref, renderContextPath } from './core.js';
 
 let activeStreamController = null;
+let pendingStreamingFrame = null;
+let pendingStreamingSnapshot = null;
 
 export function initChat() {
     document.getElementById('send-chat-btn').addEventListener('click', () => sendChatMessage('sidebar'));
@@ -108,8 +110,13 @@ function renderMessagesInto(container) {
             `;
             wrapper.appendChild(thinking);
         }
-        bubble.innerHTML = message.role === 'assistant' ? renderAssistantContent(message.content) : escapeHtml(message.content).replaceAll('\n', '<br>');
-        wrapper.appendChild(bubble);
+        const hasVisibleContent = Boolean(message.content && message.content.trim());
+        if (hasVisibleContent || !message.loading) {
+            bubble.innerHTML = message.role === 'assistant'
+                ? renderAssistantContent(message.content)
+                : escapeHtml(message.content).replaceAll('\n', '<br>');
+            wrapper.appendChild(bubble);
+        }
 
         if (message.sources?.length) {
             const sources = document.createElement('div');
@@ -264,7 +271,7 @@ async function consumeSseResponse(response, outbound, userText) {
                 const phaseLabel = parsed.data.label || (parsed.data.phase === 'reasoning'
                     ? t('chat_thinking_reason')
                     : t('chat_thinking_search'));
-                updateStreamingAssistant(outbound, userText, {
+                queueStreamingAssistantUpdate(outbound, userText, {
                     content: accumulated,
                     loading: true,
                     thinking: true,
@@ -273,7 +280,7 @@ async function consumeSseResponse(response, outbound, userText) {
                 });
             } else if (parsed.event === 'sources') {
                 collectedSources = Array.isArray(parsed.data) ? parsed.data : [];
-                updateStreamingAssistant(outbound, userText, {
+                queueStreamingAssistantUpdate(outbound, userText, {
                     content: accumulated,
                     loading: true,
                     thinking: true,
@@ -281,7 +288,7 @@ async function consumeSseResponse(response, outbound, userText) {
                     sources: collectedSources,
                 });
             } else if (parsed.event === 'tool') {
-                updateStreamingAssistant(outbound, userText, {
+                queueStreamingAssistantUpdate(outbound, userText, {
                     content: accumulated,
                     loading: true,
                     thinking: true,
@@ -290,7 +297,7 @@ async function consumeSseResponse(response, outbound, userText) {
                 });
             } else if (parsed.event === 'token') {
                 accumulated += parsed.data.delta || '';
-                updateStreamingAssistant(outbound, userText, {
+                queueStreamingAssistantUpdate(outbound, userText, {
                     content: accumulated,
                     loading: true,
                     thinking: false,
@@ -299,26 +306,26 @@ async function consumeSseResponse(response, outbound, userText) {
                 });
             } else if (parsed.event === 'done') {
                 collectedSources = parsed.data.sources || collectedSources;
-                updateStreamingAssistant(outbound, userText, {
+                queueStreamingAssistantUpdate(outbound, userText, {
                     content: accumulated,
                     loading: false,
                     thinking: false,
                     thinkingLabel: '',
                     sources: collectedSources,
-                });
+                }, true);
             } else if (parsed.event === 'error') {
                 throw new Error(parsed.data.message || 'Streaming failed');
             }
         }
     }
 
-    updateStreamingAssistant(outbound, userText, {
+    queueStreamingAssistantUpdate(outbound, userText, {
         content: accumulated,
         loading: false,
         thinking: false,
         thinkingLabel: '',
         sources: collectedSources,
-    });
+    }, true);
 }
 
 function parseSseFrame(frame) {
@@ -343,6 +350,35 @@ function parseSseFrame(frame) {
 }
 
 function updateStreamingAssistant(outbound, userText, assistant) {
+    setChatMessages([
+        ...outbound,
+        { role: 'user', content: userText },
+        { role: 'assistant', ...assistant },
+    ]);
+}
+
+function queueStreamingAssistantUpdate(outbound, userText, assistant, immediate = false) {
+    pendingStreamingSnapshot = { outbound, userText, assistant };
+    if (immediate) {
+        if (pendingStreamingFrame) {
+            cancelAnimationFrame(pendingStreamingFrame);
+            pendingStreamingFrame = null;
+        }
+        flushStreamingAssistantUpdate();
+        return;
+    }
+
+    if (pendingStreamingFrame) return;
+    pendingStreamingFrame = requestAnimationFrame(() => {
+        pendingStreamingFrame = null;
+        flushStreamingAssistantUpdate();
+    });
+}
+
+function flushStreamingAssistantUpdate() {
+    if (!pendingStreamingSnapshot) return;
+    const { outbound, userText, assistant } = pendingStreamingSnapshot;
+    pendingStreamingSnapshot = null;
     setChatMessages([
         ...outbound,
         { role: 'user', content: userText },

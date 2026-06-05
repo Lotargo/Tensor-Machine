@@ -363,8 +363,7 @@ pub(crate) fn parse_search_sources(payload_text: &str) -> Result<Vec<ChatSource>
             Some(t) => t.trim(),
             None => continue,
         };
-        // Skip Table of Contents and empty blocks
-        if text.is_empty() || text.starts_with("=== ДОКУМЕНТЫ В ПОИСКЕ ===") {
+        if text.is_empty() {
             continue;
         }
 

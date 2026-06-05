@@ -912,143 +912,82 @@ pub fn execute_program<'a>(
                         .search_qdrant(&query_vec, &filters_opt, *top_k)
                         .await?;
 
-                    // Also retrieve keyword-matching candidates from Postgres and merge them
-                    let clean_query = query
-                        .split_whitespace()
-                        .filter(|w| !w.is_empty())
-                        .map(|w| w.replace(|c: char| !c.is_alphanumeric(), ""))
-                        .filter(|w| !w.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" | ");
-
-                    if !clean_query.is_empty() {
-                        if let Some(pool) = &db_pools.postgres {
-                            // Extract doc_uuid filter if present
-                            let mut postgres_doc_uuid = None;
-                            if let Some(f_list) = &filters_opt {
-                                for filter in f_list {
-                                    if filter.field == "doc_uuid"
-                                        && (filter.operator == "==" || filter.operator == "=")
-                                    {
-                                        if let Some(val_str) = filter.value.as_str() {
-                                            postgres_doc_uuid = Some(val_str.to_string());
-                                        }
-                                    }
-                                }
-                            }
-
-                            let rows = if let Some(uuid) = postgres_doc_uuid {
-                                if let Some(ref chap) = chapter_filter {
-                                    sqlx::query(
-                                        "SELECT id FROM documents 
-                                         WHERE doc_uuid = $1 AND chapter_id = $2
-                                           AND to_tsvector('simple', text) @@ to_tsquery('simple', $3) 
-                                         LIMIT 50"
-                                    )
-                                    .bind(uuid)
-                                    .bind(chap)
-                                    .bind(&clean_query)
-                                    .fetch_all(pool)
-                                    .await
-                                } else {
-                                    sqlx::query(
-                                        "SELECT id FROM documents 
-                                         WHERE doc_uuid = $1 
-                                           AND to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
-                                         LIMIT 50"
-                                    )
-                                    .bind(uuid)
-                                    .bind(&clean_query)
-                                    .fetch_all(pool)
-                                    .await
-                                }
+                    let postgres_doc_uuid = filters_opt.as_ref().and_then(|f_list| {
+                        f_list.iter().find_map(|filter| {
+                            if filter.field == "doc_uuid"
+                                && (filter.operator == "==" || filter.operator == "=")
+                            {
+                                filter.value.as_str().map(ToString::to_string)
                             } else {
-                                if let Some(ref chap) = chapter_filter {
-                                    sqlx::query(
-                                        "SELECT id FROM documents 
-                                         WHERE chapter_id = $1
-                                           AND to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
-                                         LIMIT 50"
-                                    )
-                                    .bind(chap)
-                                    .bind(&clean_query)
-                                    .fetch_all(pool)
-                                    .await
-                                } else {
-                                    sqlx::query(
-                                        "SELECT id FROM documents 
-                                         WHERE to_tsvector('simple', text) @@ to_tsquery('simple', $2) 
-                                         LIMIT 50"
-                                    )
-                                    .bind(&clean_query)
-                                    .fetch_all(pool)
-                                    .await
-                                }
-                            };
+                                None
+                            }
+                        })
+                    });
 
-                            if let Ok(rows) = rows {
-                                use sqlx::Row;
-                                let mut pg_ids = Vec::new();
-                                for r in rows {
-                                    if let Ok(id) = r.try_get::<i64, _>("id") {
-                                        pg_ids.push(id as usize);
-                                    }
-                                }
+                    let pg_ids = db_pools
+                        .search_keyword_candidate_ids(
+                            query,
+                            postgres_doc_uuid.as_deref(),
+                            chapter_filter.as_deref(),
+                            50,
+                        )
+                        .await;
 
-                                if !pg_ids.is_empty() {
-                                    if let Some(client) = db_pools.qdrant_clients.get("default") {
-                                        let collection = crate::config::get_qdrant_collection();
-                                        let point_ids: Vec<qdrant_client::qdrant::PointId> = pg_ids
-                                            .iter()
-                                            .filter(|id| !ids.contains(id))
-                                            .map(|&id| qdrant_client::qdrant::PointId {
-                                                point_id_options: Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(id as u64)),
-                                            })
-                                            .collect();
+                    if !pg_ids.is_empty() {
+                        if let Some(client) = db_pools.qdrant_clients.get("default") {
+                            let collection = crate::config::get_qdrant_collection();
+                            let point_ids: Vec<qdrant_client::qdrant::PointId> = pg_ids
+                                .iter()
+                                .filter(|id| !ids.contains(id))
+                                .map(|&id| qdrant_client::qdrant::PointId {
+                                    point_id_options: Some(
+                                        qdrant_client::qdrant::point_id::PointIdOptions::Num(
+                                            id as u64,
+                                        ),
+                                    ),
+                                })
+                                .collect();
 
-                                        if !point_ids.is_empty() {
-                                            let request = qdrant_client::qdrant::GetPoints {
-                                                collection_name: collection.clone(),
-                                                ids: point_ids,
-                                                with_vectors: Some(qdrant_client::qdrant::WithVectorsSelector {
-                                                    selector_options: Some(
-                                                        qdrant_client::qdrant::with_vectors_selector::SelectorOptions::Enable(true),
-                                                    ),
-                                                }),
-                                                with_payload: Some(qdrant_client::qdrant::WithPayloadSelector {
-                                                    selector_options: Some(
-                                                        qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(false),
-                                                    ),
-                                                }),
-                                                ..Default::default()
-                                            };
-                                            if let Ok(response) = client.get_points(request).await {
-                                                for point in response.result {
-                                                    let id = match &point.id {
-                                                        Some(qdrant_client::qdrant::PointId {
-                                                            point_id_options: Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)),
-                                                        }) => *n as usize,
-                                                        _ => continue,
-                                                    };
+                            if !point_ids.is_empty() {
+                                let request = qdrant_client::qdrant::GetPoints {
+                                    collection_name: collection.clone(),
+                                    ids: point_ids,
+                                    with_vectors: Some(qdrant_client::qdrant::WithVectorsSelector {
+                                        selector_options: Some(
+                                            qdrant_client::qdrant::with_vectors_selector::SelectorOptions::Enable(true),
+                                        ),
+                                    }),
+                                    with_payload: Some(qdrant_client::qdrant::WithPayloadSelector {
+                                        selector_options: Some(
+                                            qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(false),
+                                        ),
+                                    }),
+                                    ..Default::default()
+                                };
+                                if let Ok(response) = client.get_points(request).await {
+                                    for point in response.result {
+                                        let id = match &point.id {
+                                            Some(qdrant_client::qdrant::PointId {
+                                                point_id_options: Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)),
+                                            }) => *n as usize,
+                                            _ => continue,
+                                        };
 
-                                                    let vec_data = if let Some(qdrant_client::qdrant::VectorsOutput {
-                                                        vectors_options: Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v)),
-                                                    }) = &point.vectors {
-                                                        if let Some(qdrant_client::qdrant::vector_output::Vector::Dense(dense)) = &v.vector {
-                                                            dense.data.clone()
-                                                        } else {
-                                                            #[allow(deprecated)]
-                                                            v.data.clone()
-                                                        }
-                                                    } else {
-                                                        vec![0.1; crate::config::get_embedding_dim()]
-                                                    };
-
-                                                    ids.push(id);
-                                                    vectors.push(ndarray::Array1::from(vec_data));
-                                                }
+                                        let vec_data = if let Some(qdrant_client::qdrant::VectorsOutput {
+                                            vectors_options: Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v)),
+                                        }) = &point.vectors {
+                                            if let Some(qdrant_client::qdrant::vector_output::Vector::Dense(dense)) = &v.vector {
+                                                dense.data.clone()
+                                            } else {
+                                                #[allow(deprecated)]
+                                                v.data.clone()
                                             }
-                                        }
+                                        } else {
+                                            vec![0.1; crate::config::get_embedding_dim()]
+                                        };
+
+                                        ids.push(id);
+                                        vectors.push(ndarray::Array1::from(vec_data));
                                     }
                                 }
                             }
