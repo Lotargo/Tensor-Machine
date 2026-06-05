@@ -155,6 +155,7 @@ Examples:
 Current status:
 - Exact/substring lexical scoring was strengthened.
 - Keyword candidate fallback was strengthened.
+- Structured PostgreSQL candidate fallback now adds chapter/header-chain matches before dense vector reranking.
 - Legacy context-bloat from summary injection / TOC artifact / proximity markers was removed.
 
 Remaining hypotheses:
@@ -167,7 +168,9 @@ Follow-up work:
 - Re-check exact-match retrieval path.
 - Validate exact-match behavior against known failing examples.
 - Revisit RSF / BM25 weighting and exact-match boosts.
-- Add chapter/heading search that can locate a chapter or heading and retrieve its full text span.
+- `in_progress` Add chapter/heading search that can locate a chapter or heading and retrieve its full text span.
+  - `fixed` Added structured candidate lookup for `chapter_id` and `header_chain` so navigation queries are not dense-only.
+  - Remaining: reconstruct and return a full section/chapter span, not only matching chunks.
 - Add precise lookup for a specific line/string and paragraph within headings/sections.
 - Extend and test search methods so exact chapter/heading/paragraph retrieval can use PostgreSQL lexical/structured queries instead of relying on noisy dense vector search.
 

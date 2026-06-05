@@ -1444,6 +1444,94 @@ impl DbPools {
         }
     }
 
+    pub async fn search_structured_candidate_ids(
+        &self,
+        query: &str,
+        doc_uuid: Option<&str>,
+        chapter_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<usize> {
+        let Some(pool) = &self.postgres else {
+            return Vec::new();
+        };
+
+        let heading_patterns = structured_heading_like_patterns(query);
+        if chapter_id.is_none() && heading_patterns.is_empty() {
+            return Vec::new();
+        }
+
+        let mut builder = QueryBuilder::<Postgres>::new(
+            r#"
+            SELECT id
+            FROM documents
+            WHERE 1=1
+            "#,
+        );
+
+        if let Some(uuid) = doc_uuid {
+            builder.push(" AND doc_uuid = ").push_bind(uuid);
+        }
+
+        builder.push(" AND (");
+        let mut has_condition = false;
+        if let Some(chapter) = chapter_id {
+            builder.push("chapter_id = ").push_bind(chapter);
+            has_condition = true;
+        }
+        if !heading_patterns.is_empty() {
+            if has_condition {
+                builder.push(" OR ");
+            }
+            push_header_chain_match(&mut builder, &heading_patterns);
+        }
+        builder.push(")");
+
+        builder.push(
+            r#"
+            ORDER BY
+                (
+                    CASE WHEN "#,
+        );
+        if let Some(chapter) = chapter_id {
+            builder.push("chapter_id = ").push_bind(chapter);
+        } else {
+            builder.push("FALSE");
+        }
+        builder.push(" THEN 100 ELSE 0 END");
+        if !heading_patterns.is_empty() {
+            builder.push(" + CASE WHEN ");
+            push_header_chain_match(&mut builder, &heading_patterns);
+            builder.push(" THEN 50 ELSE 0 END");
+        }
+        builder.push(
+            r#"
+                ) DESC,
+                CASE chunk_level
+                    WHEN 'macro' THEN 0
+                    WHEN 'medium' THEN 1
+                    ELSE 2
+                END ASC,
+                chunk_index ASC
+            LIMIT "#,
+        );
+        builder.push_bind(limit as i64);
+
+        let query = builder.build();
+        match query.fetch_all(pool).await {
+            Ok(rows) => {
+                use sqlx::Row;
+                rows.into_iter()
+                    .filter_map(|row| row.try_get::<i64, _>("id").ok())
+                    .map(|id| id as usize)
+                    .collect()
+            }
+            Err(error) => {
+                tracing::warn!("Structured candidate search failed: {}", error);
+                Vec::new()
+            }
+        }
+    }
+
     /// Fetches metadata from Postgres for the given ids
     pub async fn fetch_metadata(&self, ids: &[usize]) -> Vec<String> {
         if self.postgres_cb.is_open() {
@@ -2387,6 +2475,68 @@ fn tokenize_lexical_query(query: &str) -> Vec<String> {
         .collect()
 }
 
+fn structured_heading_like_patterns(query: &str) -> Vec<String> {
+    tokenize_lexical_query(query)
+        .into_iter()
+        .map(|term| term.to_lowercase())
+        .filter(|term| term.chars().count() >= 3)
+        .filter(|term| !is_structured_lookup_noise_term(term))
+        .take(6)
+        .map(|term| format!("%{}%", escape_like_pattern(&term)))
+        .collect()
+}
+
+fn is_structured_lookup_noise_term(term: &str) -> bool {
+    matches!(
+        term,
+        "chapter"
+            | "part"
+            | "section"
+            | "heading"
+            | "find"
+            | "show"
+            | "open"
+            | "text"
+            | "full"
+            | "глава"
+            | "главу"
+            | "главы"
+            | "часть"
+            | "раздел"
+            | "раздела"
+            | "заголовок"
+            | "найди"
+            | "найти"
+            | "покажи"
+            | "открой"
+            | "полный"
+            | "текст"
+    )
+}
+
+fn push_header_chain_match<'args>(
+    builder: &mut QueryBuilder<'args, Postgres>,
+    heading_patterns: &'args [String],
+) {
+    builder.push(
+        r#"
+        EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(COALESCE(header_chain, '[]'::jsonb)) AS h(header_text)
+            WHERE "#,
+    );
+    for (idx, pattern) in heading_patterns.iter().enumerate() {
+        if idx > 0 {
+            builder.push(" AND ");
+        }
+        builder
+            .push("lower(h.header_text) LIKE ")
+            .push_bind(pattern)
+            .push(" ESCAPE '\\'");
+    }
+    builder.push(")");
+}
+
 fn build_tsquery_or(terms: &[String]) -> String {
     terms.join(" | ")
 }
@@ -2403,4 +2553,21 @@ fn escape_like_pattern(text: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_heading_patterns_drop_navigation_words() {
+        let patterns = structured_heading_like_patterns("show full text of chapter Rabbit Hole");
+        assert_eq!(patterns, vec!["%rabbit%".to_string(), "%hole%".to_string()]);
+    }
+
+    #[test]
+    fn structured_heading_patterns_escape_like_wildcards() {
+        let patterns = structured_heading_like_patterns("open section 100%_ready");
+        assert_eq!(patterns, vec!["%100ready%".to_string()]);
+    }
 }

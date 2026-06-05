@@ -924,7 +924,7 @@ pub fn execute_program<'a>(
                         })
                     });
 
-                    let pg_ids = db_pools
+                    let mut pg_ids = db_pools
                         .search_keyword_candidate_ids(
                             query,
                             postgres_doc_uuid.as_deref(),
@@ -932,6 +932,19 @@ pub fn execute_program<'a>(
                             50,
                         )
                         .await;
+                    let structured_ids = db_pools
+                        .search_structured_candidate_ids(
+                            query,
+                            postgres_doc_uuid.as_deref(),
+                            chapter_filter.as_deref(),
+                            50,
+                        )
+                        .await;
+                    for id in structured_ids {
+                        if !pg_ids.contains(&id) {
+                            pg_ids.push(id);
+                        }
+                    }
 
                     if !pg_ids.is_empty() {
                         if let Some(client) = db_pools.qdrant_clients.get("default") {
