@@ -8,7 +8,7 @@
 [![Rust Version](https://img.shields.io/badge/Rust-2024%2B-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg?style=for-the-badge&logo=github)](https://github.com/)
 [![Vector Engine](https://img.shields.io/badge/Vector-Stack--VM%20%2F%20Arrow-blue.svg?style=for-the-badge)](https://github.com/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 
 </div>
 
@@ -421,15 +421,6 @@ cargo bench --bench zero_copy  # Arrow vs Tensor1D
                 :final-top-k 5)
 ```
 
-### Performance Targets
-
-| Metric | Target | Current |
-|--------|--------|---------|
-| P99 latency (Top-1000, VM only) | < 5 ms | ~50 µs |
-| Memory per 10k MCP sessions | < 500 MB | ~0.01 MB/session |
-| Throughput | 50,000 req/s | — |
-| New rerank strategy | < 1 hour | DSL macro |
-
 </td>
 </tr>
 </table>
@@ -440,20 +431,9 @@ cargo bench --bench zero_copy  # Arrow vs Tensor1D
 <tr>
 <td>
 
-## <img src="./assets/agents.svg" width="24" height="24" /> 7. Roadmap
+## License
 
-- **Phase 1 (MVP)**: MCP server, JSON → IR, Tensor VM (5 opcodes), direct DB calls
-- **Phase 2 (DSL)**: S-expression parser, hybrid/multi-hop/self-rag/corrective-rag macros
-- **Phase 3 (Zero-Copy)**: Apache Arrow pipeline, FlatBuffer results, mmap regions
-- **Phase 4 (Production)**: GPU backend (wgpu), ColBERT, horizontal scaling, observability
-- **Phase 5 (Tech Debt)**: I/O separation, dynamic strategies, missing opcodes, latency hardening
-- **Phase 6 (Hardening)**: Real MMR/RRF, Arrow Flight, ML embedding, ColBERT SIMD, DSL panics fix
-
-All phases structurally complete. See `dev_docs/` for detailed planning.
-
----
-
-**License:** MIT
+**GPLv3** — see `LICENSE` for details.
 
 </td>
 </tr>
