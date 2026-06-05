@@ -9,7 +9,8 @@ The server reads configuration from environment variables:
 | `DATABASE_URL` | — | PostgreSQL connection string |
 | `QDRANT_URL` | — | Qdrant gRPC endpoint |
 | `QDRANT_COLLECTION` | — | Qdrant collection name |
-| `MCP_BIND_ADDR` | `0.0.0.0:8080` | MCP server listen address |
+| `MCP_BIND_ADDR` | `0.0.0.0:8080` | HTTP/MCP/router listen address. When unset and the default port is busy, the server tries fallback ports `8081..8090`. |
+| `PORTAL_HOST` | `127.0.0.1` | Hostname printed for the local portal URL when the router binds to `0.0.0.0` or `::`. |
 | `MAX_CONNECTIONS` | `5` | PostgreSQL connection pool size |
 
 When no database variables are set, the system runs in **mock mode** and returns synthetic data for all queries.

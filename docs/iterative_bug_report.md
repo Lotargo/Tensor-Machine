@@ -94,6 +94,12 @@ This does not close retrieval quality work, but it is an important positive sign
   - capping rendered entity/keyword badges
   - removing the empty tool-use bubble artifact
 
+- `fixed` Made the local portal URL more robust:
+  - the server now prints `http://127.0.0.1:<port>` instead of hardcoded `http://localhost:8080`
+  - the router bind address can be configured with `MCP_BIND_ADDR` / `TENSOR_RAG_BIND_ADDR`
+  - when the default address is not explicitly configured and port `8080` is unavailable, the router tries fallback ports `8081..8090`
+  - this avoids the observed Windows/Docker/WSL case where `localhost:8080` resolves to a different IPv6 listener and returns `ERR_EMPTY_RESPONSE` while the app is actually reachable over IPv4 loopback
+
 ---
 
 ## P0 - Critical issues
@@ -380,24 +386,85 @@ Notes:
 
 ## P1 - Entity pipeline issues
 
+### Entity pipeline direction: hot path + cold enrichment
+
+Decision:
+- Split entity processing into two phases instead of trying to solve all morphology, NER, aliasing, and domain cleanup in the synchronous ingestion path.
+
+Hot path:
+- Must stay fast, deterministic, and cheap enough to run during normal ingestion and search.
+- Should use established lightweight libraries/frameworks where possible, not hand-written suffix lists or domain-specific hardcode.
+- Responsibilities:
+  - language detection when reliable enough;
+  - tokenization and stopword filtering;
+  - library-backed stemming or light normalization;
+  - conservative regex/statistical entity candidates;
+  - immediate searchable keys for retrieval and graph bootstrapping.
+- Should not depend on LLM calls or heavy ML inference.
+- Should avoid domain-specific rules in the shared normalizer. Domain dictionaries may exist later, but they should be explicit configuration/extensions rather than hidden generic logic.
+
+Cold background phase:
+- Runs asynchronously after the document is already indexed.
+- May use local ML models, language-specific NER/lemmatization models, or an LLM provider.
+- Should be configurable independently from the main chat/agent model.
+- Responsibilities:
+  - model-backed NER;
+  - remove false-positive entities produced by the hot path;
+  - lemmatize/canonicalize entity names;
+  - merge aliases and inflected forms;
+  - classify entity types such as person, organization, place, concept, document section, legal term, or domain-specific term;
+  - persist canonical entities, aliases, mentions, confidence scores, and processing status;
+  - trigger graph edge recalculation once enriched entities are available.
+
+Configuration direction:
+- Add separate settings for entity enrichment, for example:
+  - `ENTITY_ENRICHMENT_ENABLED`
+  - `ENTITY_ENRICHMENT_MODE=hot_only|local_ml|llm|hybrid`
+  - `ENTITY_ENRICHMENT_PROVIDER=ollama|lmstudio|openai|mistral|custom`
+  - `ENTITY_ENRICHMENT_MODEL`
+  - `ENTITY_ENRICHMENT_LANGS`
+  - `ENTITY_ENRICHMENT_BATCH_SIZE`
+  - `ENTITY_ENRICHMENT_MAX_CONTEXT_TOKENS`
+- Local ML should be selectable per supported language.
+- LLM mode should work as a universal fallback or as a higher-quality enrichment mode when the user explicitly enables it.
+- The enrichment model choice must be separate from the normal assistant/chat model so users can choose a small cheap model for background cleanup or a stronger model for high-quality canonicalization.
+
+State model direction:
+- The UI/backend should eventually expose enrichment state separately from base indexing, for example:
+  - `indexed`
+  - `entity_enrichment_pending`
+  - `entity_enrichment_running`
+  - `entity_enrichment_complete`
+  - `entity_enrichment_failed`
+- Retrieval should work immediately after hot indexing, then improve as cold enrichment finishes.
+- Graph quality should be treated as provisional until cold entity enrichment has completed for the relevant documents.
+
 ### 11. Entity extraction is too noisy
 
-Status: `fixed`
+Status: `in_progress`
 
 Symptoms:
 - Non-entities appear as entities.
 - Pronouns, adjectives, filler words, and low-value tokens leak into the entity cloud.
+- The hot regex-based phase can still produce false positives that require model-backed cleanup.
 
 Impact:
 - Entities explorer becomes misleading.
 - Entity-based search and graph edges lose value.
 
+Completed in this area:
+- Added defensive limits for entity extraction by chunk size / entity count to avoid runaway CPU work.
+- Strengthened simple heuristics enough to reduce the worst hot-path noise.
+
 Notes:
-- The current regex-based extractor is too weak as a semantic entity recognizer.
+- The current regex-based extractor is too weak as a semantic entity recognizer and should be treated as a candidate generator, not as final NER.
+- Do not keep expanding generic hardcoded suffix/entity/domain rules in the hot path.
 
 Follow-up work:
-- Evaluate a better entity extraction library or model-backed NER.
-- At minimum, strengthen heuristics to reject obvious junk.
+- Add a cold background NER/enrichment phase that can remove false positives from hot extraction.
+- Evaluate local language-specific NER/lemmatization models.
+- Add optional LLM-backed cleanup/canonicalization using the existing AI provider architecture but separate model settings.
+- Store confidence/source metadata so UI and graph logic can distinguish raw candidates from enriched entities.
 
 ---
 
@@ -414,8 +481,10 @@ Impact:
 - Search and graph links fragment across grammatical forms.
 
 Follow-up work:
-- Introduce proper stemming / lemmatization.
-- Snowball-style stemming was explicitly identified as a likely next step.
+- Introduce proper library-backed stemming / lemmatization in the hot path.
+- Do not rely on hand-written suffix lists as the long-term solution.
+- Add cold canonicalization to merge inflected forms and aliases using local ML or LLM-backed enrichment.
+- Store canonical entity IDs/keys separately from display labels and raw mentions.
 
 ---
 
@@ -454,7 +523,7 @@ Resolution:
 
 ### 15. Tool/thinking text is not hidden appropriately
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Agent intermediate behavior is exposed in a rough way.
@@ -463,11 +532,18 @@ Symptoms:
 Impact:
 - Makes the chat feel noisy and unpolished.
 
+Completed in this area:
+- Tool-use stream events now render a generic localized thinking label instead of exposing raw tool labels directly in chat.
+
+Follow-up work:
+- Validate agent-mode streaming with real MCP tool calls.
+- Decide whether final UI should show a structured tool activity timeline, keep only generic thinking states, or hide tool activity entirely.
+
 ---
 
 ### 15a. RAG source results overlap with agent answer in chat
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Search/RAG results appear in chat first.
@@ -479,10 +555,14 @@ Impact:
 - Good answers are harder to read because internal retrieval context is shown too early.
 
 Follow-up work:
-- Temporarily hide retrieval/source results while the agent is generating.
-- Show retrieved sources under a collapsible spoiler only after the agent answer is complete.
+- Validate the new source layout visually while an agent/RAG response is streaming.
 - Modernize the source/results presentation so verification remains available without dominating the chat.
 - Rework chat answer/source layout as part of the broader UI/UX redesign.
+
+Completed in this area:
+- Retrieval/source results are no longer rendered while the assistant response is loading/thinking.
+- Sources are shown only after the assistant answer is complete.
+- Sources now render under a collapsed disclosure block so verification remains available without dominating the chat.
 
 ---
 
@@ -544,7 +624,11 @@ Notes:
   - structured viewer rendering
 
 ### Phase 4
-- Clean up entities and graph UX
+- Clean up entities and graph foundation:
+  - replace ad hoc hot-path stemming with library-backed normalization
+  - add background entity enrichment / NER / canonicalization
+  - persist canonical entities, aliases, mentions, confidence, and enrichment status
+  - recalculate graph edges from enriched entities before investing heavily in graph UX
 
 ### Phase 5
 - Polish chat/agent UX and visual design
@@ -554,6 +638,7 @@ Notes:
 ## Notes for future passes
 
 - Do not treat the current graph UI as product-complete until the underlying graph data is meaningful.
+- Do not treat raw hot-path entity candidates as final semantic entities; they are allowed to be useful immediately, but cold enrichment should own final cleanup/canonicalization.
 - Do not invest in superficial UI polish before retrieval and document structure are trustworthy.
 - Do not reintroduce legacy Mongo-era response artifacts into the new PostgreSQL-backed system.
 - A future knowledge graph layer has been captured as a concept in `docs/knowledge_graph_concept.md`; it requires web research and architecture review before implementation.

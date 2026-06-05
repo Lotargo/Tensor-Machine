@@ -246,10 +246,43 @@
 }
 
 .chat-sources {
+    width: 100%;
+}
+
+.chat-sources-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--bg-muted) 58%, var(--bg-card) 42%);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    list-style: none;
+}
+
+.chat-sources-summary::-webkit-details-marker {
+    display: none;
+}
+
+.chat-sources-summary i {
+    transition: transform 0.18s ease;
+}
+
+.chat-sources[open] .chat-sources-summary i {
+    transform: rotate(180deg);
+}
+
+.chat-sources-list {
     display: grid;
     grid-template-columns: 1fr;
     gap: 8px;
-    width: 100%;
+    margin-top: 8px;
 }
 
 .chat-source-card {

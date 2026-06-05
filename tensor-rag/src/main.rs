@@ -5,8 +5,64 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+const DEFAULT_ROUTER_BIND_ADDR: &str = "0.0.0.0:8080";
+
 fn print_banner_row(label: &str, value: &str) {
     println!("| {:<18} | {:<56} |", label, value);
+}
+
+fn configured_router_addr() -> Result<(std::net::SocketAddr, bool), Box<dyn std::error::Error>> {
+    let configured = std::env::var("MCP_BIND_ADDR")
+        .or_else(|_| std::env::var("TENSOR_RAG_BIND_ADDR"))
+        .unwrap_or_else(|_| DEFAULT_ROUTER_BIND_ADDR.to_string());
+    Ok((configured.parse()?, configured != DEFAULT_ROUTER_BIND_ADDR))
+}
+
+fn portal_url(bound_addr: std::net::SocketAddr) -> String {
+    let host = if bound_addr.ip().is_unspecified() {
+        std::env::var("PORTAL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string())
+    } else if bound_addr.ip().is_ipv6() {
+        format!("[{}]", bound_addr.ip())
+    } else {
+        bound_addr.ip().to_string()
+    };
+    format!("http://{}:{}", host, bound_addr.port())
+}
+
+async fn bind_router_listener(
+    requested_addr: std::net::SocketAddr,
+    explicit_addr: bool,
+) -> Result<tokio::net::TcpListener, Box<dyn std::error::Error>> {
+    match tokio::net::TcpListener::bind(requested_addr).await {
+        Ok(listener) => return Ok(listener),
+        Err(error) if explicit_addr => return Err(error.into()),
+        Err(error) => {
+            tracing::warn!(
+                "Failed to bind to {}: {}. Trying fallback ports...",
+                requested_addr,
+                error
+            );
+        }
+    }
+
+    for port in 8081..=8090 {
+        let candidate = std::net::SocketAddr::new(requested_addr.ip(), port);
+        match tokio::net::TcpListener::bind(candidate).await {
+            Ok(listener) => {
+                tracing::warn!("Router fallback bind succeeded on {}", candidate);
+                return Ok(listener);
+            }
+            Err(error) => {
+                tracing::warn!("Fallback bind failed on {}: {}", candidate, error);
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to bind router on {} or fallback ports 8081..8090",
+        requested_addr
+    )
+    .into())
 }
 
 #[tokio::main]
@@ -141,29 +197,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let router = tensor_rag::router::mcp_router(app_state);
 
     // Bind and serve the router
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8080));
-    let mut listener_opt = None;
-    for attempt in 1..=10 {
-        match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => {
-                listener_opt = Some(l);
-                break;
-            }
-            Err(e) => {
-                if attempt == 10 {
-                    return Err(e.into());
-                }
-                tracing::warn!(
-                    "Failed to bind to {} (attempt {}/10): {}. Retrying in 500ms...",
-                    addr,
-                    attempt,
-                    e
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        }
-    }
-    let listener = listener_opt.unwrap();
+    let (requested_addr, explicit_router_addr) = configured_router_addr()?;
+    let listener = bind_router_listener(requested_addr, explicit_router_addr).await?;
+    let addr = listener.local_addr()?;
     let pg_status = if db_pools.postgres.is_some() {
         "ACTIVE (Pool)"
     } else {
@@ -177,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flight_addr =
         std::env::var("ARROW_FLIGHT_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
     let router_value = format!("http://{}", addr);
-    let portal_value = "http://localhost:8080";
+    let portal_value = portal_url(addr);
 
     println!("\n");
     println!("+--------------------+----------------------------------------------------------+");

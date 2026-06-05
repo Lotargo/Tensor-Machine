@@ -118,35 +118,54 @@ function renderMessagesInto(container) {
             wrapper.appendChild(bubble);
         }
 
-        if (message.sources?.length) {
-            const sources = document.createElement('div');
-            sources.className = 'chat-sources';
-            message.sources.forEach((source) => {
-                const titleLower = (source.title || '').toLowerCase();
-                const excerptLower = (source.excerpt || '').toLowerCase();
-                if (titleLower.includes("документы в поиске") || 
-                    titleLower.includes("table of contents") || 
-                    excerptLower.includes("=== документы в поиске ===")) {
-                    return;
-                }
-                const card = document.createElement('div');
-                card.className = 'chat-source-card';
-                let titleHtml = `[${source.index}] ${escapeHtml(source.title)}`;
-                if (source.context) {
-                    titleHtml += ` <span class="source-context-path">${renderContextPath(source.context)}</span>`;
-                }
-                card.innerHTML = `
-                    <strong>${titleHtml}</strong>
-                    <p>${escapeHtml(source.excerpt)}</p>
-                `;
-                sources.appendChild(card);
-            });
-            wrapper.appendChild(sources);
+        if (message.sources?.length && !message.loading && !message.thinking) {
+            const sources = renderSources(message.sources);
+            if (sources) wrapper.appendChild(sources);
         }
 
         container.appendChild(wrapper);
     });
     container.scrollTop = container.scrollHeight;
+}
+
+function renderSources(rawSources) {
+    const filteredSources = rawSources.filter((source) => {
+        const titleLower = (source.title || '').toLowerCase();
+        const excerptLower = (source.excerpt || '').toLowerCase();
+        return !titleLower.includes('документы в поиске')
+            && !titleLower.includes('table of contents')
+            && !excerptLower.includes('=== документы в поиске ===');
+    });
+    if (!filteredSources.length) return null;
+
+    const details = document.createElement('details');
+    details.className = 'chat-sources';
+    const summary = document.createElement('summary');
+    summary.className = 'chat-sources-summary';
+    summary.innerHTML = `
+        <span>${escapeHtml(t('chat_sources_summary', { count: String(filteredSources.length) }))}</span>
+        <i class="fa-solid fa-chevron-down"></i>
+    `;
+    details.appendChild(summary);
+
+    const list = document.createElement('div');
+    list.className = 'chat-sources-list';
+    filteredSources.forEach((source, idx) => {
+        const card = document.createElement('div');
+        card.className = 'chat-source-card';
+        const sourceIndex = source.index ?? idx + 1;
+        let titleHtml = `[${sourceIndex}] ${escapeHtml(source.title || t('chat_source_untitled'))}`;
+        if (source.context) {
+            titleHtml += ` <span class="source-context-path">${renderContextPath(source.context)}</span>`;
+        }
+        card.innerHTML = `
+            <strong>${titleHtml}</strong>
+            <p>${escapeHtml(source.excerpt || '')}</p>
+        `;
+        list.appendChild(card);
+    });
+    details.appendChild(list);
+    return details;
 }
 
 function renderAssistantContent(content) {
@@ -292,7 +311,7 @@ async function consumeSseResponse(response, outbound, userText) {
                     content: accumulated,
                     loading: true,
                     thinking: true,
-                    thinkingLabel: parsed.data.label || t('chat_thinking_reason'),
+                    thinkingLabel: t('chat_thinking_tool'),
                     sources: collectedSources,
                 });
             } else if (parsed.event === 'token') {
