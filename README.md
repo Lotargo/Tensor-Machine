@@ -28,18 +28,25 @@
 1. **Colocated Execution:** Управляющий слой (Control Plane) и векторная VM могут работать в едином адресном пространстве или быть изолированы в отдельном процессе через высокоскоростные регионы общей памяти (`mmap`).
 2. **Vector Relational VM:** Декларативный Lisp-подобный DSL транслируется компилятором в плоское промежуточное представление (IR байткод) и выполняется стековой VM над векторами Apache Arrow без копирования памяти.
 3. **Графическое ускорение:** Алгоритм позднего взаимодействия ColBERT MaxSim полностью перенесен на GPU с использованием оптимизированного тайлового WGSL-шейдера и разделяемой памяти рабочих групп.
+
 ### MCP Tooling Surface
-- `MCP_SEARCH_DEFAULT_TOP_K` вЂ” Р—РЅР°С‡РµРЅРёРµ `top-k` РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ РґР»СЏ MCP-РїРѕРёСЃРєР°.
-- `MCP_SEARCH_MAX_TOP_K` вЂ” Р’РµСЂС…РЅСЏСЏ РіСЂР°РЅРёС†Р° `top-k`; Р±РѕР»СЊС€РёРµ Р·РЅР°С‡РµРЅРёСЏ clamp-РёСЂСѓСЋС‚СЃСЏ РЅР° СЃС‚РѕСЂРѕРЅРµ СЃРµСЂРІРµСЂР°.
-- `MCP_SEARCH_MAX_RESPONSE_TOKENS` вЂ” РњСЏРіРєРёР№ Р»РёРјРёС‚ РЅР° СЂР°Р·РјРµСЂ РѕС‚РІРµС‚Р° `search`; С…РІРѕСЃС‚ РІС‹РґР°С‡Рё РѕС‚СЃРµРєР°РµС‚СЃСЏ Р±РµР· РѕС€РёР±РєРё.
-- `MCP_READ_DOCUMENT_MAX_TOKENS` вЂ” Р–РµСЃС‚РєРёР№ Р»РёРјРёС‚ РґР»СЏ `read_document`; РµСЃР»Рё РґРѕРєСѓРјРµРЅС‚ РїСЂРµРІС‹С€Р°РµС‚ РїРѕСЂРѕРі, РІРѕР·РІСЂР°С‰Р°РµС‚СЃСЏ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ.
-- `TOKENIZER_MODEL` вЂ” РњРѕРґРµР»СЊ С‚РѕРєРµРЅРёР·Р°С†РёРё РґР»СЏ РїРѕРґСЃС‡РµС‚Р° Р»РёРјРёС‚РѕРІ (`o200k_harmony` РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ).
-- `TENSOR_VM_SOCKET_PATH` вЂ” РџСѓС‚СЊ Рє IPC-СЃРѕРєРµС‚Сѓ VM; СѓР±РёСЂР°РµС‚ Р¶РµСЃС‚РєСѓСЋ РїСЂРёРІСЏР·РєСѓ Рє absolute path.
-- `search` РїРѕРґРґРµСЂР¶РёРІР°РµС‚ dynamic `alpha`-РІРµСЃ РґР»СЏ hybrid semantic/BM25 retrieval.
-- `read_document` РІРѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РїРѕР»РЅС‹Р№ С‚РµРєСЃС‚ РґРѕРєСѓРјРµРЅС‚Р° РїРѕ `doc_uuid` Рё Р·Р°С‰РёС‰Р°РµС‚ MCP-РєР°РЅР°Р» РѕС‚ С‡СЂРµР·РјРµСЂРЅРѕ Р±РѕР»СЊС€РёС… payload-РѕРІ.
+### MCP Tooling Surface
+
+| Variable | Description |
+|---|---|
+| `MCP_SEARCH_DEFAULT_TOP_K` | Default `top‑k` for MCP search. |
+| `MCP_SEARCH_MAX_TOP_K` | Upper bound for `top‑k`; clamped to default. |
+| `MCP_SEARCH_MAX_RESPONSE_TOKENS` | Maximum tokens in search response. |
+| `MCP_READ_DOCUMENT_MAX_TOKENS` | Maximum tokens when reading a document. |
+| `TOKENIZER_MODEL` | Tokenizer model for tokenization (`o200k_harmony`). |
+| `TENSOR_VM_SOCKET_PATH` | IPC socket path for the Tensor VM. |
+| `search` | Dynamic alpha‑blended hybrid semantic/BM25 retrieval. |
+| `read_document` | Retrieves a document by `doc_uuid` and returns its payload. |
 
 ### LM Studio MCP Example
-Р”Р»СЏ РїРѕРґРєР»СЋС‡РµРЅРёСЏ bridge-Р° РІ LM Studio РјРѕР¶РЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ СЃР»РµРґСѓСЋС‰РёР№ `mcpServers`-С„СЂР°РіРјРµРЅС‚. РџСѓС‚СЊ Рє `mcp-bridge.js` РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ Р°РґР°РїС‚РёСЂРѕРІР°РЅ РїРѕРґ РІР°С€Сѓ Р»РѕРєР°Р»СЊРЅСѓСЋ СЃС‚СЂСѓРєС‚СѓСЂСѓ РєР°С‚Р°Р»РѕРіРѕРІ:
+
+To integrate the MCP bridge with **LM Studio**, configure the `mcpServers` object as follows:
+
 ```json
 {
   "mcpServers": {
@@ -52,6 +59,8 @@
   }
 }
 ```
+
+This configuration tells LM Studio to launch the bridge via Node.js, allowing the editor to forward MCP requests to the Tensor Machine backend.
 
 </td>
 </tr>
