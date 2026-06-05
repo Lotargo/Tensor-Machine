@@ -72,6 +72,7 @@ pub async fn build_search_response(
     }
 
     let explicit_structured_lookup = is_explicit_structured_lookup(query);
+    let precise_lookup_phrase = crate::db::helpers::extract_precise_lookup_phrase(query);
     let original_details = details.clone();
     let original_ids: HashSet<usize> = original_details.iter().map(|detail| detail.id).collect();
     let mut seen_detail_ids: HashSet<usize> = original_ids.clone();
@@ -117,10 +118,15 @@ pub async fn build_search_response(
         let score = *score_map.get(&detail.id).unwrap_or(&0.0);
         let rank = *rank_map.get(&detail.id).unwrap_or(&usize::MAX);
 
+        let text = precise_lookup_phrase
+            .as_deref()
+            .and_then(|phrase| precise_match_excerpt(&detail.text, phrase))
+            .unwrap_or_else(|| detail.text.clone());
+
         let pc = ProcessedChunk {
             id: Some(detail.id),
             chunk_index: detail.chunk_index,
-            text: detail.text.clone(),
+            text,
             header_chain: detail.header_chain.clone(),
             score,
             rank,
@@ -306,6 +312,64 @@ fn is_explicit_structured_lookup(query: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
+fn precise_match_excerpt(text: &str, phrase: &str) -> Option<String> {
+    if phrase.trim().chars().count() < 3 {
+        return None;
+    }
+
+    let text_lower = text.to_lowercase();
+    let phrase_lower = phrase.to_lowercase();
+    let byte_pos = text_lower.find(&phrase_lower)?;
+
+    if let Some(paragraph) = paragraph_around_byte(text, byte_pos) {
+        if paragraph.chars().count() <= 1_500 {
+            return Some(paragraph);
+        }
+    }
+
+    Some(char_window_around_byte(text, byte_pos, 500))
+}
+
+fn paragraph_around_byte(text: &str, byte_pos: usize) -> Option<String> {
+    let before = &text[..byte_pos];
+    let after = &text[byte_pos..];
+    let start = before.rfind("\n\n").map(|idx| idx + 2).unwrap_or(0);
+    let end = after
+        .find("\n\n")
+        .map(|idx| byte_pos + idx)
+        .unwrap_or(text.len());
+    let paragraph = text[start..end].trim();
+    if paragraph.is_empty() {
+        None
+    } else {
+        Some(paragraph.to_string())
+    }
+}
+
+fn char_window_around_byte(text: &str, byte_pos: usize, radius: usize) -> String {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let center = chars
+        .iter()
+        .position(|(idx, _)| *idx >= byte_pos)
+        .unwrap_or(chars.len().saturating_sub(1));
+    let start_char = center.saturating_sub(radius);
+    let end_char = (center + radius).min(chars.len());
+
+    let start_byte = chars.get(start_char).map(|(idx, _)| *idx).unwrap_or(0);
+    let end_byte = chars
+        .get(end_char)
+        .map(|(idx, _)| *idx)
+        .unwrap_or(text.len());
+    let excerpt = text[start_byte..end_byte].trim();
+
+    match (start_byte > 0, end_byte < text.len()) {
+        (true, true) => format!("...{}...", excerpt),
+        (true, false) => format!("...{}", excerpt),
+        (false, true) => format!("{}...", excerpt),
+        (false, false) => excerpt.to_string(),
+    }
+}
+
 fn trim_overlap(prev: &str, curr: &str) -> String {
     let prev_chars: Vec<char> = prev.chars().collect();
     let curr_chars: Vec<char> = curr.chars().collect();
@@ -348,6 +412,16 @@ mod tests {
         let curr = "abc And this is a new sentence.";
         let result = trim_overlap(prev, curr);
         assert_eq!(result, curr.to_string());
+    }
+
+    #[test]
+    fn test_precise_match_excerpt_returns_matching_paragraph() {
+        let text = "Intro paragraph.\n\nThe important line is here with Alice.\nStill same paragraph.\n\nTail.";
+        let excerpt = precise_match_excerpt(text, "important line").unwrap();
+        assert_eq!(
+            excerpt,
+            "The important line is here with Alice.\nStill same paragraph."
+        );
     }
 
     #[tokio::test]

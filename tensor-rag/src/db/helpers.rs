@@ -23,6 +23,73 @@ pub fn tokenize_lexical_query(query: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn extract_precise_lookup_phrase(query: &str) -> Option<String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(trimmed) {
+        return Some(quoted);
+    }
+
+    let lower = trimmed.to_lowercase();
+    let markers = [
+        "exact phrase",
+        "exact string",
+        "find phrase",
+        "find string",
+        "find line",
+        "quote",
+        "цитата",
+        "цитату",
+        "фраза",
+        "фразу",
+        "строка",
+        "строку",
+        "найди строку",
+        "найди фразу",
+        "найти строку",
+        "найти фразу",
+    ];
+
+    for marker in markers {
+        if let Some(pos) = lower.find(marker) {
+            let after = trimmed[pos + marker.len()..]
+                .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, ':' | '-' | '—'))
+                .trim();
+            if after.chars().count() >= 3 {
+                return Some(after.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+pub fn precise_or_query_phrase(query: &str) -> String {
+    extract_precise_lookup_phrase(query).unwrap_or_else(|| query.trim().to_string())
+}
+
+fn extract_quoted_phrase(query: &str) -> Option<String> {
+    let pairs = [('"', '"'), ('\'', '\''), ('«', '»'), ('“', '”'), ('„', '“')];
+    for (open, close) in pairs {
+        let Some(start) = query.find(open) else {
+            continue;
+        };
+        let after_start = start + open.len_utf8();
+        let Some(relative_end) = query[after_start..].find(close) else {
+            continue;
+        };
+        let end = after_start + relative_end;
+        let candidate = query[after_start..end].trim();
+        if candidate.chars().count() >= 3 {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
 pub fn structured_heading_like_patterns(query: &str) -> Vec<String> {
     structured_heading_terms(query)
         .into_iter()
@@ -144,6 +211,26 @@ mod tests {
         assert_eq!(
             extract_chapter_id("show Chapter five"),
             Some("5".to_string())
+        );
+    }
+
+    #[test]
+    fn precise_lookup_extracts_quoted_phrase() {
+        assert_eq!(
+            extract_precise_lookup_phrase("find line \"Alice met the Rabbit\""),
+            Some("Alice met the Rabbit".to_string())
+        );
+        assert_eq!(
+            extract_precise_lookup_phrase("найди строку «Алиса увидела кролика»"),
+            Some("Алиса увидела кролика".to_string())
+        );
+    }
+
+    #[test]
+    fn precise_lookup_extracts_marker_tail() {
+        assert_eq!(
+            extract_precise_lookup_phrase("exact phrase: Alice met the Rabbit"),
+            Some("Alice met the Rabbit".to_string())
         );
     }
 }

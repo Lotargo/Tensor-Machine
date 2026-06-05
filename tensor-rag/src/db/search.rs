@@ -1,8 +1,8 @@
 use super::DbPools;
 use super::helpers::{
     build_tsquery_or, escape_like_pattern, extract_chapter_id, json_array_to_strings,
-    push_header_chain_match, structured_heading_like_patterns, structured_heading_terms,
-    tokenize_lexical_query,
+    precise_or_query_phrase, push_header_chain_match, structured_heading_like_patterns,
+    structured_heading_terms, tokenize_lexical_query,
 };
 use super::types::ChunkDetail;
 use qdrant_client::qdrant::{
@@ -223,8 +223,8 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
         let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
         let lexical_terms = tokenize_lexical_query(query);
         let tsquery_or = build_tsquery_or(&lexical_terms);
-        let phrase_query = query.trim();
-        let phrase_pattern = format!("%{}%", escape_like_pattern(phrase_query));
+        let phrase_query = precise_or_query_phrase(query);
+        let phrase_pattern = format!("%{}%", escape_like_pattern(&phrase_query));
 
         let rows = if !tsquery_or.is_empty() || !phrase_query.is_empty() {
             sqlx::query(
@@ -250,7 +250,7 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
                 "#,
             )
             .bind(&ids_i64[..])
-            .bind(phrase_query)
+            .bind(&phrase_query)
             .bind(&phrase_pattern)
             .bind(&tsquery_or)
             .fetch_all(pool)
@@ -296,14 +296,14 @@ pub async fn search_keyword_candidate_ids(
         return Vec::new();
     };
 
-    let phrase_query = query.trim();
+    let phrase_query = precise_or_query_phrase(query);
     let lexical_terms = tokenize_lexical_query(query);
     let tsquery_or = build_tsquery_or(&lexical_terms);
     if phrase_query.is_empty() && tsquery_or.is_empty() {
         return Vec::new();
     }
 
-    let phrase_pattern = format!("%{}%", escape_like_pattern(phrase_query));
+    let phrase_pattern = format!("%{}%", escape_like_pattern(&phrase_query));
     let mut builder = QueryBuilder::<Postgres>::new(
         r#"
         SELECT id
@@ -324,7 +324,7 @@ pub async fn search_keyword_candidate_ids(
         .push_bind(&phrase_pattern)
         .push(") ESCAPE '\\'")
         .push(" OR to_tsvector('simple', text) @@ websearch_to_tsquery('simple', ")
-        .push_bind(phrase_query)
+        .push_bind(&phrase_query)
         .push(")")
         .push(" OR to_tsvector('simple', text) @@ to_tsquery('simple', ")
         .push_bind(&tsquery_or)
@@ -341,11 +341,11 @@ pub async fn search_keyword_candidate_ids(
                 + CASE
                     WHEN "#,
         )
-        .push_bind(phrase_query)
+        .push_bind(&phrase_query)
         .push(
             r#" <> '' THEN ts_rank_cd(to_tsvector('simple', text), websearch_to_tsquery('simple', "#,
         )
-        .push_bind(phrase_query)
+        .push_bind(&phrase_query)
         .push(
             r#")) ELSE 0.0 END
                 + CASE

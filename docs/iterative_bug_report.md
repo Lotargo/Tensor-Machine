@@ -181,6 +181,8 @@ Follow-up work:
   - `fixed` Search responses now expand explicit chapter/heading hits into their macro-level span before response assembly, instead of returning only the individual matched chunks.
   - Remaining: validate full chapter/section reconstruction against large real OCR markdown documents and tune span size if macro chunks are too broad or too narrow.
 - Add precise lookup for a specific line/string and paragraph within headings/sections.
+  - `fixed` Added quoted/line/phrase target extraction for PostgreSQL exact matching, so commands like `find line "..."` or `найди строку «...»` search the target text instead of the whole user instruction.
+  - `fixed` Search responses for precise line/phrase lookup now return the matching paragraph or a small local excerpt instead of the full chunk.
 - Extend and test search methods so exact chapter/heading/paragraph retrieval can use PostgreSQL lexical/structured queries instead of relying on noisy dense vector search.
 
 ---
