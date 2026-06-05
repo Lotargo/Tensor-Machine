@@ -162,7 +162,13 @@ Tensor Machine решает эту проблему через плоскую с
 
 - **`tensor-rag/src/`** — Основное дерево исходного кода движка:
   - [`lib.rs`](./tensor-rag/src/lib.rs) — Точка входа в библиотеку, интеграционные тесты.
-  - [`mcp.rs`](./tensor-rag/src/mcp.rs) — Сервер MCP, управление сессиями и инструментами.
+  - [`mcp/`](./tensor-rag/src/mcp/) — Модульный набор файлов MCP:
+    - [`executor.rs`](./tensor-rag/src/mcp/executor.rs) — Логика выполнения запросов и планов.
+    - [`server.rs`](./tensor-rag/src/mcp/server.rs) — Основной сервер MCP, обработка входящих соединений.
+    - [`ipc.rs`](./tensor-rag/src/mcp/ipc.rs) — Поддержка IPC‑режима для изоляции VM.
+    - [`types.rs`](./tensor-rag/src/mcp/types.rs) — Определения типовых структур и сообщений.
+    - [`tools/`](./tensor-rag/src/mcp/tools/) — Вспомогательные утилиты MCP.
+    - [`mod.rs`](./tensor-rag/src/mcp/mod.rs) — Модульный файл экспорта.
   - [`ir.rs`](./tensor-rag/src/ir.rs) — Представление IR, компилятор-планировщик, опкоды VM.
   - [`vm.rs`](./tensor-rag/src/vm.rs) — Стек-ориентированная VM, выполнение инструкций.
   - [`dsl.rs`](./tensor-rag/src/dsl.rs) — Лексический разбор и валидация S-выражений.
