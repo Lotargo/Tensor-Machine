@@ -602,7 +602,54 @@ Follow-up work:
 
 ---
 
-### 17. Parser/reader engine replacement discussion is deferred
+### 17. ColBERT SIMD path not exposed as a named, benchmarkable path
+
+Status: `open`
+
+Symptoms:
+- CPU fallback for ColBERT MaxSim uses a naive triple loop (`O(Q·D·dim)`), which is extremely slow.
+- GPU implementation suffers from padding waste (all docs padded to max length) and suboptimal parallelism (1 thread per doc).
+- Query token count is hardcoded to 10.
+- The existing ndarray `dot()` path is already SIMD-accelerated via BLAS but is not extracted as a standalone named function that can be benchmarked or compared against the GPU path.
+
+Impact:
+- ColBERT late interaction is effectively unusable on CPU for any real document set.
+- No way to verify GPU results against a known-correct CPU reference.
+- No benchmark harness to compare GPU naive vs GPU tiled vs CPU SIMD.
+
+Follow-up work:
+- Extract CPU ndarray-based ColBERT logic into a named `colbert_maxsim_simd()` function.
+- Add `BackendSelector::Simd` variant to the existing CPU/GPU switch.
+- Add criterion benchmark (`benches/colbert.rs`) with sparse/medium/dense/mixed scenarios.
+- Compare GPU naive vs GPU tiled vs CPU SIMD for correctness and throughput.
+
+---
+
+### 18. External backends use synthetic stubs instead of real calls
+
+Status: `open`
+
+Symptoms:
+- `get_embedding()` always returns `Array1::from_elem(768, 0.1)` regardless of ML server configuration.
+- Arrow Flight service (`flight.rs`) has all 10 `FlightService` methods returning `Status::unimplemented` — zero working implementation.
+- Without real embeddings or Arrow Flight, horizontal scaling (tasks 4.3.1–4.3.4) is impossible.
+- Observability (tasks 4.4.1–4.4.4) is not started: code uses `println!` instead of structured tracing, no `/metrics` or `/health` endpoints expose real data, circuit breakers exist but are not instrumented.
+
+Impact:
+- Embedding always returns a constant dummy vector regardless of input text — any ML-server-dependent flow gives meaningless results.
+- Arrow Flight distributed data exchange cannot be tested or used.
+- No way to monitor system health or performance in production-like conditions.
+
+Follow-up work:
+- Replace synthetic embedding with real HTTP/gRPC call to configured ML server (OpenAI-compatible `/v1/embeddings` REST API).
+- Implement Arrow Flight `do_put` / `do_get` / `do_exchange` with `RecordBatch` registry.
+- Replace `println!` with `tracing` structured JSON logs.
+- Implement `/health`, `/ready`, and `/metrics` HTTP endpoints.
+- Expose circuit breaker states as Prometheus gauges.
+
+---
+
+### 19. Parser/reader engine replacement discussion is deferred
 
 Status: `deferred`
 
