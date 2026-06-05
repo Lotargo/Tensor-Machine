@@ -470,7 +470,7 @@ Follow-up work:
 
 ### 12. Word forms are not normalized properly
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Inflected forms and endings remain fragmented.
@@ -481,7 +481,8 @@ Impact:
 - Search and graph links fragment across grammatical forms.
 
 Follow-up work:
-- Introduce proper library-backed stemming / lemmatization in the hot path.
+- `fixed` Introduced library-backed hot-path stemming for Russian and English with `rust-stemmers`.
+- `fixed` Entity retrieval boosting now compares stemmed entity keys instead of only raw lowercase labels.
 - Do not rely on hand-written suffix lists as the long-term solution.
 - Add cold canonicalization to merge inflected forms and aliases using local ML or LLM-backed enrichment.
 - Store canonical entity IDs/keys separately from display labels and raw mentions.

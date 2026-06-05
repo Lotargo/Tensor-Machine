@@ -3102,6 +3102,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-stemmers"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e46a2036019fdb888131db7a4c847a1063a7493f971ed94ea82c67eada63ca54"
+dependencies = [
+ "serde",
+ "serde_derive",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3811,6 +3821,7 @@ dependencies = [
  "qdrant-client",
  "regex",
  "reqwest 0.13.4",
+ "rust-stemmers",
  "serde",
  "serde_json",
  "sqlx",

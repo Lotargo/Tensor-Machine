@@ -1,10 +1,13 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
+use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::{HashMap, HashSet};
 
 static HYPHEN_JOIN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\p{L})-\s*\n\s*(\p{L})").unwrap());
 static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
 static TOKEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[\p{L}\d]+").unwrap());
+static ENGLISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::English));
+static RUSSIAN_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Russian));
 
 static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -117,7 +120,7 @@ pub fn is_stopword(input: &str) -> bool {
 pub fn stem_phrase(input: &str) -> String {
     tokens(input)
         .into_iter()
-        .map(|token| light_stem(&token))
+        .map(|token| stem_token(&token))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -125,7 +128,7 @@ pub fn stem_phrase(input: &str) -> String {
 pub fn top_terms(input: &str, limit: usize) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for token in tokens(input) {
-        *counts.entry(light_stem(&token)).or_insert(0) += 1;
+        *counts.entry(stem_token(&token)).or_insert(0) += 1;
     }
     let mut terms: Vec<_> = counts.into_iter().collect();
     terms.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -133,8 +136,14 @@ pub fn top_terms(input: &str, limit: usize) -> Vec<(String, usize)> {
     terms
 }
 
-fn light_stem(token: &str) -> String {
+fn stem_token(token: &str) -> String {
     let lower = token.to_lowercase();
+    if lower.chars().any(is_cyrillic) {
+        return RUSSIAN_STEMMER.stem(&lower).into_owned();
+    }
+    if lower.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return ENGLISH_STEMMER.stem(&lower).into_owned();
+    }
     let suffixes = [
         "иями", "ями", "ами", "ого", "ему", "ыми", "ими", "ing", "tion", "ions", "ed", "es", "s",
         "ый", "ий", "ая", "ое", "ые", "ов", "ев", "ам", "ям", "ах", "ях", "ом", "ем",
@@ -147,9 +156,26 @@ fn light_stem(token: &str) -> String {
     lower
 }
 
+fn is_cyrillic(ch: char) -> bool {
+    ('\u{0400}'..='\u{04ff}').contains(&ch)
+        || ('\u{0500}'..='\u{052f}').contains(&ch)
+        || ('\u{2de0}'..='\u{2dff}').contains(&ch)
+        || ('\u{a640}'..='\u{a69f}').contains(&ch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stems_russian_word_forms_with_library_stemmer() {
+        assert_eq!(stem_phrase("кошками кошке кошка"), "кошк кошк кошк");
+    }
+
+    #[test]
+    fn stems_english_word_forms_with_library_stemmer() {
+        assert_eq!(stem_phrase("running runs runner"), "run run runner");
+    }
 
     #[test]
     fn joins_hyphenated_line_breaks() {

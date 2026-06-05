@@ -1696,7 +1696,14 @@ impl DbPools {
         let Ok(rows) = rows else {
             return vec![0.0; ids.len()];
         };
-        let wanted: Vec<String> = query_entities.iter().map(|s| s.to_lowercase()).collect();
+        let wanted: Vec<String> = query_entities
+            .iter()
+            .map(|s| crate::normalizer::stem_phrase(s))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if wanted.is_empty() {
+            return vec![0.0; ids.len()];
+        }
         let mut map = std::collections::HashMap::new();
         for row in rows {
             let id: i64 = row.try_get("id").unwrap_or(-1);
@@ -1705,10 +1712,13 @@ impl DbPools {
             let hits = entities
                 .iter()
                 .filter(|entity| {
-                    wanted.iter().any(|wanted| {
-                        entity.to_lowercase().contains(wanted)
-                            || wanted.contains(&entity.to_lowercase())
-                    })
+                    let entity_key = crate::normalizer::stem_phrase(entity);
+                    if entity_key.is_empty() {
+                        return false;
+                    }
+                    wanted
+                        .iter()
+                        .any(|wanted| entity_key.contains(wanted) || wanted.contains(&entity_key))
                 })
                 .count();
             map.insert(id, hits as f32 / wanted.len().max(1) as f32);
@@ -1731,7 +1741,14 @@ impl DbPools {
         let Some(pool) = &self.postgres else {
             return Vec::new();
         };
-        let wanted: Vec<String> = query_entities.iter().map(|s| s.to_lowercase()).collect();
+        let wanted: Vec<String> = query_entities
+            .iter()
+            .map(|s| crate::normalizer::stem_phrase(s))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
         let rows = if let Some(uuid) = doc_uuid {
             sqlx::query("SELECT id, COALESCE(entities, '[]'::jsonb) as entities FROM documents WHERE doc_uuid = $1 AND jsonb_array_length(COALESCE(entities, '[]'::jsonb)) > 0 LIMIT $2")
                 .bind(uuid)
@@ -1756,10 +1773,13 @@ impl DbPools {
             let hits = entities
                 .iter()
                 .filter(|entity| {
-                    wanted.iter().any(|wanted| {
-                        entity.to_lowercase().contains(wanted)
-                            || wanted.contains(&entity.to_lowercase())
-                    })
+                    let entity_key = crate::normalizer::stem_phrase(entity);
+                    if entity_key.is_empty() {
+                        return false;
+                    }
+                    wanted
+                        .iter()
+                        .any(|wanted| entity_key.contains(wanted) || wanted.contains(&entity_key))
                 })
                 .count();
             if hits >= 2 || hits == wanted.len() {
