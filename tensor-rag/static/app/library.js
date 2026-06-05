@@ -12,6 +12,7 @@ import {
 let graphAnimationId = null;
 let activeDocumentRequestId = 0;
 const ENTITY_RENDER_LIMIT = 200;
+const DISPLAY_LEVEL_ORDER = ['macro', 'medium', 'micro'];
 
 export function initLibrary() {
     document.getElementById('library-search').addEventListener('input', (event) => filterLibrary(event.target.value));
@@ -186,10 +187,52 @@ export async function selectDocument(docUuid) {
 function hydrateDocumentFromDetails(doc, details) {
     const chunks = Array.isArray(details?.chunks) ? [...details.chunks] : [];
     chunks.sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0));
-    doc.text = chunks.map((chunk) => chunk.text || '').join('\n\n');
+    doc.text = buildDocumentDisplayText(chunks);
     doc.chunk_count = chunks.length;
     doc.char_count = doc.text.length;
     doc.approx_tokens = Math.round(doc.char_count / 4);
+}
+
+function buildDocumentDisplayText(chunks) {
+    if (!Array.isArray(chunks) || chunks.length === 0) return '';
+
+    const displayLevel = DISPLAY_LEVEL_ORDER.find((level) =>
+        chunks.some((chunk) => (chunk.chunk_level || '').toLowerCase() === level)
+    );
+    const displayChunks = (displayLevel
+        ? chunks.filter((chunk) => (chunk.chunk_level || '').toLowerCase() === displayLevel)
+        : chunks
+    ).sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0));
+
+    return joinDisplayChunks(displayChunks);
+}
+
+function joinDisplayChunks(chunks) {
+    const parts = [];
+    for (const chunk of chunks) {
+        const text = (chunk.text || '').trim();
+        if (!text) continue;
+
+        if (parts.length === 0) {
+            parts.push(text);
+            continue;
+        }
+
+        const previous = parts[parts.length - 1];
+        parts.push(trimDisplayOverlap(previous, text));
+    }
+
+    return parts.filter(Boolean).join('\n\n');
+}
+
+function trimDisplayOverlap(previous, current) {
+    const maxOverlap = Math.min(previous.length, current.length, 6000);
+    for (let length = maxOverlap; length >= 80; length -= 1) {
+        if (previous.endsWith(current.slice(0, length))) {
+            return current.slice(length).trimStart();
+        }
+    }
+    return current;
 }
 
 function updateViewerMeta(doc) {

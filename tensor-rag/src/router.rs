@@ -1284,8 +1284,22 @@ async fn handle_list_documents(
             MIN(id) AS id,
             MAX(filename) AS filename,
             COUNT(*) AS chunk_count,
-            SUM(char_length(text)) AS char_count,
-            COALESCE((ARRAY_AGG(text ORDER BY chunk_index ASC))[1], '') AS preview_text,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE chunk_level = 'macro') > 0
+                    THEN COALESCE(SUM(char_length(text)) FILTER (WHERE chunk_level = 'macro'), 0)
+                WHEN COUNT(*) FILTER (WHERE chunk_level = 'medium') > 0
+                    THEN COALESCE(SUM(char_length(text)) FILTER (WHERE chunk_level = 'medium'), 0)
+                WHEN COUNT(*) FILTER (WHERE chunk_level = 'micro') > 0
+                    THEN COALESCE(SUM(char_length(text)) FILTER (WHERE chunk_level = 'micro'), 0)
+                ELSE COALESCE(SUM(char_length(text)), 0)
+            END AS char_count,
+            COALESCE(
+                (ARRAY_AGG(text ORDER BY chunk_index ASC) FILTER (WHERE chunk_level = 'macro'))[1],
+                (ARRAY_AGG(text ORDER BY chunk_index ASC) FILTER (WHERE chunk_level = 'medium'))[1],
+                (ARRAY_AGG(text ORDER BY chunk_index ASC) FILTER (WHERE chunk_level = 'micro'))[1],
+                (ARRAY_AGG(text ORDER BY chunk_index ASC))[1],
+                ''
+            ) AS preview_text,
             MAX(id) AS last_id
         FROM documents
         GROUP BY doc_uuid

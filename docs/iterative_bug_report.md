@@ -176,7 +176,7 @@ Follow-up work:
 
 ### 5. Document structure is not preserved correctly in the viewer
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Document text appears as an unstructured plain text dump.
@@ -189,9 +189,12 @@ Impact:
 - Hierarchy and TOC become unreliable.
 - RAG debugging becomes harder.
 
+Completed in this area:
+- Viewer text reconstruction no longer concatenates every hierarchy level (`macro` + `medium` + `micro`) into one repeated plain-text dump.
+- `/documents` list metadata now uses the largest available display level for preview and character count while preserving the full indexed chunk count.
+
 Follow-up work:
-- Trace where OCR markdown is flattened.
-- Preserve heading order and structure into renderable document views.
+- Validate heading/order rendering against a large real OCR markdown document.
 - Add a real TOC path instead of relying on context hints.
 
 ---
