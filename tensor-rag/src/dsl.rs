@@ -288,7 +288,10 @@ fn parse_inner_node(val: &Value) -> Result<AstNode, String> {
 fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
     let mut query = String::new();
     let mut filters: Option<Vec<Filter>> = None;
-    let mut rerank_strategy = RerankStrategy::SemanticOnly;
+    let mut rerank_strategy = RerankStrategy::Hybrid {
+        semantic_weight: 0.7,
+        bm25_weight: 0.3,
+    };
     let mut final_top_k = 10;
     let mut doc_uuid: Option<String> = None;
     let mut alpha: Option<f32> = None;

@@ -233,7 +233,7 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
                     id,
                     (
                         CASE
-                            WHEN $2 <> '' AND lower(text) LIKE lower($3) ESCAPE '\' THEN 5.0
+                            WHEN $2 <> '' AND lower(text) LIKE lower($3) ESCAPE '\' THEN 10.0
                             ELSE 0.0
                         END
                         + CASE

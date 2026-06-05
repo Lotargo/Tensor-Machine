@@ -160,13 +160,17 @@ Current status:
 
 Remaining hypotheses:
 - BM25 / dense / entity fusion is still poorly calibrated.
-- Dense-first retrieval may still hide some exact matches before rerank/fusion does its job.
-- The current response builder is cleaner now, but still may pass more text than needed for targeted QA.
+- `deferred` The current response builder could pass less text for targeted QA (~2-3k tokens observed), but reducing context flooding risks retrieval regressions. Deferred — revisit after knowledge graph integration when context shaping becomes more relevant.
 - Qdrant/dense retrieval is not suitable as the only mechanism for precise chapter, heading, line, or paragraph lookup; PostgreSQL-backed lexical/structured search should be expanded for exact navigation and extraction tasks.
 
 Follow-up work:
-- Re-check exact-match retrieval path.
-- Validate exact-match behavior against known failing examples.
+- `fixed` Re-check exact-match retrieval path — root cause identified: default `RerankStrategy::SemanticOnly` skipped BM25/exact-match scoring entirely.
+  - `fixed` Changed default strategy from `SemanticOnly` to `Hybrid { semantic_weight: 0.7, bm25_weight: 0.3 }` in `ir.rs` and `dsl.rs`.
+  - `fixed` Increased exact-match boost in `fetch_bm25_scores()` from 5.0 to 10.0.
+- `fixed` Validate exact-match behavior against known failing examples.
+  - Document: `Утро_ч.1_в.1.docx` (~190k tokens, single mention of `Лиза`).
+  - Query 1: `расскажи что упоминалось про Лизу` → retrieved correct chunk, identified Лиза as Arseniy's mother.
+  - Query 2: `как звали мать Арсения?` → correct exact answer with citation, fresh context.
 - Revisit RSF / BM25 weighting and exact-match boosts.
 - `in_progress` Add chapter/heading search that can locate a chapter or heading and retrieve its full text span.
   - `fixed` Added structured candidate lookup for `chapter_id` and `header_chain` so navigation queries are not dense-only.
@@ -672,7 +676,7 @@ Notes:
 - Continue retrieval correctness work:
   - validate exact match behavior
   - tune fusion / rerank weights
-  - reduce remaining context flooding where needed
+  - `deferred` reduce remaining context flooding where needed — revisit after knowledge graph integration
 
 ### Phase 3
 - Restore document structure:

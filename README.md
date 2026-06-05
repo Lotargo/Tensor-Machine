@@ -433,7 +433,7 @@ cargo bench --bench zero_copy  # Arrow vs Tensor1D
 
 ## License
 
-**GPLv3** — see `LICENSE` for details.
+**GPLv3** — see [LICENSE](./LICENSE) for details.
 
 </td>
 </tr>

@@ -82,7 +82,10 @@ pub enum RerankStrategy {
 
 impl Default for RerankStrategy {
     fn default() -> Self {
-        RerankStrategy::SemanticOnly
+        RerankStrategy::Hybrid {
+            semantic_weight: 0.7,
+            bm25_weight: 0.3,
+        }
     }
 }
 
@@ -659,7 +662,13 @@ mod tests {
         let request: QueryRequest = serde_json::from_str(request_json).unwrap();
         assert_eq!(request.query, "minimal query");
         assert_eq!(request.filters, None);
-        assert_eq!(request.rerank_strategy, RerankStrategy::SemanticOnly);
+        assert_eq!(
+            request.rerank_strategy,
+            RerankStrategy::Hybrid {
+                semantic_weight: 0.7,
+                bm25_weight: 0.3
+            }
+        );
         assert_eq!(request.final_top_k, 5);
         assert_eq!(request.doc_uuid, None);
         assert_eq!(request.alpha, None);
