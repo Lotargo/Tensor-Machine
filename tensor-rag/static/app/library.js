@@ -169,6 +169,7 @@ export async function selectDocument(docUuid) {
         if (requestId !== activeDocumentRequestId || state.selectedDocUuid !== docUuid) {
             return;
         }
+        details.render_revision = requestId;
         state.selectedDocDetails = details;
         hydrateDocumentFromDetails(doc, details);
     } catch (error) {
@@ -191,6 +192,7 @@ function hydrateDocumentFromDetails(doc, details) {
     doc.chunk_count = chunks.length;
     doc.char_count = doc.text.length;
     doc.approx_tokens = Math.round(doc.char_count / 4);
+    doc.view_revision = (doc.view_revision || 0) + 1;
 }
 
 function buildDocumentDisplayText(chunks) {
@@ -555,12 +557,11 @@ export function switchTab(tabName) {
         }
     });
 
-    // Show/Hide tab content elements
     const tabs = ['content', 'hierarchy', 'entities', 'graph'];
     tabs.forEach(t => {
         const contentEl = document.getElementById(`tab-content-${t}`);
         if (contentEl) {
-            contentEl.style.display = t === tabName ? 'block' : 'none';
+            contentEl.style.display = t === tabName ? 'flex' : 'none';
         }
     });
 
@@ -574,7 +575,12 @@ export function renderActiveTab() {
     if (activeTab === 'content') {
         const doc = state.documentList.find((item) => item.doc_uuid === state.selectedDocUuid);
         if (doc) {
-            renderMarkdownInto(document.getElementById('rendered-content'), doc.text);
+            const container = document.getElementById('rendered-content');
+            const renderKey = `${doc.doc_uuid}:${doc.view_revision || 0}:${doc.text.length}`;
+            if (container.dataset.renderKey !== renderKey) {
+                renderMarkdownInto(container, doc.text);
+                container.dataset.renderKey = renderKey;
+            }
         }
         return;
     }
@@ -582,12 +588,29 @@ export function renderActiveTab() {
     if (!details) {
         return;
     } else if (activeTab === 'hierarchy') {
-        renderHierarchyTree(document.getElementById('hierarchy-tree-container'), details.chunks);
+        const container = document.getElementById('hierarchy-tree-container');
+        const renderKey = getDetailsRenderKey(details);
+        if (container.dataset.renderKey !== renderKey) {
+            renderHierarchyTree(container, details.chunks);
+            container.dataset.renderKey = renderKey;
+        }
     } else if (activeTab === 'entities') {
-        renderEntities(document.getElementById('entities-tags-container'), details.chunks);
+        const container = document.getElementById('entities-tags-container');
+        const renderKey = getDetailsRenderKey(details);
+        if (container.dataset.renderKey !== renderKey) {
+            renderEntities(container, details.chunks);
+            container.dataset.renderKey = renderKey;
+        }
     } else if (activeTab === 'graph') {
         renderDocumentGraph(null, state.selectedDocUuid);
     }
+}
+
+function getDetailsRenderKey(details) {
+    const chunks = Array.isArray(details?.chunks) ? details.chunks : [];
+    const first = chunks[0]?.id ?? chunks[0]?.chunk_index ?? '';
+    const last = chunks[chunks.length - 1]?.id ?? chunks[chunks.length - 1]?.chunk_index ?? '';
+    return `${details?.doc_uuid || state.selectedDocUuid || ''}:${details?.render_revision || 0}:${chunks.length}:${first}:${last}`;
 }
 
 // Tree builder

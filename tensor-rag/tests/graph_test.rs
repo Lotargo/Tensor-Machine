@@ -3,10 +3,19 @@ use std::env;
 
 #[tokio::test]
 async fn test_graph_operations() {
-    // 1. Initialize environment and DB pool
+    // 1. Initialize environment and DB pool.
+    // This test mutates graph/document tables, so it must never use the normal
+    // application DATABASE_URL.
     dotenvy::dotenv().ok();
-    let database_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/tensor_rag".to_string());
+    let database_url = match env::var("TENSOR_RAG_TEST_DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            eprintln!(
+                "Skipping graph integration test: set TENSOR_RAG_TEST_DATABASE_URL to a disposable PostgreSQL database to run it."
+            );
+            return;
+        }
+    };
 
     let mut db_pools = tensor_rag::db::DbPools::new();
     db_pools
@@ -18,7 +27,7 @@ async fn test_graph_operations() {
         .as_ref()
         .expect("Postgres pool not loaded");
 
-    // 2. Clean up tables
+    // 2. Clean up disposable test tables
     sqlx::query("DELETE FROM edges")
         .execute(pool)
         .await

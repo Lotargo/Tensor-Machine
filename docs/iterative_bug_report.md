@@ -30,6 +30,32 @@ The goal is to fix the system iteratively instead of attempting a full rewrite i
 
 ---
 
+## Positive validation notes
+
+- `validated` Retrieval and answer quality showed a strong positive result on `Alice_in_Wonderland_Zakhoder.docx`.
+  - The source DOCX is unusual: it contains embedded HTML markup, and after Mistral OCR the output became Markdown while the internal HTML-like structure still remained.
+  - Query: `кому хозяин велел лезть в трубу?`
+    - The assistant correctly answered that Bill was ordered to climb into the chimney/pipe, and connected it to the White Rabbit house scene.
+  - Query: `кто сказал слова "НИ РАЖУ" ?`
+    - The assistant correctly identified the King and provided the relevant courtroom/pun context.
+  - The answers were manually verified against the retrieved content shown in chat.
+
+This does not close retrieval quality work, but it is an important positive signal: the current retrieval pipeline can handle some targeted literary QA correctly even on a document with messy DOCX/HTML/Markdown structure.
+
+---
+
+## Validation dataset
+
+- Local regression / manual validation documents are stored in `F:\doc_for_tests`.
+- The folder contains a small document pack covering multiple scenarios:
+  - small documents
+  - large documents
+  - OCR-heavy documents
+  - mixed formatting cases
+- Use this folder for future ingestion, retrieval, viewer, chapter/heading search, and UI regression checks before treating related fixes as verified.
+
+---
+
 ## Already fixed
 
 ### Ingestion / backend
@@ -52,6 +78,8 @@ The goal is to fix the system iteratively instead of attempting a full rewrite i
 - `fixed` Batched Qdrant upserts for chunk and anchor embeddings during ingestion, and made Qdrant upsert waiting configurable via `QDRANT_UPSERT_WAIT`.
 
 - `fixed` Replaced the `/documents` raw chunk listing with grouped document metadata so UI chunk counts are no longer truncated by the old `LIMIT 1000` path.
+
+- `fixed` Prevented the graph integration test from using the normal application `DATABASE_URL`; it previously deleted real documents and left `doc-a`...`doc-d` mock rows in the live library.
 
 - `fixed` Removed legacy retrieval response artifacts:
   - synthetic summary injection
@@ -78,6 +106,7 @@ Symptoms:
 - GPU utilization rises during batch execution but drops hard between batches.
 - The pipeline is not keeping the embedding server saturated.
 - Large documents still take too long to index.
+- After switching PostgreSQL writes inside each batch to multi-row inserts, a real document ingest still shows roughly a 2 second gap between embedding batches.
 
 Confirmed causes:
 - Embeddings were originally sent one chunk at a time.
@@ -89,6 +118,7 @@ Completed in this area:
 - Anchor embeddings are now batched too.
 - Qdrant upserts for chunks and anchors are batched per embedding batch.
 - Qdrant upsert waiting is configurable with `QDRANT_UPSERT_WAIT` and defaults to non-blocking writes.
+- PostgreSQL chunk writes inside each embedding batch now use a single multi-row `INSERT ... RETURNING id` instead of one sequential insert per chunk.
 
 Follow-up work:
 - Validate ingestion throughput against a large real document with Qdrant enabled.
@@ -99,6 +129,7 @@ Follow-up work:
 
 Notes:
 - `EMBEDDING_BATCH_SIZE` was introduced, but this is only the first step.
+- The remaining inter-batch delay needs a dedicated profiling pass; do not assume PostgreSQL row-by-row inserts were the only cause.
 
 ---
 
@@ -124,11 +155,15 @@ Remaining hypotheses:
 - BM25 / dense / entity fusion is still poorly calibrated.
 - Dense-first retrieval may still hide some exact matches before rerank/fusion does its job.
 - The current response builder is cleaner now, but still may pass more text than needed for targeted QA.
+- Qdrant/dense retrieval is not suitable as the only mechanism for precise chapter, heading, line, or paragraph lookup; PostgreSQL-backed lexical/structured search should be expanded for exact navigation and extraction tasks.
 
 Follow-up work:
 - Re-check exact-match retrieval path.
 - Validate exact-match behavior against known failing examples.
 - Revisit RSF / BM25 weighting and exact-match boosts.
+- Add chapter/heading search that can locate a chapter or heading and retrieve its full text span.
+- Add precise lookup for a specific line/string and paragraph within headings/sections.
+- Extend and test search methods so exact chapter/heading/paragraph retrieval can use PostgreSQL lexical/structured queries instead of relying on noisy dense vector search.
 
 ---
 
@@ -201,7 +236,7 @@ Follow-up work:
 
 ### 6. Legacy summary injection should be removed
 
-Status: `open`
+Status: `fixed`
 
 Symptoms:
 - Search responses still inject synthetic summary sections.
@@ -265,9 +300,13 @@ Symptoms:
 Impact:
 - Basic usability issue.
 
+Completed in this area:
+- Main viewer tabs now use flex-based content panes instead of block-level tab containers.
+- Text, hierarchy, and entity panels now own their vertical scrolling instead of relying on clipped parent containers or fixed inline max-heights.
+
 Follow-up work:
-- Audit overflow containers.
-- Ensure each main content region has proper vertical scrolling.
+- Validate scrolling visually with a large real document in the running app.
+- Continue auditing secondary panels and modals after graph/fullscreen work.
 
 ---
 
@@ -280,6 +319,7 @@ Symptoms:
 - No meaningful structure is visible.
 - The 2D canvas gives weak navigation value.
 - The viewport is too small.
+- The `Граф связей` tab visualization is still not resolved and should not be treated as product-ready.
 
 Impact:
 - The feature exists visually but does not help analysis.
@@ -294,7 +334,7 @@ Follow-up work:
 
 ### 10a. Frontend becomes sluggish and freezes during tab switches and agent responses
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Noticeable UI freezes when switching between tabs such as:
@@ -321,6 +361,8 @@ Completed in this area:
 - The empty tool-use bubble artifact was removed.
 - Hierarchy nodes are now built lazily on expand instead of eagerly.
 - Entity/keyword badge rendering is capped to reduce heavy tab payloads.
+- Heavy content, hierarchy, and entity tab renders are now cached per selected document details fetch instead of rebuilding on every tab switch.
+- Main document tabs now use stable flex/scroll containers, reducing layout churn during tab switches.
 
 Follow-up work:
 - Add view-level profiling for tab switches and chat rendering.
@@ -397,7 +439,7 @@ Decision:
 
 ### 14. Tool-use thinking indicator renders an artifact
 
-Status: `open`
+Status: `fixed`
 
 Symptoms:
 - During MCP tool use, a small empty square/circle artifact appears in chat.
@@ -423,20 +465,49 @@ Impact:
 
 ---
 
+### 15a. RAG source results overlap with agent answer in chat
+
+Status: `open`
+
+Symptoms:
+- Search/RAG results appear in chat first.
+- The agent answer is then rendered above or over the retrieval results, creating a visually confusing experience.
+- Retrieved context is useful for verification, but it currently competes with the final answer.
+
+Impact:
+- The chat feels noisy and visually unstable.
+- Good answers are harder to read because internal retrieval context is shown too early.
+
+Follow-up work:
+- Temporarily hide retrieval/source results while the agent is generating.
+- Show retrieved sources under a collapsible spoiler only after the agent answer is complete.
+- Modernize the source/results presentation so verification remains available without dominating the chat.
+- Rework chat answer/source layout as part of the broader UI/UX redesign.
+
+---
+
 ## P2 - Medium-priority cleanup and evolution
 
 ### 16. Frontend asset quality regressed
 
-Status: `deferred`
+Status: `open`
 
 Symptoms:
 - Custom PNG assets replaced higher-quality scalable iconography.
 - Loading animation quality regressed.
+- The upload/status bar looks worse after recent visual edits.
+- Status icons are visually dull.
+- The upload/status progress no longer updates reliably after document upload; refreshing the page is needed to see the final state.
 
 Decision:
 - Remove the custom PNG asset path.
 - Restore SVG-based iconography.
 - Restore or redesign modern loading animation after higher-priority backend fixes.
+
+Follow-up work:
+- Restore a clearer animated upload/indexing progress indicator.
+- Ensure the status bar transitions through upload, OCR, tokenization/chunking, embedding, and DB indexing without requiring a page refresh.
+- Revisit the broader visual design regression caused by the attempted UI refresh.
 
 ---
 
@@ -485,3 +556,4 @@ Notes:
 - Do not treat the current graph UI as product-complete until the underlying graph data is meaningful.
 - Do not invest in superficial UI polish before retrieval and document structure are trustworthy.
 - Do not reintroduce legacy Mongo-era response artifacts into the new PostgreSQL-backed system.
+- A future knowledge graph layer has been captured as a concept in `docs/knowledge_graph_concept.md`; it requires web research and architecture review before implementation.

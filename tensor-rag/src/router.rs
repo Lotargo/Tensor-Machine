@@ -754,9 +754,10 @@ async fn handle_upload(
     };
 
     info!(
-        "OCR phase complete for '{}'. Extracted {} characters.",
+        "OCR phase complete for '{}'. Extracted {} characters. Next phase uses tokenizer '{}' for hierarchical chunking.",
         filename,
-        ocr_text.len()
+        ocr_text.len(),
+        crate::config::get_tokenizer_model()
     );
 
     use crate::chunker::HierarchicalChunker;

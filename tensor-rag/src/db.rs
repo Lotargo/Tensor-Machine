@@ -673,46 +673,78 @@ impl DbPools {
             .as_ref()
             .ok_or("PostgreSQL pool not initialized")?;
 
+        let header_chain_json: Vec<serde_json::Value> = documents
+            .iter()
+            .map(|document| serde_json::json!(document.header_chain))
+            .collect();
+        let zone_keywords_json: Vec<serde_json::Value> = documents
+            .iter()
+            .map(|document| serde_json::json!(document.zone_keywords))
+            .collect();
+        let entities_json: Vec<serde_json::Value> = documents
+            .iter()
+            .map(|document| serde_json::json!(document.entities))
+            .collect();
+
+        let mut builder = QueryBuilder::<Postgres>::new(
+            "INSERT INTO documents (
+                text, bm25_score, filename, doc_uuid, chapter_id, chunk_index,
+                chunk_level, parent_chunk_index, macro_index, medium_index,
+                header_chain, zone_keywords, entities
+            ) ",
+        );
+        builder.push_values(
+            documents
+                .iter()
+                .zip(header_chain_json.iter())
+                .zip(zone_keywords_json.iter())
+                .zip(entities_json.iter()),
+            |mut row, (((document, header_chain), zone_keywords), entities)| {
+                row.push_bind(document.text)
+                    .push_bind(0.0f32)
+                    .push_bind(document.filename)
+                    .push_bind(document.doc_uuid)
+                    .push_bind(document.chapter_id)
+                    .push_bind(document.chunk_index)
+                    .push_bind(document.chunk_level)
+                    .push_bind(document.parent_chunk_index)
+                    .push_bind(document.macro_index)
+                    .push_bind(document.medium_index)
+                    .push_bind(header_chain)
+                    .push_bind(zone_keywords)
+                    .push_bind(entities);
+            },
+        );
+        builder.push(" RETURNING id");
+
         use sqlx::Row;
-        let mut doc_ids = Vec::with_capacity(documents.len());
-        let mut points = Vec::with_capacity(documents.len());
-
-        for document in documents {
-            let header_chain_json = serde_json::json!(document.header_chain);
-            let zone_keywords_json = serde_json::json!(document.zone_keywords);
-            let entities_json = serde_json::json!(document.entities);
-
-            let row = sqlx::query(
-                "INSERT INTO documents (
-                    text, bm25_score, filename, doc_uuid, chapter_id, chunk_index,
-                    chunk_level, parent_chunk_index, macro_index, medium_index,
-                    header_chain, zone_keywords, entities
-                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                 RETURNING id",
-            )
-            .bind(document.text)
-            .bind(0.0f32)
-            .bind(document.filename)
-            .bind(document.doc_uuid)
-            .bind(document.chapter_id)
-            .bind(document.chunk_index)
-            .bind(document.chunk_level)
-            .bind(document.parent_chunk_index)
-            .bind(document.macro_index)
-            .bind(document.medium_index)
-            .bind(&header_chain_json)
-            .bind(&zone_keywords_json)
-            .bind(&entities_json)
-            .fetch_one(pool)
+        let rows = builder
+            .build()
+            .fetch_all(pool)
             .await
-            .map_err(|e| format!("PostgreSQL insert failed: {}", e))?;
+            .map_err(|e| format!("PostgreSQL batch insert failed: {}", e))?;
 
+        let mut doc_ids = Vec::with_capacity(documents.len());
+        for row in rows {
             let id: i64 = row
                 .try_get("id")
                 .map_err(|e| format!("Failed to get inserted id: {}", e))?;
-            let doc_id = id as usize;
-            doc_ids.push(doc_id);
+            doc_ids.push(id as usize);
+        }
 
+        if doc_ids.len() != documents.len() {
+            return Err(format!(
+                "PostgreSQL batch insert returned {} ids for {} documents",
+                doc_ids.len(),
+                documents.len()
+            ));
+        }
+
+        let mut points = Vec::with_capacity(documents.len());
+        for (document, (doc_id, entities_json)) in documents
+            .iter()
+            .zip(doc_ids.iter().copied().zip(entities_json.into_iter()))
+        {
             let payload = Self::build_document_payload(
                 document.filename,
                 document.doc_uuid,

@@ -19,6 +19,47 @@
     min-width: 0;
 }
 
+.viewer-section {
+    min-height: 0;
+}
+
+.viewer-container {
+    min-height: 0;
+}
+
+.rendered-pane-header {
+    flex: 0 0 auto;
+}
+
+.tab-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+}
+
+#tab-content-content,
+#tab-content-hierarchy,
+#tab-content-entities,
+#tab-content-graph {
+    flex-direction: column;
+}
+
+#rendered-content,
+#hierarchy-tree-container,
+#entities-tags-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none !important;
+    overflow-y: auto !important;
+}
+
+#graph-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto !important;
+}
+
 .sidebar {
     transition: width 0.24s ease, border-color 0.24s ease, opacity 0.24s ease;
     overflow: hidden;
