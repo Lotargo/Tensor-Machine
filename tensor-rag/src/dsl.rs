@@ -288,9 +288,10 @@ fn parse_inner_node(val: &Value) -> Result<AstNode, String> {
 fn parse_search_args(args: &Value) -> Result<QueryRequest, String> {
     let mut query = String::new();
     let mut filters: Option<Vec<Filter>> = None;
-    let mut rerank_strategy = RerankStrategy::Hybrid {
-        semantic_weight: 0.7,
-        bm25_weight: 0.3,
+    let mut rerank_strategy = RerankStrategy::Rsf {
+        dense_weight: None,
+        bm25_weight: None,
+        entity_weight: None,
     };
     let mut final_top_k = 10;
     let mut doc_uuid: Option<String> = None;
@@ -653,6 +654,28 @@ mod tests {
                 assert_eq!(filters[0].field, "year");
                 assert_eq!(filters[0].operator, ">=");
                 assert_eq!(filters[0].value, serde_json::json!(2023));
+            }
+            _ => panic!("Expected Search AST Node"),
+        }
+    }
+
+    #[test]
+    fn test_parse_search_defaults_to_rsf() {
+        let input = r#"(search :query "minimal query" :final-top-k 5)"#;
+        let ast = parse_dsl(input).expect("Failed to parse valid DSL");
+
+        match ast {
+            AstNode::Search(request) => {
+                assert_eq!(request.query, "minimal query");
+                assert_eq!(request.final_top_k, 5);
+                assert_eq!(
+                    request.rerank_strategy,
+                    RerankStrategy::Rsf {
+                        dense_weight: None,
+                        bm25_weight: None,
+                        entity_weight: None
+                    }
+                );
             }
             _ => panic!("Expected Search AST Node"),
         }

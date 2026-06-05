@@ -125,7 +125,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "Weight for vector semantic matching (0.0 to 1.0).",
         category: "rsf",
         field_type: "number",
-        placeholder: "0.50",
+        placeholder: "0.30",
         options: &[],
     },
     SettingDescriptor {
@@ -134,7 +134,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "Weight for keyword matching (0.0 to 1.0).",
         category: "rsf",
         field_type: "number",
-        placeholder: "0.15",
+        placeholder: "0.35",
         options: &[],
     },
     SettingDescriptor {
@@ -152,7 +152,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "Weight for document structural headers context (0.0 to 1.0).",
         category: "rsf",
         field_type: "number",
-        placeholder: "0.05",
+        placeholder: "0.10",
         options: &[],
     },
     SettingDescriptor {
@@ -332,7 +332,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "Soft token budget for MCP search responses.",
         category: "mcp",
         field_type: "number",
-        placeholder: "10000",
+        placeholder: "5000",
         options: &[],
     },
     SettingDescriptor {

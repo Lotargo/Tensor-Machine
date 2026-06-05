@@ -27,11 +27,11 @@ impl Default for RsfConfig {
             dense_weight: std::env::var("RSF_DENSE_WEIGHT")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0.50),
+                .unwrap_or(0.30),
             bm25_weight: std::env::var("RSF_BM25_WEIGHT")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0.15),
+                .unwrap_or(0.35),
             entity_weight: std::env::var("RSF_ENTITY_WEIGHT")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -39,7 +39,7 @@ impl Default for RsfConfig {
             structural_weight: std::env::var("RSF_STRUCTURAL_WEIGHT")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0.05),
+                .unwrap_or(0.10),
             recency_weight: std::env::var("RSF_RECENCY_WEIGHT")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -124,6 +124,6 @@ mod tests {
             ],
             &RsfConfig::default(),
         );
-        assert_eq!(fused[0].0, 20);
+        assert_eq!(fused[0].0, 10);
     }
 }

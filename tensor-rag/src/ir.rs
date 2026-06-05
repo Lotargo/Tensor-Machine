@@ -82,9 +82,10 @@ pub enum RerankStrategy {
 
 impl Default for RerankStrategy {
     fn default() -> Self {
-        RerankStrategy::Hybrid {
-            semantic_weight: 0.7,
-            bm25_weight: 0.3,
+        RerankStrategy::Rsf {
+            dense_weight: None,
+            bm25_weight: None,
+            entity_weight: None,
         }
     }
 }
@@ -274,7 +275,7 @@ impl Planner {
                 let final_top_k = request
                     .final_top_k
                     .clamp(1, crate::config::get_search_max_top_k());
-                let initial_k = (final_top_k.saturating_mul(10)).max(100);
+                let initial_k = final_top_k.saturating_mul(8).clamp(50, 200);
 
                 // Override strategy if alpha is provided
                 let strategy = if let Some(alpha) = request.alpha {
@@ -664,9 +665,10 @@ mod tests {
         assert_eq!(request.filters, None);
         assert_eq!(
             request.rerank_strategy,
-            RerankStrategy::Hybrid {
-                semantic_weight: 0.7,
-                bm25_weight: 0.3
+            RerankStrategy::Rsf {
+                dense_weight: None,
+                bm25_weight: None,
+                entity_weight: None
             }
         );
         assert_eq!(request.final_top_k, 5);
@@ -688,7 +690,7 @@ mod tests {
         assert_eq!(program.instructions.len(), 8);
         assert!(matches!(
             program.instructions[0].op,
-            OpCode::RetrieveQdrant { top_k: 100, .. }
+            OpCode::RetrieveQdrant { top_k: 50, .. }
         ));
         assert_eq!(program.instructions[1].op, OpCode::ComputeSemantic);
         assert!(matches!(
@@ -749,7 +751,7 @@ mod tests {
 
         assert!(matches!(
             program.instructions[0].op,
-            OpCode::RetrieveQdrant { top_k, .. } if top_k == expected_top_k.saturating_mul(10)
+            OpCode::RetrieveQdrant { top_k, .. } if top_k == expected_top_k.saturating_mul(8).clamp(50, 200)
         ));
         assert_eq!(program.instructions[2].op, OpCode::TopK(expected_top_k));
     }

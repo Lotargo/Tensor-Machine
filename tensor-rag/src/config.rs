@@ -109,7 +109,7 @@ pub fn get_search_max_top_k() -> usize {
 pub fn get_search_max_response_tokens() -> usize {
     static SEARCH_MAX_RESPONSE_TOKENS: OnceLock<usize> = OnceLock::new();
     *SEARCH_MAX_RESPONSE_TOKENS
-        .get_or_init(|| get_usize_env("MCP_SEARCH_MAX_RESPONSE_TOKENS", 10_000))
+        .get_or_init(|| get_usize_env("MCP_SEARCH_MAX_RESPONSE_TOKENS", 5_000))
 }
 
 pub fn get_read_document_max_tokens() -> usize {

@@ -71,10 +71,15 @@ pub async fn build_search_response(
         rank_map.insert(id, rank);
     }
 
+    let explicit_structured_lookup = is_explicit_structured_lookup(query);
     let original_details = details.clone();
     let original_ids: HashSet<usize> = original_details.iter().map(|detail| detail.id).collect();
     let mut seen_detail_ids: HashSet<usize> = original_ids.clone();
-    let max_span_chunks = indices.len().saturating_mul(4).clamp(8, 40);
+    let max_span_chunks = if explicit_structured_lookup {
+        indices.len().saturating_mul(4).clamp(8, 40)
+    } else {
+        0
+    };
 
     let expanded_details = db_pools
         .fetch_structured_span_details(query, &original_details, max_span_chunks)
@@ -146,6 +151,17 @@ pub async fn build_search_response(
         }
 
         unique_chunks.sort_by_key(|c| c.chunk_index);
+        if !explicit_structured_lookup && unique_chunks.len() > 2 {
+            unique_chunks.sort_by(|a, b| {
+                a.rank.cmp(&b.rank).then_with(|| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            });
+            unique_chunks.truncate(2);
+            unique_chunks.sort_by_key(|c| c.chunk_index);
+        }
 
         let max_score = unique_chunks.iter().map(|c| c.score).fold(0.0f32, f32::max);
         let best_rank = unique_chunks
@@ -267,6 +283,27 @@ fn inherited_structured_score(
         .filter_map(|seed| score_map.get(&seed.id).copied())
         .fold(0.0f32, f32::max)
         * 0.99
+}
+
+fn is_explicit_structured_lookup(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    [
+        "chapter",
+        "section",
+        "heading",
+        "full text",
+        "whole chapter",
+        "глава",
+        "главу",
+        "главы",
+        "раздел",
+        "раздела",
+        "заголовок",
+        "полный текст",
+        "весь текст",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn trim_overlap(prev: &str, curr: &str) -> String {

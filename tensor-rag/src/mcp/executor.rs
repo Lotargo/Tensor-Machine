@@ -83,12 +83,13 @@ pub fn execute_program<'a>(
                         })
                     });
 
+                    let fallback_limit = ((*top_k + 4) / 5).clamp(10, 30);
                     let mut pg_ids = db_pools
                         .search_keyword_candidate_ids(
                             query,
                             postgres_doc_uuid.as_deref(),
                             chapter_filter.as_deref(),
-                            50,
+                            fallback_limit,
                         )
                         .await;
                     let structured_ids = db_pools
@@ -96,7 +97,7 @@ pub fn execute_program<'a>(
                             query,
                             postgres_doc_uuid.as_deref(),
                             chapter_filter.as_deref(),
-                            50,
+                            fallback_limit,
                         )
                         .await;
                     for id in structured_ids {
@@ -183,7 +184,7 @@ pub fn execute_program<'a>(
                             .search_entity_candidate_ids(
                                 &query_entities,
                                 doc_uuid_filter.as_deref(),
-                                50,
+                                fallback_limit,
                             )
                             .await;
 

@@ -157,10 +157,10 @@ Current status:
 - Keyword candidate fallback was strengthened.
 - Structured PostgreSQL candidate fallback now adds chapter/header-chain matches before dense vector reranking.
 - Legacy context-bloat from summary injection / TOC artifact / proximity markers was removed.
+- RSF is now the default rerank strategy, with BM25 weighted above dense similarity for exact textual matches.
+- Search response shaping now limits ordinary QA context volume by narrowing fallback candidates, avoiding broad macro expansion unless explicitly requested, capping per-document chunks, and reducing the default MCP search response budget.
 
 Remaining hypotheses:
-- BM25 / dense / entity fusion is still poorly calibrated.
-- `deferred` The current response builder could pass less text for targeted QA (~2-3k tokens observed), but reducing context flooding risks retrieval regressions. Deferred — revisit after knowledge graph integration when context shaping becomes more relevant.
 - Qdrant/dense retrieval is not suitable as the only mechanism for precise chapter, heading, line, or paragraph lookup; PostgreSQL-backed lexical/structured search should be expanded for exact navigation and extraction tasks.
 
 Follow-up work:
@@ -171,7 +171,11 @@ Follow-up work:
   - Document: `Утро_ч.1_в.1.docx` (~190k tokens, single mention of `Лиза`).
   - Query 1: `расскажи что упоминалось про Лизу` → retrieved correct chunk, identified Лиза as Arseniy's mother.
   - Query 2: `как звали мать Арсения?` → correct exact answer with citation, fresh context.
-- Revisit RSF / BM25 weighting and exact-match boosts.
+- `fixed` Revisit RSF / BM25 weighting and exact-match boosts.
+  - `fixed` Rebalanced RSF default weights in `rsf.rs`: dense 0.50→0.30, bm25 0.15→0.35, structural 0.05→0.10, so exact textual matches no longer dominated by dense embeddings after per-channel minmax normalization.
+  - `fixed` Made RSF the default rerank strategy for JSON and DSL search requests, replacing the simpler Hybrid default.
+  - `fixed` Reduced context flooding by narrowing PostgreSQL fallback candidate limits, disabling macro-span expansion for ordinary QA queries, capping per-document chunks in search responses, and lowering the default MCP search response budget from 10k to 5k tokens.
+  - `fixed` Verified with `cargo test`.
 - `in_progress` Add chapter/heading search that can locate a chapter or heading and retrieve its full text span.
   - `fixed` Added structured candidate lookup for `chapter_id` and `header_chain` so navigation queries are not dense-only.
   - `fixed` Search responses now expand explicit chapter/heading hits into their macro-level span before response assembly, instead of returning only the individual matched chunks.
@@ -676,7 +680,7 @@ Notes:
 - Continue retrieval correctness work:
   - validate exact match behavior
   - tune fusion / rerank weights
-  - `deferred` reduce remaining context flooding where needed — revisit after knowledge graph integration
+  - `fixed` reduce remaining context flooding in the default QA path
 
 ### Phase 3
 - Restore document structure:
