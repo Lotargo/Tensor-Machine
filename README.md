@@ -1,11 +1,12 @@
 <div align="center">
 
-![Custom RAG Hero Banner](./assets/hero-banner.svg)
+![Tensor Machine Banner](./assets/hero-banner.svg)
 
-# Tensor Machine: Встраиваемый Сверхбыстрый Векторный Движок для Low-Latency Hybrid Search
-### *Научно-технический обзор архитектуры, виртуальной машины и механизмов GPU-ускорения*
+# Tensor Machine — Low-Latency RAG Engine
 
-[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
+### *Rust-powered hybrid semantic search with Tensor VM, GPU acceleration & LLM agent integration*
+
+[![Rust Version](https://img.shields.io/badge/Rust-2024%2B-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg?style=for-the-badge&logo=github)](https://github.com/)
 [![Vector Engine](https://img.shields.io/badge/Vector-Stack--VM%20%2F%20Arrow-blue.svg?style=for-the-badge)](https://github.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
@@ -14,230 +15,356 @@
 
 ---
 
-<table>
-<tr>
-<td>
+## Overview
 
-## <img src="./assets/architecture.svg" width="24" height="24" /> 1. Аннотация и Введение (Abstract & Introduction)
+**Tensor Machine** is a next-generation RAG (Retrieval-Augmented Generation) system that treats semantic search as a **vector relational DBMS with a query compiler**. The entire production stack is written in Rust with an optional Lisp-like DSL for humans and agents.
 
-### Аннотация
-Современные архитектуры генерации ответов с дополнением знаниями (**Retrieval-Augmented Generation, RAG**) сталкиваются с барьером задержек (Latency) при передаче векторов и документов между процессами. Настоящий проект представляет **Tensor Machine** (Тензорная Машина) — высокопроизводительный распределенный RAG-движок на языке Rust, спроектированный как векторная реляционная СУБД с компилятором запросов и изолированной виртуальной машиной. Архитектура Tensor Machine разделяет фазы планирования и выполнения, оперируя структурами данных Apache Arrow и обеспечивая субмиллисекундные задержки на горячих путях инференса и поиска.
+The core design separates the system into a **Planner** (DSL → IR bytecode) and an **Executor** (stack-based Tensor VM), operating on zero-copy Apache Arrow data structures with sub-millisecond latency on hot paths.
 
-### Введение
-Традиционные RAG-системы строятся путем склеивания разнородных компонентов (векторных баз данных, скриптов ранжирования и ML-сервисов инференса), что приводит к существенным накладным расходам на межпроцессное взаимодействие (IPC) и сериализацию данных. Tensor Machine реализует альтернативный подход **Hardware-Software Co-Design** («от железа вверх»):
-1. **Colocated Execution:** Управляющий слой (Control Plane) и векторная VM могут работать в едином адресном пространстве или быть изолированы в отдельном процессе через высокоскоростные регионы общей памяти (`mmap`).
-2. **Vector Relational VM:** Декларативный Lisp-подобный DSL транслируется компилятором в плоское промежуточное представление (IR байткод) и выполняется стековой VM над векторами Apache Arrow без копирования памяти.
-3. **Графическое ускорение:** Алгоритм позднего взаимодействия ColBERT MaxSim полностью перенесен на GPU с использованием оптимизированного тайлового WGSL-шейдера и разделяемой памяти рабочих групп.
+### Why Tensor Machine?
 
-### MCP Tooling Surface
-### MCP Tooling Surface
+| Problem | Solution |
+|---------|----------|
+| Python RAG frameworks suffer from GC pauses and memory copies | **Pure Rust** — no GC, compile-time safety, zero-copy Arrow pipeline |
+| Adding new search strategies requires modifying production code | **Declarative DSL** — new strategies via macros, no core recompilation |
+| High P99 latency from IPC and serialization overhead | **Single-process triad** — Control Plane, DSL, and VM in one Rust process |
+| GPU acceleration requires complex CUDA setup | **WebGPU (wgpu)** — cross-platform GPU compute shaders (Vulkan/DX12/Metal) |
 
-| Variable | Description |
-|---|---|
-| `MCP_SEARCH_DEFAULT_TOP_K` | Default `top‑k` for MCP search. |
-| `MCP_SEARCH_MAX_TOP_K` | Upper bound for `top‑k`; clamped to default. |
-| `MCP_SEARCH_MAX_RESPONSE_TOKENS` | Maximum tokens in search response. |
-| `MCP_READ_DOCUMENT_MAX_TOKENS` | Maximum tokens when reading a document. |
-| `TOKENIZER_MODEL` | Tokenizer model for tokenization (`o200k_harmony`). |
-| `TENSOR_VM_SOCKET_PATH` | IPC socket path for the Tensor VM. |
-| `search` | Dynamic alpha‑blended hybrid semantic/BM25 retrieval. |
-| `read_document` | Retrieves a document by `doc_uuid` and returns its payload. |
+---
 
-### LM Studio MCP Example
+## Features
 
-To integrate the MCP bridge with **LM Studio**, configure the `mcpServers` object as follows:
+- **Hybrid Search** — semantic + BM25 retrieval with weighted fusion, MMR diversity, RRF
+- **Tensor VM** — stack-based vector VM with 17+ opcodes, Arrow-native SIMD execution
+- **Declarative DSL** — Lisp-style s-expressions for `search`, `multi-hop`, `self-rag`, `corrective-rag`
+- **GPU Acceleration** — tiled WGSL compute shaders for ColBERT MaxSim late interaction
+- **Zero-Copy Pipeline** — Apache Arrow + mmap shared memory + FlatBuffer serialization
+- **MCP Protocol** — Model Context Protocol server for LLM agent integration (compatible with LM Studio, Claude, etc.)
+- **AI Chat** — multi-provider chat (OpenAI, Gemini, OpenRouter, Ollama) with RAG context and agent mode
+- **Knowledge Graph** — entity extraction, document neighborhood traversal, graph edges
+- **Multi-Channel Ranking (RSF)** — combine dense, BM25, entity, structural, recency, and cluster signals
+- **Token-Accurate Chunking** — semantic chunking via `chunkedrs` with `o200k_harmony` (GPT-4o tokenizer)
+- **Arrow Flight** — distributed data plane for horizontal scaling across nodes
+- **Observability** — Prometheus metrics, OpenTelemetry tracing, structured JSON logging, health check endpoints
+- **Production Hardening** — circuit breakers, rate limiting, graceful shutdown, configurable instruction limits
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Rust 2024 edition (MSRV 1.75+)
+- Docker (for PostgreSQL, Qdrant, Ollama)
+
+### 1. Start Infrastructure
+
+```bash
+docker compose up -d
+```
+
+This starts PostgreSQL 15, Qdrant, and Ollama (with `multilingual-e5-large` model auto-pulled).
+
+### 2. Build & Run
+
+```bash
+cargo build --release -p tensor-rag
+cargo run --release -p tensor-rag
+```
+
+The server starts on `0.0.0.0:8080` by default. Without databases configured, it runs in **mock mode** with synthetic data.
+
+### 3. Send a Query
+
+```bash
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "search",
+    "args": {
+      "dsl": "(search :query \"quantum physics\" :final-top-k 5)"
+    },
+    "session_id": "session_1",
+    "sequence_number": 1
+  }'
+```
+
+### 4. Connect via LM Studio
+
+Configure the MCP bridge in LM Studio:
 
 ```json
 {
   "mcpServers": {
     "tensor-rag": {
       "command": "node",
-      "args": [
-        "/path/to/APL-RAG/mcp-bridge.js"
-      ]
+      "args": ["/path/to/APL-RAG/mcp-bridge.js"]
     }
   }
 }
 ```
 
-This configuration tells LM Studio to launch the bridge via Node.js, allowing the editor to forward MCP requests to the Tensor Machine backend.
+### Windows / Linux Launcher
 
-</td>
-</tr>
-</table>
-
----
-
-<table>
-<tr>
-<td>
-
-## <img src="./assets/architecture.svg" width="24" height="24" /> 2. Трехуровневая архитектура (System Architecture)
-
-Система организована в виде трех слоев, выполняющихся в рамках единого Rust-процесса (или изолированных процессов через IPC), что полностью устраняет накладные расходы на сетевой транспорт при локальной работе.
-
-1. **Слой управления и транспорта (Control Plane & Transport):**
-   - Сервер протокола MCP (Model Context Protocol).
-   - Пулы подключений к реляционным базам данных (PostgreSQL) и векторным хранилищам (Qdrant).
-   - Диспетчер виртуальной памяти (`mmap` Shared Memory Manager) для обмена данными с VM.
-   - Оптимизация pushdown-предикатов (Predicate Pushdown).
-   - **Токен-ориентированный семантический чанкер (Token-Accurate Chunking):** Использование библиотеки `chunkedrs` (на базе `tiktoken` и токенизатора `o200k_harmony` для GPT-4o) с поддержкой рекурсивного разбиения и настраиваемого перекрытия (overlap) для точного вхождения в контекстное окно.
-
-2. **Декларативный DSL (Declarative DSL):**
-   - Интерпретатор Lisp-подобных s-выражений на базе `lexpr`.
-   - Компилятор запросов, преобразующий DSL в линейный байткод (IR bytecode).
-   - Планировщик (Planner), строящий оптимальный граф выполнения.
-
-3. **Тензорный движок выполнения (Tensor VM):**
-   - Стековая виртуальная машина, поддерживающая 17 специализированных опкодов.
-   - Прямая работа над массивами данных Apache Arrow.
-   - Нулевое копирование при передаче результатов через FlatBuffers.
-
----
-
-### Режимы выполнения VM
-Tensor Machine поддерживает два режима интеграции вычислительного ядра:
-- **In-Process Mode:** VM выполняется непосредственно в основном процессе MCP-сервера, минимизируя время отклика.
-- **IPC Mode (`TENSOR_VM_MODE=ipc`):** VM запускается в изолированном рабочем процессе. Запросы и результаты передаются через проецируемые в память файлы (`mmap`), обеспечивая отказоустойчивость без потери производительности.
-
-</td>
-</tr>
-</table>
-
----
-
-<table>
-<tr>
-<td>
-
-## <img src="./assets/tech_stack.svg" width="24" height="24" /> 3. Аппаратная оптимизация и GPU-ускорение
-
-Для расчета плотных векторов позднего взаимодействия по алгоритму **ColBERT MaxSim** используется специализированный вычислительный конвейер на GPU (через WebGPU API/wgpu).
-
-### 3.1 Tiled WGSL Compute Shader
-В отличие от наивной параллельной реализации, требующей постоянного обращения к глобальной памяти GPU, в Tensor Machine реализован тайловый шейдер с кооперативной загрузкой данных:
-- Рабочая группа из 256 потоков обрабатывает одну пару (документ, токен запроса).
-- Фрагменты векторов запросов и документов загружаются во временную память рабочей группы (`var<workgroup>`).
-- Потоки выполняют вычисления локально, после чего производят редукцию для нахождения максимального сходства (MaxSim).
-- Это снижает требования к пропускной способности памяти GPU в разы и устраняет бутылочное горлышко передачи данных.
-
-### 3.2 Передача данных без выравнивания (Zero-Padding Offsets)
-Традиционные GPU-вычисления требуют дополнения (padding) всех документов нулями до фиксированной максимальной длины токенов, что приводит к нецелевому расходу памяти и потоков (например, при сравнении документов длиной 5 и 250 токенов). 
-
-Tensor Machine решает эту проблему через плоскую структуру данных:
-- Все токены документов упаковываются в один сплошной плоский массив.
-- Передается вспомогательный буфер смещений `(offsets)` с парами `(doc_start, doc_len)`.
-- Шейдер считывает точное количество токенов для каждого документа, полностью исключая избыточные вычисления.
-
-</td>
-</tr>
-</table>
-
----
-
-<table>
-<tr>
-<td>
-
-## <img src="./assets/patterns.svg" width="24" height="24" /> 4. Сетевое масштабирование и Наблюдаемость
-
-Для работы в высоконагруженных промышленных средах Tensor Machine оснащена встроенными механизмами масштабирования и мониторинга.
-
-### 4.1 Arrow Flight Data Plane
-Для распределенного обмена большими объемами векторных данных между узлами кластера используется протокол **Arrow Flight** поверх gRPC. Это позволяет передавать записи RecordBatch напрямую из памяти одного узла в память другого без сериализации.
-
-### 4.2 Axum MCP Router & Sticky Sessions
-Маршрутизация клиентских MCP-запросов осуществляется балансировщиком на базе Axum:
-- Запросы распределяются по доступным воркерам.
-- **Sticky Sessions:** Консистентное хеширование по ID сессии гарантирует, что запросы конкретного пользователя всегда попадают на один и тот же узел, сохраняя локальный кэш контекста в памяти воркера.
-
-### 4.3 Метрики и Трассировка (Observability)
-- **Prometheus метрики:** Сбор гистограмм задержки выполнения VM, счетчиков запросов и использования памяти, доступных через эндпоинт `/metrics`.
-- **OpenTelemetry трассировка:** Инструментирование горячего цикла VM с помощью `tracing` Spans позволяет детально профилировать выполнение каждого опкода.
-- **Structured JSON Logging:** Автоматический вывод логов в формате JSON для интеграции с ELK/Grafana Loki.
-- **Health Checks:** Встроенные эндпоинты `/health` и `/ready` для оркестрации в Kubernetes.
-
-</td>
-</tr>
-</table>
-
----
-
-<table>
-<tr>
-<td>
-
-## <img src="./assets/agents.svg" width="24" height="24" /> 5. Структура Репозитория
-
-- **`tensor-rag/src/`** — Основное дерево исходного кода движка:
-  - [`lib.rs`](./tensor-rag/src/lib.rs) — Точка входа в библиотеку, интеграционные тесты.
-  - [`mcp/`](./tensor-rag/src/mcp/) — Модульный набор файлов MCP:
-    - [`executor.rs`](./tensor-rag/src/mcp/executor.rs) — Логика выполнения запросов и планов.
-    - [`server.rs`](./tensor-rag/src/mcp/server.rs) — Основной сервер MCP, обработка входящих соединений.
-    - [`ipc.rs`](./tensor-rag/src/mcp/ipc.rs) — Поддержка IPC‑режима для изоляции VM.
-    - [`types.rs`](./tensor-rag/src/mcp/types.rs) — Определения типовых структур и сообщений.
-    - [`tools/`](./tensor-rag/src/mcp/tools/) — Вспомогательные утилиты MCP.
-    - [`mod.rs`](./tensor-rag/src/mcp/mod.rs) — Модульный файл экспорта.
-  - [`ir.rs`](./tensor-rag/src/ir.rs) — Представление IR, компилятор-планировщик, опкоды VM.
-  - [`vm.rs`](./tensor-rag/src/vm.rs) — Стек-ориентированная VM, выполнение инструкций.
-  - [`dsl.rs`](./tensor-rag/src/dsl.rs) — Лексический разбор и валидация S-выражений.
-  - [`chunker.rs`](./tensor-rag/src/chunker.rs) — Токен-ориентированный семантический чанкер на базе `chunkedrs` (`o200k_harmony`).
-  - [`arrow.rs`](./tensor-rag/src/arrow.rs) — Преобразование схем Apache Arrow и сборка RecordBatch.
-  - [`db.rs`](./tensor-rag/src/db.rs) — Клиентские пулы Qdrant и PostgreSQL с мок-заглушками.
-  - [`shared_memory.rs`](./tensor-rag/src/shared_memory.rs) — Управление разделяемой памятью через mmap-регионы.
-  - [`gpu.rs`](./tensor-rag/src/gpu.rs) — Инициализация wgpu и шейдеров ColBERT.
-  - [`flight.rs`](./tensor-rag/src/flight.rs) — Сетевой слой Arrow Flight для распределенного обмена данными.
-  - [`router.rs`](./tensor-rag/src/router.rs) — Axum-маршрутизатор MCP-запросов со sticky sessions.
-  - [`metrics.rs`](./tensor-rag/src/metrics.rs) — Метрики Prometheus и HTTP-эндпоинты здоровья.
-  - [`result.fbs`](./tensor-rag/src/result.fbs) — FlatBuffers-схема сериализации результатов.
-
-</td>
-</tr>
-</table>
-
----
-
-<table>
-<tr>
-<td>
-
-## <img src="./assets/setup.svg" width="24" height="24" /> 6. Сборка, Запуск и Конфигурация
-
-### Требования к окружению:
-- Установленный Rust-тулчейн (MSRV 1.75+)
-- Компилятор C (для сборки библиотек-зависимостей)
-- Совместимый графический ускоритель с поддержкой Vulkan/DirectX12/Metal (для GPU-режима)
-
-### Сборка проекта (Release):
-Соберите бинарные файлы с флагом оптимизации для достижения максимальной производительности:
 ```bash
-cargo build --release
+# Windows
+.\run.ps1
+
+# Linux
+./run.sh
 ```
 
-### Запуск тестов:
-Прогоните полный пакет интеграционных и модульных тестов (при использовании Rust < 1.94 укажите флаг `--ignore-rust-version`):
-```bash
-cargo test
+---
+
+## Architecture
+
+```
+LLM Agent (MCP Client)
+        │ MCP (JSON/FlatBuffer)
+        ▼
+┌──────────────────────────────────────┐
+│ Layer 1: Control Plane & Transport   │
+│  MCP Server · Session Manager        │
+│  DbPools (PG, Qdrant, ML)           │
+│  Shared Memory Manager · Predicate   │
+│  Pushdown                            │
+└──────────────┬───────────────────────┘
+               │ AstNode / QueryRequest
+               ▼
+┌──────────────────────────────────────┐
+│ Layer 2: Declarative DSL             │
+│  S-Expression Parser (lexpr)         │
+│  search · multi-hop · self-rag       │
+│  corrective-rag                      │
+│  Planner::compile() → IR bytecode    │
+└──────────────┬───────────────────────┘
+               │ Program (bytecode)
+               ▼
+┌──────────────────────────────────────┐
+│ Layer 3: Tensor Execution Engine     │
+│  Stack-Based VM (17 opcodes)        │
+│  Arrow-native · SIMD-friendly        │
+│  GPU backend via wgpu                │
+└──────────────┬───────────────────────┘
+               │ TopKResult → FlatBuffer
+               ▼
+          McpResponse
 ```
 
-### Бенчмаркинг производительности:
-Для запуска тестов производительности GPU-шейдеров и масштабируемости под нагрузкой:
+### Key Modules
+
+| Module | Purpose |
+|--------|---------|
+| `mcp/` | MCP server, session management, tool handlers (`search`, `read_document`, `list_documents`, `get_document_metadata`, `exec`, `help`) |
+| `ir.rs` | IR types, `Planner::compile()`, `OpCode` enum, `Program` |
+| `vm.rs` | Stack-based VM with all opcodes, dual-path (ndarray + Arrow) |
+| `dsl.rs` | S-expression parser for all query forms and rerank strategies |
+| `arrow.rs` | Arrow schema, RecordBatch construction, IPC shared-memory read/write |
+| `db/` | Connection pools (PostgreSQL, Qdrant), circuit breakers, document/anchors/edges CRUD |
+| `gpu.rs` | wgpu context, WGSL compute shaders (add, mul, fusion, colbert MaxSim tiled) |
+| `flight.rs` | Arrow Flight gRPC service for distributed data exchange |
+| `ai/` | Multi-provider chat, streaming, agent mode with MCP tool calling |
+| `router.rs` | Axum HTTP router with load balancing and sticky sessions |
+| `metrics.rs` | Prometheus metrics, OpenTelemetry tracing, health endpoints |
+| `chunker.rs` | Token-accurate semantic chunking (paragraph, recursive, sentence) |
+| `graph.rs` | Knowledge graph neighborhood traversal via recursive CTE |
+| `entity.rs` | Named entity extraction (Russian + English, regex-based) |
+| `rsf.rs` | Reciprocal Signal Fusion — multi-channel ranking |
+| `normalizer.rs` | Text normalization, stemming (Russian + English), stopword removal |
+| `clustering.rs` | K-means clustering with PCA fallback reducer |
+| `shared_memory.rs` | mmap-backed regions for zero-copy IPC |
+| `config.rs` | Environment variable configuration (50+ settings) |
+
+---
+
+## Configuration
+
+Key environment variables (full list in `.env.example`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | — | PostgreSQL connection string |
+| `QDRANT_URL` | — | Qdrant gRPC endpoint |
+| `QDRANT_COLLECTION` | `default` | Qdrant collection name |
+| `MCP_BIND_ADDR` | `0.0.0.0:8080` | HTTP router listen address |
+| `TENSOR_VM_MODE` | `in_process` | VM execution mode (`in_process` / `ipc`) |
+| `TENSOR_VM_BACKEND` | `simd` | Compute backend (`simd` / `gpu`) |
+| `AI_PROVIDER` | `openai` | AI chat provider |
+| `EMBEDDING_SERVER_URL` | — | OpenAI-compatible embeddings endpoint |
+| `EMBEDDING_DIM` | `768` | Embedding vector dimension |
+| `MCP_RATE_LIMIT` | `100` | Requests per second limit |
+| `CB_FAILURE_THRESHOLD` | `5` | Circuit breaker failure threshold |
+
+The system runs in **mock mode** when no databases are configured — no external infrastructure needed for testing.
+
+---
+
+## Infrastructure
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:   # Document storage, BM25 scores, graph data
+  qdrant:     # Vector storage, ANN search
+  ollama:     # Local embeddings (multilingual-e5-large)
+```
+
+Included tools:
+- `check_len.js` — Qdrant vector length diagnostics
+- `mcp-bridge.js` — Node.js MCP bridge for LM Studio
+- `postgres-init/init.sql` — Database schema initialization
+
+---
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `search` | Primary hybrid semantic/BM25 retrieval with DSL or JSON |
+| `read_document` | Retrieve full document text by UUID |
+| `list_documents` | List all indexed documents with filenames and UUIDs |
+| `get_document_metadata` | Get metadata, anchors (headings), and graph edges |
+| `exec` | Execute DSL commands for side-effects (add metadata, anchors, edges) |
+| `help` | Comprehensive DSL documentation and examples |
+
+---
+
+## DSL Examples
+
+```scheme
+; Simple search
+(search :query "quantum physics" :final-top-k 5)
+
+; Hybrid search with filters
+(search :query "machine learning"
+        :filters (>= year 2023)
+        :rerank (hybrid :weights (sem 0.7 bm25 0.3))
+        :final-top-k 5)
+
+; Multi-hop retrieval
+(multi-hop :query "quantum error correction"
+           :hops 3
+           :rerank (hybrid :weights (sem 0.6 bm25 0.4))
+           :final-top-k 5)
+
+; Self-RAG with confidence threshold
+(self-rag :query "latest AI research"
+          :threshold 0.8
+          :low-confidence (search :query "AI research survey" :final-top-k 10)
+          :high-confidence (search :query "latest AI research" :final-top-k 5)
+          :final-top-k 5)
+
+; Corrective RAG with fallback
+(corrective-rag :query "specific technical detail"
+                :fallback-query "technical overview"
+                :rerank (rrf)
+                :final-top-k 5)
+```
+
+---
+
+## Performance Targets
+
+| Metric | Target | Current |
+|--------|--------|---------|
+| P99 latency (Top-1000, VM only) | < 5 ms | ~50 µs |
+| Memory per 10k MCP sessions | < 500 MB | ~0.01 MB/session |
+| Throughput | 50,000 req/s | — |
+| New rerank strategy | < 1 hour | DSL macro |
+
+---
+
+## Project Structure
+
+```
+APL-RAG/
+├── tensor-rag/              # Rust crate (core engine)
+│   ├── src/
+│   │   ├── main.rs          # Server entry point
+│   │   ├── lib.rs           # Crate root, integration tests
+│   │   ├── mcp/             # MCP server, executor, tools, IPC
+│   │   ├── db/              # Database pools, CRUD, circuit breakers
+│   │   ├── ai/              # Chat agent, streaming, context management
+│   │   ├── vm.rs            # Stack-based Tensor VM
+│   │   ├── ir.rs            # IR types, Planner, OpCodes
+│   │   ├── dsl.rs           # S-expression parser
+│   │   ├── arrow.rs         # Apache Arrow integration
+│   │   ├── gpu.rs           # WebGPU compute shaders
+│   │   ├── flight.rs        # Arrow Flight gRPC service
+│   │   ├── router.rs        # Axum HTTP router
+│   │   ├── metrics.rs       # Prometheus / OpenTelemetry
+│   │   ├── graph.rs         # Knowledge graph
+│   │   ├── entity.rs        # Named entity extraction
+│   │   ├── chunker.rs       # Token-accurate chunking
+│   │   ├── rsf.rs           # Reciprocal Signal Fusion
+│   │   ├── normalizer.rs    # Text normalization & stemming
+│   │   ├── clustering.rs    # K-means clustering
+│   │   ├── config.rs        # Environment configuration
+│   │   └── shared_memory.rs # mmap shared memory manager
+│   └── benches/             # Criterion benchmarks
+├── mcp-bridge.js            # Node.js MCP bridge (LM Studio)
+├── docker-compose.yml       # PostgreSQL + Qdrant + Ollama
+├── postgres-init/           # Database schema
+├── docs/                    # Architecture, API, configuration guides
+├── dev_docs/                # Development planning & roadmap
+├── assets/                  # SVG banners
+├── .brains/                 # Agent session tracking
+├── .dataset/                # Fine-tuning dataset entries
+├── run.ps1                  # Windows launcher
+└── run.sh                   # Linux launcher
+```
+
+---
+
+## Development
+
 ```bash
-# Тестирование производительности алгоритма ColBERT (CPU vs GPU)
+# Build
+cargo build --release -p tensor-rag
+
+# Test
+cargo test -p tensor-rag
+
+# Benchmarks
+cargo bench --bench colbert   # ColBERT performance (CPU vs GPU)
+cargo bench --bench stress    # High-concurrency throughput
+cargo bench --bench zero_copy # Arrow vs Tensor1D comparison
+
+# Lint
+cargo clippy -p tensor-rag
+cargo fmt -p tensor-rag
+```
+
+---
+
+## Performance Benchmarks
+
+```bash
+# ColBERT late interaction: GPU naive vs GPU tiled vs CPU SIMD
 cargo bench --bench colbert
 
-# Тестирование пропускной способности при высокой параллельной нагрузке
+# Stress test: 50k concurrent requests
 cargo bench --bench stress
+
+# Zero-copy comparison: Arrow vs ndarray
+cargo bench --bench zero_copy
 ```
 
-### Переменные окружения (Конфигурация):
-- `TENSOR_VM_MODE` — Режим запуска VM (`in_process` или `ipc`).
-- `DATABASE_URL` — Строка подключения к PostgreSQL.
-- `QDRANT_URL` — Адрес сервера Qdrant.
-- `QDRANT_COLLECTION` — Имя целевой коллекции векторов.
-- `MCP_BIND_ADDR` — Сетевой адрес для запуска MCP-сервера.
-- `MAX_CONNECTIONS` — Максимальный размер пула сетевых соединений.
+---
 
-</td>
-</tr>
-</table>
+## Roadmap
+
+- **Phase 1 (MVP)**: MCP server, JSON → IR, Tensor VM (5 opcodes), direct DB calls
+- **Phase 2 (DSL)**: S-expression parser, hybrid/multi-hop/self-rag/corrective-rag macros
+- **Phase 3 (Zero-Copy)**: Apache Arrow pipeline, FlatBuffer results, mmap regions
+- **Phase 4 (Production)**: GPU backend (wgpu), ColBERT, horizontal scaling, observability
+- **Phase 5 (Tech Debt)**: I/O separation, dynamic strategies, missing opcodes, latency hardening
+- **Phase 6 (Hardening)**: Real MMR/RRF, Arrow Flight, ML embedding, ColBERT SIMD, DSL panics fix
+
+All phases are structurally complete. See `dev_docs/` for detailed planning.
+
+---
+
+## License
+
+MIT
