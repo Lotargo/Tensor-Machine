@@ -170,7 +170,8 @@ Follow-up work:
 - Revisit RSF / BM25 weighting and exact-match boosts.
 - `in_progress` Add chapter/heading search that can locate a chapter or heading and retrieve its full text span.
   - `fixed` Added structured candidate lookup for `chapter_id` and `header_chain` so navigation queries are not dense-only.
-  - Remaining: reconstruct and return a full section/chapter span, not only matching chunks.
+  - `fixed` Search responses now expand explicit chapter/heading hits into their macro-level span before response assembly, instead of returning only the individual matched chunks.
+  - Remaining: validate full chapter/section reconstruction against large real OCR markdown documents and tune span size if macro chunks are too broad or too narrow.
 - Add precise lookup for a specific line/string and paragraph within headings/sections.
 - Extend and test search methods so exact chapter/heading/paragraph retrieval can use PostgreSQL lexical/structured queries instead of relying on noisy dense vector search.
 

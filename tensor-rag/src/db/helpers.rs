@@ -1,3 +1,5 @@
+use once_cell::sync::Lazy;
+use regex::Regex;
 use sqlx::{Postgres, QueryBuilder};
 
 pub fn json_array_to_strings(value: serde_json::Value) -> Vec<String> {
@@ -22,14 +24,33 @@ pub fn tokenize_lexical_query(query: &str) -> Vec<String> {
 }
 
 pub fn structured_heading_like_patterns(query: &str) -> Vec<String> {
+    structured_heading_terms(query)
+        .into_iter()
+        .take(6)
+        .map(|term| format!("%{}%", escape_like_pattern(&term)))
+        .collect()
+}
+
+pub fn structured_heading_terms(query: &str) -> Vec<String> {
     tokenize_lexical_query(query)
         .into_iter()
         .map(|term| term.to_lowercase())
         .filter(|term| term.chars().count() >= 3)
         .filter(|term| !is_structured_lookup_noise_term(term))
-        .take(6)
-        .map(|term| format!("%{}%", escape_like_pattern(&term)))
         .collect()
+}
+
+pub fn extract_chapter_id(query: &str) -> Option<String> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)(?:Chapter|Part|Р“Р»Р°РІР°|Р§Р°СЃС‚СЊ)\s+((?:\d+|\b[IVXLCDM]+\b|[a-zA-Z\p{Cyrillic}]+))",
+        )
+        .unwrap()
+    });
+    RE.captures(query).and_then(|caps| caps.get(1)).map(|m| {
+        crate::chunker::parse_text_number(m.as_str())
+            .unwrap_or_else(|| crate::chunker::normalize_chapter_id(m.as_str()))
+    })
 }
 
 pub fn is_structured_lookup_noise_term(term: &str) -> bool {
@@ -115,5 +136,14 @@ mod tests {
     fn structured_heading_patterns_escape_like_wildcards() {
         let patterns = structured_heading_like_patterns("open section 100%_ready");
         assert_eq!(patterns, vec!["%100ready%".to_string()]);
+    }
+
+    #[test]
+    fn extract_chapter_id_normalizes_numbers() {
+        assert_eq!(extract_chapter_id("show Chapter IV"), Some("4".to_string()));
+        assert_eq!(
+            extract_chapter_id("show Chapter five"),
+            Some("5".to_string())
+        );
     }
 }

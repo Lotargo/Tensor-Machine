@@ -1,10 +1,10 @@
+use super::ToolHandler;
+use crate::mcp::executor::execute_program;
+use crate::mcp::ipc::VmIpcClient;
+use serde_json::Value as JsonValue;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use serde_json::Value as JsonValue;
-use super::ToolHandler;
-use crate::mcp::ipc::VmIpcClient;
-use crate::mcp::executor::execute_program;
 
 pub struct SearchTextTool;
 
@@ -47,6 +47,10 @@ impl ToolHandler for SearchTextTool {
                 _ => {}
             }
 
+            let response_query = match &ast {
+                crate::ir::AstNode::Search(req) => req.query.clone(),
+                _ => String::new(),
+            };
             let program = crate::ir::Planner::compile(ast);
             let mut vm = crate::vm::VM::new();
             let _ = vm.init_gpu().await;
@@ -71,9 +75,13 @@ impl ToolHandler for SearchTextTool {
 
             match result {
                 Some(crate::vm::Value::Result(topk)) => {
-                    let response_json =
-                        crate::response::build_search_response(db_pools, topk.indices, topk.scores)
-                            .await?;
+                    let response_json = crate::response::build_search_response(
+                        db_pools,
+                        topk.indices,
+                        topk.scores,
+                        &response_query,
+                    )
+                    .await?;
 
                     if let Some(m) = &metrics {
                         let count = response_json

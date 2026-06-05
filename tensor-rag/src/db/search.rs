@@ -1,14 +1,15 @@
+use super::DbPools;
+use super::helpers::{
+    build_tsquery_or, escape_like_pattern, extract_chapter_id, json_array_to_strings,
+    push_header_chain_match, structured_heading_like_patterns, structured_heading_terms,
+    tokenize_lexical_query,
+};
+use super::types::ChunkDetail;
 use qdrant_client::qdrant::{
-    Condition, FieldCondition, Match, PointId, SearchPoints, VectorsOutput, WithVectorsSelector,
-    condition::ConditionOneOf, r#match::MatchValue, point_id::PointIdOptions, Filter as QFilter,
+    Condition, FieldCondition, Filter as QFilter, Match, PointId, SearchPoints, VectorsOutput,
+    WithVectorsSelector, condition::ConditionOneOf, r#match::MatchValue, point_id::PointIdOptions,
 };
 use sqlx::{Postgres, QueryBuilder, Row};
-use super::DbPools;
-use super::types::ChunkDetail;
-use super::helpers::{
-    tokenize_lexical_query, build_tsquery_or, escape_like_pattern,
-    structured_heading_like_patterns, push_header_chain_match, json_array_to_strings,
-};
 
 #[allow(deprecated)]
 pub async fn search_qdrant(
@@ -38,104 +39,115 @@ pub async fn search_qdrant(
         };
 
         if let Some(filters) = filters {
-            let must: Vec<Condition> = filters.iter()
+            let must: Vec<Condition> = filters
+                .iter()
                 .map(|filter| {
                     let condition_one_of = match filter.operator.as_str() {
-                        "==" | "=" => {
-                            ConditionOneOf::Field(FieldCondition {
-                                key: filter.field.clone(),
-                                r#match: Some(Match {
-                                    match_value: match &filter.value {
-                                        serde_json::Value::String(s) => Some(MatchValue::Keyword(s.clone())),
-                                        serde_json::Value::Number(n) => n.as_i64().map(MatchValue::Integer),
-                                        serde_json::Value::Bool(b) => Some(MatchValue::Boolean(*b)),
-                                        _ => None
+                        "==" | "=" => ConditionOneOf::Field(FieldCondition {
+                            key: filter.field.clone(),
+                            r#match: Some(Match {
+                                match_value: match &filter.value {
+                                    serde_json::Value::String(s) => {
+                                        Some(MatchValue::Keyword(s.clone()))
                                     }
-                                }),
+                                    serde_json::Value::Number(n) => {
+                                        n.as_i64().map(MatchValue::Integer)
+                                    }
+                                    serde_json::Value::Bool(b) => Some(MatchValue::Boolean(*b)),
+                                    _ => None,
+                                },
+                            }),
+                            ..Default::default()
+                        }),
+                        ">=" => ConditionOneOf::Field(FieldCondition {
+                            key: filter.field.clone(),
+                            range: Some(qdrant_client::qdrant::Range {
+                                gte: filter.value.as_f64(),
                                 ..Default::default()
-                            })
-                        },
-                        ">=" => {
-                            ConditionOneOf::Field(FieldCondition {
-                                key: filter.field.clone(),
-                                range: Some(qdrant_client::qdrant::Range {
-                                    gte: filter.value.as_f64(),
-                                    ..Default::default()
-                                }),
+                            }),
+                            ..Default::default()
+                        }),
+                        ">" => ConditionOneOf::Field(FieldCondition {
+                            key: filter.field.clone(),
+                            range: Some(qdrant_client::qdrant::Range {
+                                gt: filter.value.as_f64(),
                                 ..Default::default()
-                            })
-                        },
-                        ">" => {
-                            ConditionOneOf::Field(FieldCondition {
-                                key: filter.field.clone(),
-                                range: Some(qdrant_client::qdrant::Range {
-                                    gt: filter.value.as_f64(),
-                                    ..Default::default()
-                                }),
+                            }),
+                            ..Default::default()
+                        }),
+                        "<=" => ConditionOneOf::Field(FieldCondition {
+                            key: filter.field.clone(),
+                            range: Some(qdrant_client::qdrant::Range {
+                                lte: filter.value.as_f64(),
                                 ..Default::default()
-                            })
-                        },
-                        "<=" => {
-                            ConditionOneOf::Field(FieldCondition {
-                                key: filter.field.clone(),
-                                range: Some(qdrant_client::qdrant::Range {
-                                    lte: filter.value.as_f64(),
-                                    ..Default::default()
-                                }),
+                            }),
+                            ..Default::default()
+                        }),
+                        "<" => ConditionOneOf::Field(FieldCondition {
+                            key: filter.field.clone(),
+                            range: Some(qdrant_client::qdrant::Range {
+                                lt: filter.value.as_f64(),
                                 ..Default::default()
-                            })
-                        },
-                        "<" => {
-                            ConditionOneOf::Field(FieldCondition {
-                                key: filter.field.clone(),
-                                range: Some(qdrant_client::qdrant::Range {
-                                    lt: filter.value.as_f64(),
-                                    ..Default::default()
-                                }),
-                                ..Default::default()
-                            })
-                        },
-                        "in" => {
-                            ConditionOneOf::Field(FieldCondition {
-                                key: filter.field.clone(),
-                                r#match: Some(Match {
-                                    match_value: match &filter.value {
-                                        serde_json::Value::Array(arr) => {
-                                            if let Some(first) = arr.first() {
-                                                if first.is_string() {
-                                                    Some(MatchValue::Keywords(qdrant_client::qdrant::RepeatedStrings { strings: arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect() }))
-                                                } else if first.is_i64() {
-                                                    Some(MatchValue::Integers(qdrant_client::qdrant::RepeatedIntegers { integers: arr.iter().filter_map(|v| v.as_i64()).collect() }))
-                                                } else {
-                                                    None
-                                                }
+                            }),
+                            ..Default::default()
+                        }),
+                        "in" => ConditionOneOf::Field(FieldCondition {
+                            key: filter.field.clone(),
+                            r#match: Some(Match {
+                                match_value: match &filter.value {
+                                    serde_json::Value::Array(arr) => {
+                                        if let Some(first) = arr.first() {
+                                            if first.is_string() {
+                                                Some(MatchValue::Keywords(
+                                                    qdrant_client::qdrant::RepeatedStrings {
+                                                        strings: arr
+                                                            .iter()
+                                                            .filter_map(|v| {
+                                                                v.as_str().map(|s| s.to_string())
+                                                            })
+                                                            .collect(),
+                                                    },
+                                                ))
+                                            } else if first.is_i64() {
+                                                Some(MatchValue::Integers(
+                                                    qdrant_client::qdrant::RepeatedIntegers {
+                                                        integers: arr
+                                                            .iter()
+                                                            .filter_map(|v| v.as_i64())
+                                                            .collect(),
+                                                    },
+                                                ))
                                             } else {
                                                 None
                                             }
-                                        },
-                                        _ => None
+                                        } else {
+                                            None
+                                        }
                                     }
-                                }),
-                                ..Default::default()
-                            })
-                        },
-                        _ => {
-                            ConditionOneOf::Field(FieldCondition {
-                                key: filter.field.clone(),
-                                r#match: Some(Match {
-                                    match_value: match &filter.value {
-                                        serde_json::Value::String(s) => Some(MatchValue::Keyword(s.clone())),
-                                        serde_json::Value::Number(n) => n.as_i64().map(MatchValue::Integer),
-                                        serde_json::Value::Bool(b) => Some(MatchValue::Boolean(*b)),
-                                        _ => None
+                                    _ => None,
+                                },
+                            }),
+                            ..Default::default()
+                        }),
+                        _ => ConditionOneOf::Field(FieldCondition {
+                            key: filter.field.clone(),
+                            r#match: Some(Match {
+                                match_value: match &filter.value {
+                                    serde_json::Value::String(s) => {
+                                        Some(MatchValue::Keyword(s.clone()))
                                     }
-                                }),
-                                ..Default::default()
-                            })
-                        }
+                                    serde_json::Value::Number(n) => {
+                                        n.as_i64().map(MatchValue::Integer)
+                                    }
+                                    serde_json::Value::Bool(b) => Some(MatchValue::Boolean(*b)),
+                                    _ => None,
+                                },
+                            }),
+                            ..Default::default()
+                        }),
                     };
                     Condition {
-                        condition_one_of: Some(condition_one_of)
+                        condition_one_of: Some(condition_one_of),
                     }
                 })
                 .collect();
@@ -354,12 +366,11 @@ pub async fn search_keyword_candidate_ids(
 
     let query = builder.build();
     match query.fetch_all(pool).await {
-        Ok(rows) => {
-            rows.into_iter()
-                .filter_map(|row| row.try_get::<i64, _>("id").ok())
-                .map(|id| id as usize)
-                .collect()
-        }
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|row| row.try_get::<i64, _>("id").ok())
+            .map(|id| id as usize)
+            .collect(),
         Err(error) => {
             tracing::warn!("Keyword candidate search failed: {}", error);
             Vec::new()
@@ -441,12 +452,11 @@ pub async fn search_structured_candidate_ids(
 
     let query = builder.build();
     match query.fetch_all(pool).await {
-        Ok(rows) => {
-            rows.into_iter()
-                .filter_map(|row| row.try_get::<i64, _>("id").ok())
-                .map(|id| id as usize)
-                .collect()
-        }
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|row| row.try_get::<i64, _>("id").ok())
+            .map(|id| id as usize)
+            .collect(),
         Err(error) => {
             tracing::warn!("Structured candidate search failed: {}", error);
             Vec::new()
@@ -493,7 +503,10 @@ pub async fn fetch_metadata(pools: &DbPools, ids: &[usize]) -> Vec<String> {
         .collect()
 }
 
-pub async fn fetch_chunk_details(pools: &DbPools, ids: &[usize]) -> Result<Vec<ChunkDetail>, String> {
+pub async fn fetch_chunk_details(
+    pools: &DbPools,
+    ids: &[usize],
+) -> Result<Vec<ChunkDetail>, String> {
     let pool = pools
         .postgres
         .as_ref()
@@ -522,43 +535,153 @@ pub async fn fetch_chunk_details(pools: &DbPools, ids: &[usize]) -> Result<Vec<C
 
     let mut details = Vec::new();
     for row in rows {
-        let id: i64 = row.try_get("id").unwrap_or(-1);
-        let text: String = row.try_get("text").unwrap_or_default();
-        let filename: String = row.try_get("filename").unwrap_or_default();
-        let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
-        let chapter_id: String = row.try_get("chapter_id").unwrap_or_default();
-        let chunk_index: i32 = row.try_get("chunk_index").unwrap_or(0);
-        let chunk_level: String = row
-            .try_get("chunk_level")
-            .unwrap_or_else(|_| "medium".to_string());
-        let parent_chunk_index: Option<i32> = row.try_get("parent_chunk_index").unwrap_or(None);
-        let macro_index: Option<i32> = row.try_get("macro_index").unwrap_or(None);
-        let medium_index: Option<i32> = row.try_get("medium_index").unwrap_or(None);
-        let header_chain =
-            json_array_to_strings(row.try_get("header_chain").unwrap_or(serde_json::json!([])));
-        let zone_keywords = json_array_to_strings(
-            row.try_get("zone_keywords")
-                .unwrap_or(serde_json::json!([])),
-        );
-        let entities =
-            json_array_to_strings(row.try_get("entities").unwrap_or(serde_json::json!([])));
-        details.push(ChunkDetail {
-            id: id as usize,
-            text,
-            filename,
-            doc_uuid,
-            chapter_id,
-            chunk_index,
-            chunk_level,
-            parent_chunk_index,
-            macro_index,
-            medium_index,
-            header_chain,
-            zone_keywords,
-            entities,
-        });
+        details.push(row_to_chunk_detail(row));
     }
     Ok(details)
+}
+
+pub async fn fetch_structured_span_details(
+    pools: &DbPools,
+    query: &str,
+    seed_details: &[ChunkDetail],
+    max_spans: usize,
+) -> Result<Vec<ChunkDetail>, String> {
+    let pool = pools
+        .postgres
+        .as_ref()
+        .ok_or("PostgreSQL pool not initialized")?;
+
+    if seed_details.is_empty() || query.trim().is_empty() || max_spans == 0 {
+        return Ok(Vec::new());
+    }
+
+    let requested_chapter = extract_chapter_id(query);
+    let heading_terms = structured_heading_terms(query);
+    if requested_chapter.is_none() && heading_terms.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut expanded = Vec::new();
+    let mut seen_chapters = std::collections::HashSet::new();
+    let mut seen_macros = std::collections::HashSet::new();
+
+    for detail in seed_details {
+        if expanded.len() >= max_spans {
+            break;
+        }
+
+        if let Some(chapter) = requested_chapter.as_deref() {
+            if !detail.doc_uuid.is_empty()
+                && detail.chapter_id == chapter
+                && seen_chapters.insert((detail.doc_uuid.clone(), detail.chapter_id.clone()))
+            {
+                let sql = chunk_detail_select_sql(
+                    "WHERE doc_uuid = $1 AND chapter_id = $2 AND chunk_level = 'macro'
+                     ORDER BY chunk_index ASC
+                     LIMIT $3",
+                );
+                let rows = sqlx::query(&sql)
+                    .bind(&detail.doc_uuid)
+                    .bind(&detail.chapter_id)
+                    .bind(max_spans as i64)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| format!("Failed to fetch chapter span: {}", e))?;
+
+                for row in rows {
+                    expanded.push(row_to_chunk_detail(row));
+                    if expanded.len() >= max_spans {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if expanded.len() >= max_spans || heading_terms.is_empty() {
+            continue;
+        }
+
+        if header_chain_matches_terms(&detail.header_chain, &heading_terms) {
+            let macro_index = if detail.chunk_level == "macro" {
+                detail.chunk_index
+            } else {
+                detail.macro_index.unwrap_or(detail.chunk_index)
+            };
+
+            if !detail.doc_uuid.is_empty()
+                && seen_macros.insert((detail.doc_uuid.clone(), macro_index))
+            {
+                let sql = chunk_detail_select_sql(
+                    "WHERE doc_uuid = $1 AND chunk_level = 'macro' AND chunk_index = $2
+                     ORDER BY chunk_index ASC
+                     LIMIT 1",
+                );
+                let rows = sqlx::query(&sql)
+                    .bind(&detail.doc_uuid)
+                    .bind(macro_index)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| format!("Failed to fetch heading span: {}", e))?;
+
+                for row in rows {
+                    expanded.push(row_to_chunk_detail(row));
+                }
+            }
+        }
+    }
+
+    Ok(expanded)
+}
+
+fn header_chain_matches_terms(header_chain: &[String], terms: &[String]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let joined = header_chain.join(" ").to_lowercase();
+    !joined.is_empty() && terms.iter().all(|term| joined.contains(term))
+}
+
+fn chunk_detail_select_sql(where_clause: &str) -> String {
+    format!(
+        "SELECT id, text,
+                COALESCE(filename, '') as filename,
+                COALESCE(doc_uuid, '') as doc_uuid,
+                COALESCE(chapter_id, '') as chapter_id,
+                COALESCE(chunk_index, 0) as chunk_index,
+                COALESCE(chunk_level, 'medium') as chunk_level,
+                parent_chunk_index, macro_index, medium_index,
+                COALESCE(header_chain, '[]'::jsonb) as header_chain,
+                COALESCE(zone_keywords, '[]'::jsonb) as zone_keywords,
+                COALESCE(entities, '[]'::jsonb) as entities
+         FROM documents {}",
+        where_clause
+    )
+}
+
+fn row_to_chunk_detail(row: sqlx::postgres::PgRow) -> ChunkDetail {
+    let id: i64 = row.try_get("id").unwrap_or(-1);
+    ChunkDetail {
+        id: id as usize,
+        text: row.try_get("text").unwrap_or_default(),
+        filename: row.try_get("filename").unwrap_or_default(),
+        doc_uuid: row.try_get("doc_uuid").unwrap_or_default(),
+        chapter_id: row.try_get("chapter_id").unwrap_or_default(),
+        chunk_index: row.try_get("chunk_index").unwrap_or(0),
+        chunk_level: row
+            .try_get("chunk_level")
+            .unwrap_or_else(|_| "medium".to_string()),
+        parent_chunk_index: row.try_get("parent_chunk_index").unwrap_or(None),
+        macro_index: row.try_get("macro_index").unwrap_or(None),
+        medium_index: row.try_get("medium_index").unwrap_or(None),
+        header_chain: json_array_to_strings(
+            row.try_get("header_chain").unwrap_or(serde_json::json!([])),
+        ),
+        zone_keywords: json_array_to_strings(
+            row.try_get("zone_keywords")
+                .unwrap_or(serde_json::json!([])),
+        ),
+        entities: json_array_to_strings(row.try_get("entities").unwrap_or(serde_json::json!([]))),
+    }
 }
 
 pub async fn fetch_neighbors(
@@ -573,8 +696,7 @@ pub async fn fetch_neighbors(
         return Ok(std::collections::HashMap::new());
     }
 
-    let mut query_str =
-        String::from("SELECT doc_uuid, chunk_index, text FROM documents WHERE ");
+    let mut query_str = String::from("SELECT doc_uuid, chunk_index, text FROM documents WHERE ");
     for i in 0..keys.len() {
         if i > 0 {
             query_str.push_str(" OR ");
@@ -685,7 +807,11 @@ pub async fn fetch_parent_chunks(
     Ok(map)
 }
 
-pub async fn fetch_entity_scores(pools: &DbPools, ids: &[usize], query_entities: &[String]) -> Vec<f32> {
+pub async fn fetch_entity_scores(
+    pools: &DbPools,
+    ids: &[usize],
+    query_entities: &[String],
+) -> Vec<f32> {
     if ids.is_empty() || query_entities.len() < 2 {
         return vec![0.0; ids.len()];
     }
@@ -693,10 +819,12 @@ pub async fn fetch_entity_scores(pools: &DbPools, ids: &[usize], query_entities:
         return vec![0.0; ids.len()];
     };
     let ids_i64: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
-    let rows = sqlx::query("SELECT id, COALESCE(entities, '[]'::jsonb) as entities FROM documents WHERE id = ANY($1)")
-        .bind(&ids_i64[..])
-        .fetch_all(pool)
-        .await;
+    let rows = sqlx::query(
+        "SELECT id, COALESCE(entities, '[]'::jsonb) as entities FROM documents WHERE id = ANY($1)",
+    )
+    .bind(&ids_i64[..])
+    .fetch_all(pool)
+    .await;
     let Ok(rows) = rows else {
         return vec![0.0; ids.len()];
     };

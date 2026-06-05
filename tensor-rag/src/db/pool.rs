@@ -1,12 +1,12 @@
+use qdrant_client::Qdrant;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use qdrant_client::Qdrant;
-use sqlx::{PgPool, postgres::PgPoolOptions};
 use tonic::transport::{Channel, Endpoint};
 
 use super::circuit_breaker::CircuitBreaker;
-use super::types::{EnrichedDocumentInsert, ChunkDetail, CollectionHealth, StoredDocument};
+use super::types::{ChunkDetail, CollectionHealth, EnrichedDocumentInsert, StoredDocument};
 
 /// A simple connection pool manager for various databases and external ML services.
 #[derive(Clone)]
@@ -399,7 +399,16 @@ impl DbPools {
         chapter_id: &str,
         chunk_index: i32,
     ) -> Result<usize, String> {
-        super::document::insert_document(self, text, vector, filename, doc_uuid, chapter_id, chunk_index).await
+        super::document::insert_document(
+            self,
+            text,
+            vector,
+            filename,
+            doc_uuid,
+            chapter_id,
+            chunk_index,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -420,10 +429,22 @@ impl DbPools {
         entities: &[String],
     ) -> Result<usize, String> {
         super::document::insert_document_enriched(
-            self, text, vector, filename, doc_uuid, chapter_id, chunk_index,
-            chunk_level, parent_chunk_index, macro_index, medium_index,
-            header_chain, zone_keywords, entities,
-        ).await
+            self,
+            text,
+            vector,
+            filename,
+            doc_uuid,
+            chapter_id,
+            chunk_index,
+            chunk_level,
+            parent_chunk_index,
+            macro_index,
+            medium_index,
+            header_chain,
+            zone_keywords,
+            entities,
+        )
+        .await
     }
 
     pub async fn insert_documents_enriched_batch(
@@ -495,7 +516,8 @@ impl DbPools {
         chapter_id: Option<&str>,
         limit: usize,
     ) -> Vec<usize> {
-        super::search::search_structured_candidate_ids(self, query, doc_uuid, chapter_id, limit).await
+        super::search::search_structured_candidate_ids(self, query, doc_uuid, chapter_id, limit)
+            .await
     }
 
     pub async fn fetch_metadata(&self, ids: &[usize]) -> Vec<String> {
@@ -504,6 +526,15 @@ impl DbPools {
 
     pub async fn fetch_chunk_details(&self, ids: &[usize]) -> Result<Vec<ChunkDetail>, String> {
         super::search::fetch_chunk_details(self, ids).await
+    }
+
+    pub async fn fetch_structured_span_details(
+        &self,
+        query: &str,
+        seed_details: &[ChunkDetail],
+        max_spans: usize,
+    ) -> Result<Vec<ChunkDetail>, String> {
+        super::search::fetch_structured_span_details(self, query, seed_details, max_spans).await
     }
 
     pub async fn fetch_neighbors(

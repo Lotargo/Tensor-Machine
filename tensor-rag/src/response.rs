@@ -49,6 +49,7 @@ pub async fn build_search_response(
     db_pools: &DbPools,
     indices: Vec<usize>,
     scores: Vec<f32>,
+    query: &str,
 ) -> Result<serde_json::Value, String> {
     if indices.is_empty() {
         return Ok(serde_json::json!({
@@ -61,13 +62,33 @@ pub async fn build_search_response(
         }));
     }
 
-    let details = db_pools.fetch_chunk_details(&indices).await?;
+    let mut details = db_pools.fetch_chunk_details(&indices).await?;
 
     let mut score_map = HashMap::new();
     let mut rank_map = HashMap::new();
     for (rank, (&id, &score)) in indices.iter().zip(scores.iter()).enumerate() {
         score_map.insert(id, score);
         rank_map.insert(id, rank);
+    }
+
+    let original_details = details.clone();
+    let original_ids: HashSet<usize> = original_details.iter().map(|detail| detail.id).collect();
+    let mut seen_detail_ids: HashSet<usize> = original_ids.clone();
+    let max_span_chunks = indices.len().saturating_mul(4).clamp(8, 40);
+
+    let expanded_details = db_pools
+        .fetch_structured_span_details(query, &original_details, max_span_chunks)
+        .await?;
+
+    for detail in expanded_details {
+        if !seen_detail_ids.insert(detail.id) {
+            continue;
+        }
+
+        let inherited = inherited_structured_score(&detail, &original_details, &score_map);
+        score_map.insert(detail.id, inherited);
+        rank_map.insert(detail.id, indices.len() + details.len());
+        details.push(detail);
     }
 
     struct ProcessedChunk {
@@ -230,6 +251,24 @@ pub async fn build_search_response(
     }))
 }
 
+fn inherited_structured_score(
+    expanded: &crate::db::types::ChunkDetail,
+    seeds: &[crate::db::types::ChunkDetail],
+    score_map: &HashMap<usize, f32>,
+) -> f32 {
+    seeds
+        .iter()
+        .filter(|seed| {
+            seed.doc_uuid == expanded.doc_uuid
+                && (seed.chapter_id == expanded.chapter_id
+                    || seed.macro_index == Some(expanded.chunk_index)
+                    || seed.chunk_index == expanded.chunk_index)
+        })
+        .filter_map(|seed| score_map.get(&seed.id).copied())
+        .fold(0.0f32, f32::max)
+        * 0.99
+}
+
 fn trim_overlap(prev: &str, curr: &str) -> String {
     let prev_chars: Vec<char> = prev.chars().collect();
     let curr_chars: Vec<char> = curr.chars().collect();
@@ -277,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_search_response_empty() {
         let db_pools = DbPools::new();
-        let result = build_search_response(&db_pools, vec![], vec![])
+        let result = build_search_response(&db_pools, vec![], vec![], "")
             .await
             .unwrap();
         assert_eq!(result["indices"].as_array().unwrap().len(), 0);
