@@ -577,7 +577,7 @@ Completed in this area:
 
 ### 16. Frontend asset quality regressed
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - Custom PNG assets replaced higher-quality scalable iconography.
@@ -592,8 +592,12 @@ Decision:
 - Restore or redesign modern loading animation after higher-priority backend fixes.
 
 Follow-up work:
+- `fixed` Removed custom PNG icons from the active UI path and restored Font Awesome / scalable icon rendering for shell, toolbar, chat, upload, and reset controls.
+- `fixed` Restored stateful upload/status step icons for pending, active, completed, and failed states.
+- `fixed` Moved the base UI palette away from the regressed brown/espresso look toward a more neutral operational palette with distinct status accents.
 - Restore a clearer animated upload/indexing progress indicator.
 - Ensure the status bar transitions through upload, OCR, tokenization/chunking, embedding, and DB indexing without requiring a page refresh.
+  - Current frontend now updates final state and selected document after upload completion, but true live phase progress still needs backend progress events or polling; otherwise the frontend can only show server-processing state while `/upload` is pending.
 - Revisit the broader visual design regression caused by the attempted UI refresh.
 
 ---

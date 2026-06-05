@@ -93,29 +93,6 @@
     min-width: 0;
 }
 
-.ui-icon {
-    display: inline-block;
-    width: 18px;
-    height: 18px;
-    object-fit: contain;
-    flex: 0 0 auto;
-    vertical-align: middle;
-}
-
-.ui-icon-lg {
-    width: 26px;
-    height: 26px;
-}
-
-.btn .ui-icon,
-.icon-btn .ui-icon {
-    margin-right: 8px;
-}
-
-.icon-btn .ui-icon {
-    margin-right: 0;
-}
-
 .sidebar-collapse-btn {
     border-radius: 10px;
     width: 36px;

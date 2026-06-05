@@ -316,18 +316,22 @@ function setPlaceholder(selector, value) {
     if (element) element.setAttribute('placeholder', value);
 }
 
+function icon(name) {
+    return `<i class="fa-solid ${name}" aria-hidden="true"></i>`;
+}
+
 export function applyTranslations() {
     document.documentElement.lang = state.uiPrefs.language;
     document.title = t('page_title');
     setText('#library-title', t('library'));
     setPlaceholder('#library-search', t('search_placeholder'));
-    setHtml('#clear-db-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/trash.png" alt=""> ${t('clear_library')}`);
+    setHtml('#clear-db-btn', `${icon('fa-trash-can')} ${t('clear_library')}`);
     setText('#header-title', t('header_title'));
     setText('#header-subtitle', t('header_subtitle'));
-    setHtml('#toggle-library-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/library.png" alt=""> ${t('toggle_library')}`);
-    setHtml('#toggle-ai-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/chat.png" alt=""> ${t('toggle_ai')}`);
-    setHtml('#open-settings-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/settings.png" alt=""> ${t('system_settings')}`);
-    setHtml('#upload-document-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/document.png" alt=""> ${t('upload_document')}`);
+    setHtml('#toggle-library-btn', `${icon('fa-layer-group')} ${t('toggle_library')}`);
+    setHtml('#toggle-ai-btn', `${icon('fa-comments')} ${t('toggle_ai')}`);
+    setHtml('#open-settings-btn', `${icon('fa-sliders')} ${t('system_settings')}`);
+    setHtml('#upload-document-btn', `${icon('fa-file-arrow-up')} ${t('upload_document')}`);
     setHtml('#dropzone-text', t('dropzone_text'));
     setText('#dropzone-subtext', t('dropzone_subtext'));
     setHtml('#status-title', `${escapeHtml(t('processing_file'))} <span id="status-filename">${escapeHtml(document.getElementById('status-filename')?.textContent || 'doc.txt')}</span>`);
@@ -350,22 +354,22 @@ export function applyTranslations() {
     setText('#chat-modal-meta', t('chat_modal_meta'));
     setPlaceholder('#chat-input', t('chat_placeholder'));
     setPlaceholder('#chat-modal-input', t('chat_placeholder'));
-    setHtml('#send-chat-btn', `<i class="fa-solid fa-paper-plane"></i> ${t('chat_send')}`);
-    setHtml('#send-chat-modal-btn', `<i class="fa-solid fa-paper-plane"></i> ${t('chat_send')}`);
+    setHtml('#send-chat-btn', `${icon('fa-paper-plane')} ${t('chat_send')}`);
+    setHtml('#send-chat-modal-btn', `${icon('fa-paper-plane')} ${t('chat_send')}`);
     setText('#ai-settings-title', t('ai_settings_title'));
     setText('#ai-settings-subtitle', t('ai_settings_subtitle'));
     setText('#ai-settings-save-state', state.uiPrefs.language === 'ru' ? 'Изменения применяются автоматически.' : 'Changes apply automatically.');
     setText('#settings-modal-title', t('settings_title'));
     setHtml('#settings-modal-subtitle', `${escapeHtml(t('settings_subtitle'))}`);
     setText('#settings-cancel-btn', t('settings_close'));
-    setHtml('#save-settings-btn', `<i class="fa-solid fa-floppy-disk"></i> ${t('settings_save')}`);
-    setHtml('#save-restart-btn', `<i class="fa-solid fa-rotate-right"></i> ${t('settings_save_restart')}`);
+    setHtml('#save-settings-btn', `${icon('fa-floppy-disk')} ${t('settings_save')}`);
+    setHtml('#save-restart-btn', `${icon('fa-rotate-right')} ${t('settings_save_restart')}`);
     setText('#ai-settings-save-state', state.uiPrefs.language === 'ru' ? 'Изменения применяются автоматически.' : 'Changes apply automatically.');
     setText('#reindex-title-text', t('reindex_btn_text'));
     setText('#reindex-desc-text', t('reindex_desc'));
     setText('#hard-reset-title-text', t('hard_reset_title'));
     setText('#hard-reset-desc-text', t('hard_reset_message'));
-    setHtml('#hard-reset-btn', `<img class="ui-icon ui-icon-sm" src="/assets/icons/reset.png" alt=""> ${t('hard_reset_title')}`);
+    setHtml('#hard-reset-btn', `${icon('fa-rotate-left')} ${t('hard_reset_title')}`);
     setPlaceholder('#doc-modal-search', 'Search...');
     const tabBtns = document.querySelectorAll('.tab-btn');
     tabBtns.forEach(btn => {
@@ -380,7 +384,7 @@ export function applyTranslations() {
     setText('#graph-help-text', t('graph_help_text'));
     const rebuildBtn = document.getElementById('btn-rebuild-graph');
     if (rebuildBtn) {
-        rebuildBtn.innerHTML = `<i class="fa-solid fa-arrows-rotate"></i> ${t('graph_rebuild_btn')}`;
+        rebuildBtn.innerHTML = `${icon('fa-arrows-rotate')} ${t('graph_rebuild_btn')}`;
     }
     document.dispatchEvent(new CustomEvent('tensor-rag:translations-applied'));
 }

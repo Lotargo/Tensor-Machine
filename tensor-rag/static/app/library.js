@@ -13,6 +13,13 @@ let graphAnimationId = null;
 let activeDocumentRequestId = 0;
 const ENTITY_RENDER_LIMIT = 200;
 const DISPLAY_LEVEL_ORDER = ['macro', 'medium', 'micro'];
+const UPLOAD_STEPS = ['step-upload', 'step-ocr', 'step-chunk', 'step-embedding', 'step-db'];
+const STEP_ICONS = {
+    pending: 'fa-circle',
+    active: 'fa-spinner fa-spin',
+    completed: 'fa-check',
+    failed: 'fa-xmark',
+};
 
 export function initLibrary() {
     document.getElementById('library-search').addEventListener('input', (event) => filterLibrary(event.target.value));
@@ -400,9 +407,11 @@ function preventDefaults(event) {
 
 async function handleFilesUpload(file) {
     const statusPanel = document.getElementById('status-panel');
-    document.getElementById('status-filename').textContent = file.name;
-    document.getElementById('status-error').style.display = 'none';
-    document.getElementById('status-title').textContent = `${t('processing_file')} ${file.name}`;
+    const statusFilename = document.getElementById('status-filename');
+    const statusError = document.getElementById('status-error');
+    statusFilename.textContent = file.name;
+    statusError.textContent = '';
+    statusError.style.display = 'none';
     statusPanel.style.display = 'flex';
     resetSteps();
     updateStep('step-upload', 'active');
@@ -412,15 +421,21 @@ async function handleFilesUpload(file) {
 
     try {
         updateStep('step-upload', 'completed');
-        updateStep('step-ocr', 'active');
-        updateStep('step-ocr', file.name.match(/\.(txt|md)$/i) ? 'completed' : 'completed');
+        if (file.name.match(/\.(txt|md)$/i)) {
+            updateStep('step-ocr', 'completed');
+        } else {
+            updateStep('step-ocr', 'active');
+        }
         updateStep('step-chunk', 'active');
+        updateStep('step-embedding', 'active');
+        updateStep('step-db', 'active');
 
         const result = await fetchJson('/upload', {
             method: 'POST',
             body: formData,
         });
 
+        updateStep('step-ocr', 'completed');
         updateStep('step-chunk', 'completed');
         updateStep('step-embedding', 'completed');
         updateStep('step-db', 'completed');
@@ -430,23 +445,35 @@ async function handleFilesUpload(file) {
         if (newDoc) selectDocument(newDoc.doc_uuid);
     } catch (error) {
         console.error('Upload failed:', error);
-        const errorBox = document.getElementById('status-error');
-        errorBox.textContent = error.message;
-        errorBox.style.display = 'block';
+        statusError.textContent = error.message;
+        statusError.style.display = 'block';
+        failActiveUploadStep();
     }
 }
 
 function updateStep(stepId, status) {
     const element = document.getElementById(stepId);
     if (!element) return;
-    element.classList.remove('active', 'completed', 'failed');
-    if (status) element.classList.add(status);
+    const normalized = status || 'pending';
+    element.classList.remove('pending', 'active', 'completed', 'failed');
+    element.classList.add(normalized);
+    const iconEl = element.querySelector('.step-icon');
+    if (iconEl) {
+        iconEl.innerHTML = `<i class="fa-solid ${STEP_ICONS[normalized] || STEP_ICONS.pending}"></i>`;
+    }
 }
 
 function resetSteps() {
-    ['step-upload', 'step-ocr', 'step-chunk', 'step-embedding', 'step-db'].forEach((stepId) => {
-        updateStep(stepId, '');
+    UPLOAD_STEPS.forEach((stepId) => {
+        updateStep(stepId, 'pending');
     });
+}
+
+function failActiveUploadStep() {
+    const activeStep = UPLOAD_STEPS.find((stepId) =>
+        document.getElementById(stepId)?.classList.contains('active')
+    );
+    updateStep(activeStep || 'step-upload', 'failed');
 }
 
 function getSelectedDocument() {
