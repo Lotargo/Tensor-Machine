@@ -634,6 +634,38 @@ Completed in this area:
 
 ---
 
+### 15c. Agent loses conversation context in directed topical dialog
+
+Status: `open`
+
+Symptoms:
+- When a user maintains a conversation about a specific document, story, or topic without explicitly re-stating the subject in every message, the agent loses the thread.
+- The logical connection between messages is clear to a human reader, but the agent begins searching in unrelated documents or irrelevant parts of the document set.
+- The retrieval layer does not receive the implied context from prior messages, so it fetches passages unrelated to the ongoing topic.
+- The agent does not maintain an implicit "active document" or "active topic" state across turns.
+
+Impact:
+- Directed multi-turn conversations degrade rapidly.
+- The user must repeat the document/topic name in every message, which defeats the purpose of a conversational interface.
+- Retrieval quality and user trust both suffer because the assistant appears to "forget" what is being discussed.
+
+**Required: Before designing a fix, investigation is required to determine the root cause.**
+Specifically:
+1. Analyse whether the agent prompt/scoring passes conversation history to the retrieval query builder, or whether each turn builds a retrieval query from only the latest user message.
+2. Determine whether the reranker and search scope drift because conversation context is summarised or discarded between turns.
+3. Identify whether the agent chooses the search document scope solely from explicit document names in the latest message, or whether prior-message topic signals are used.
+4. Determine if a conversation-level "active scope" (document set, topic cluster) should be maintained as explicit state.
+
+Follow-up work (contingent on investigation results):
+- Pass compressed conversation context into the retrieval query for each turn.
+- Maintain a lightweight "active document" or "active topic" signal across turns.
+- Scope search to the active document(s) when the conversation is clearly about a specific source, even if the user does not re-state the name.
+- Validate with a multi-turn dialog where the document/story is named only in the first message.
+
+Notes:
+- Do not implement any fix for this item before the investigation phase is complete and documented.
+- This item may overlap with item 2 (retrieval quality) and item 15a (RAG source overlap); the investigation should clarify whether the root cause is in retrieval scoping, agent context handling, or both.
+
 ### 15b. AI provider network failures are not retried and overflow the notice modal
 
 Status: `fixed`
