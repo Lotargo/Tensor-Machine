@@ -6,7 +6,10 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::sync::Arc;
+use std::time::Duration;
+use tracing::warn;
 
 pub use context::{AiChatMode, ContextOverflowStrategy};
 
@@ -70,6 +73,9 @@ pub struct AiConfig {
     pub context_strategy: ContextOverflowStrategy,
     pub context_token_limit: usize,
     pub agent_max_tool_rounds: usize,
+    pub request_timeout_secs: u64,
+    pub retry_attempts: usize,
+    pub retry_delay_ms: u64,
 }
 
 pub fn ai_defaults_for_provider(provider: &str) -> (&'static str, &'static str) {
@@ -125,6 +131,17 @@ pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, St
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4)
         .clamp(1, 12);
+    let request_timeout_secs = get_setting(settings, "AI_REQUEST_TIMEOUT_SECS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(120)
+        .max(1);
+    let retry_attempts = get_setting(settings, "AI_RETRY_ATTEMPTS")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(3)
+        .max(1);
+    let retry_delay_ms = get_setting(settings, "AI_RETRY_DELAY_MS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000);
 
     if base_url.is_empty() {
         return Err(
@@ -147,6 +164,9 @@ pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, St
         context_strategy,
         context_token_limit,
         agent_max_tool_rounds,
+        request_timeout_secs,
+        retry_attempts,
+        retry_delay_ms,
     })
 }
 
@@ -524,7 +544,11 @@ async fn send_chat_request(
     tools: Option<Vec<serde_json::Value>>,
     stream: bool,
 ) -> Result<reqwest::Response, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(crate::config::get_http_connect_timeout_secs()))
+        .timeout(Duration::from_secs(config.request_timeout_secs))
+        .build()
+        .map_err(|err| format!("Failed to build AI provider client: {err}"))?;
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let mut body = json!({
         "model": config.model,
@@ -538,20 +562,83 @@ async fn send_chat_request(
         body["tool_choice"] = json!("auto");
     }
 
-    let mut builder = client.post(url).json(&body);
-    if !config.api_key.is_empty() {
-        builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
-    }
-    if config.provider == "openrouter" {
-        builder = builder
-            .header("HTTP-Referer", "http://localhost:8080")
-            .header("X-Title", "Tensor RAG");
+    let retry_delay = Duration::from_millis(config.retry_delay_ms);
+    let mut last_error = None;
+    for attempt in 1..=config.retry_attempts {
+        let mut builder = client.post(&url).json(&body);
+        if !config.api_key.is_empty() {
+            builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
+        }
+        if config.provider == "openrouter" {
+            builder = builder
+                .header("HTTP-Referer", "http://localhost:8080")
+                .header("X-Title", "Tensor RAG");
+        }
+
+        match builder.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if is_retryable_ai_status(status) && attempt < config.retry_attempts {
+                    warn!(
+                        attempt,
+                        attempts = config.retry_attempts,
+                        status = %status,
+                        "AI provider returned retryable status"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    continue;
+                }
+                return Ok(response);
+            }
+            Err(err) => {
+                let detailed = describe_reqwest_error(&err);
+                warn!(
+                    attempt,
+                    attempts = config.retry_attempts,
+                    "AI provider request failed: {}",
+                    detailed
+                );
+                last_error = Some(detailed);
+                if attempt < config.retry_attempts {
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        }
     }
 
-    builder
-        .send()
-        .await
-        .map_err(|err| format!("Failed to call AI provider: {err}"))
+    Err(format!(
+        "Failed to call AI provider after {} attempt(s): {}",
+        config.retry_attempts,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+fn is_retryable_ai_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let mut details = vec![error.to_string()];
+    if error.is_timeout() {
+        details.push("kind=timeout".to_string());
+    }
+    if error.is_connect() {
+        details.push("kind=connect".to_string());
+    }
+    if error.is_request() {
+        details.push("kind=request".to_string());
+    }
+    if let Some(url) = error.url() {
+        details.push(format!("url={}", url));
+    }
+
+    let mut source = error.source();
+    while let Some(cause) = source {
+        details.push(format!("caused by: {}", cause));
+        source = cause.source();
+    }
+
+    details.join("; ")
 }
 
 fn provider_error_message(status: reqwest::StatusCode, payload: &serde_json::Value) -> String {

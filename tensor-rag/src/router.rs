@@ -3,14 +3,17 @@ use axum::{
     Router,
     body::Body,
     extract::{Json, Multipart, Path as AxumPath, State},
-    routing::post,
+    response::sse::{Event, KeepAlive, Sse},
+    routing::{get, post},
 };
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::error::Error as StdError;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -26,6 +29,19 @@ pub struct AppState {
     pub db_pools: Arc<crate::db::DbPools>,
     pub control: Arc<ServerControl>,
 }
+
+#[derive(Clone, serde::Serialize)]
+struct UploadProgressEvent {
+    step: String,
+    status: String,
+    message: String,
+    current: Option<usize>,
+    total: Option<usize>,
+}
+
+static UPLOAD_PROGRESS: once_cell::sync::Lazy<
+    RwLock<HashMap<String, broadcast::Sender<UploadProgressEvent>>>,
+> = once_cell::sync::Lazy::new(|| RwLock::new(HashMap::new()));
 
 const AI_PROVIDER_OPTIONS: &[(&str, &str)] = &[
     ("openai", "OpenAI"),
@@ -199,6 +215,33 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         category: "ai",
         field_type: "number",
         placeholder: "4",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_REQUEST_TIMEOUT_SECS",
+        label: "AI Request Timeout",
+        description: "Timeout for AI provider chat completion requests.",
+        category: "ai",
+        field_type: "number",
+        placeholder: "120",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_RETRY_ATTEMPTS",
+        label: "AI Retry Attempts",
+        description: "Retry attempts for transient AI provider network errors and 429/5xx responses.",
+        category: "ai",
+        field_type: "number",
+        placeholder: "3",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "AI_RETRY_DELAY_MS",
+        label: "AI Retry Delay",
+        description: "Delay between AI provider retry attempts in milliseconds.",
+        category: "ai",
+        field_type: "number",
+        placeholder: "1000",
         options: &[],
     },
     SettingDescriptor {
@@ -513,6 +556,7 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/chat", post(handle_chat))
         .route("/chat/stream", post(handle_chat_stream))
         .route("/mcp", post(handle_mcp))
+        .route("/upload/progress/:upload_id", get(handle_upload_progress))
         .route("/upload", post(handle_upload))
         .route("/clear", post(handle_clear_database))
         .with_state(state)
@@ -737,10 +781,82 @@ async fn handle_restart_server(
     })))
 }
 
+fn upload_progress_channel(upload_id: &str) -> broadcast::Sender<UploadProgressEvent> {
+    {
+        let channels = UPLOAD_PROGRESS.read().unwrap();
+        if let Some(sender) = channels.get(upload_id) {
+            return sender.clone();
+        }
+    }
+
+    let (sender, _) = broadcast::channel(64);
+    let mut channels = UPLOAD_PROGRESS.write().unwrap();
+    channels
+        .entry(upload_id.to_string())
+        .or_insert_with(|| sender.clone())
+        .clone()
+}
+
+fn emit_upload_progress(
+    upload_id: Option<&str>,
+    step: &str,
+    status: &str,
+    message: impl Into<String>,
+    current: Option<usize>,
+    total: Option<usize>,
+) {
+    let Some(upload_id) = upload_id.filter(|id| !id.is_empty()) else {
+        return;
+    };
+    let event = UploadProgressEvent {
+        step: step.to_string(),
+        status: status.to_string(),
+        message: message.into(),
+        current,
+        total,
+    };
+    let _ = upload_progress_channel(upload_id).send(event);
+}
+
+fn close_upload_progress(upload_id: Option<&str>) {
+    let Some(upload_id) = upload_id.filter(|id| !id.is_empty()) else {
+        return;
+    };
+    UPLOAD_PROGRESS.write().unwrap().remove(upload_id);
+}
+
+async fn handle_upload_progress(
+    AxumPath(upload_id): AxumPath<String>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let receiver = upload_progress_channel(&upload_id).subscribe();
+    let stream = BroadcastStream::new(receiver).filter_map(|message| {
+        match message {
+            Ok(progress) => {
+                let data = serde_json::to_string(&progress).unwrap_or_else(|_| "{}".to_string());
+                Some(Ok(Event::default().event("upload-progress").data(data)))
+            }
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
+                Some(Ok(Event::default().event("upload-lagged").data(
+                    serde_json::json!({ "skipped": skipped }).to_string(),
+                )))
+            }
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[derive(serde::Deserialize)]
+struct UploadQuery {
+    upload_id: Option<String>,
+}
+
 async fn handle_upload(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<UploadQuery>,
     mut multipart: Multipart,
 ) -> impl axum::response::IntoResponse {
+    let upload_id = query.upload_id.as_deref();
     let mut file_data = Vec::new();
     let mut filename = String::new();
 
@@ -756,6 +872,15 @@ async fn handle_upload(
 
     if file_data.is_empty() {
         error!("No file data uploaded");
+        emit_upload_progress(
+            upload_id,
+            "step-upload",
+            "failed",
+            "The uploaded file is empty or missing.",
+            None,
+            None,
+        );
+        close_upload_progress(upload_id);
         return (
             axum::http::StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -764,13 +889,38 @@ async fn handle_upload(
             })),
         );
     }
+    emit_upload_progress(
+        upload_id,
+        "step-upload",
+        "completed",
+        format!("Received '{}'.", filename),
+        Some(file_data.len()),
+        None,
+    );
 
     let filename_lower = filename.to_lowercase();
     let ocr_text = if filename_lower.ends_with(".txt") || filename_lower.ends_with(".md") {
+        emit_upload_progress(
+            upload_id,
+            "step-ocr",
+            "completed",
+            "OCR skipped for plain text input.",
+            None,
+            None,
+        );
         match String::from_utf8(file_data) {
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to decode UTF-8 text file: {}", e);
+                emit_upload_progress(
+                    upload_id,
+                    "step-ocr",
+                    "failed",
+                    format!("Failed to decode text file: {}", e),
+                    None,
+                    None,
+                );
+                close_upload_progress(upload_id);
                 return (
                     axum::http::StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
@@ -785,6 +935,15 @@ async fn handle_upload(
             Ok(key) => key,
             Err(_) => {
                 error!("MISTRAL_API_KEY env var not set");
+                emit_upload_progress(
+                    upload_id,
+                    "step-ocr",
+                    "failed",
+                    "MISTRAL_API_KEY is not set.",
+                    None,
+                    None,
+                );
+                close_upload_progress(upload_id);
                 return (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -796,10 +955,37 @@ async fn handle_upload(
         };
 
         info!("Uploading file '{}' to Mistral OCR API...", filename);
+        emit_upload_progress(
+            upload_id,
+            "step-ocr",
+            "active",
+            "Running Mistral OCR.",
+            None,
+            None,
+        );
         match run_mistral_ocr(&filename, file_data, &mistral_key).await {
-            Ok(text) => text,
+            Ok(text) => {
+                emit_upload_progress(
+                    upload_id,
+                    "step-ocr",
+                    "completed",
+                    format!("OCR extracted {} characters.", text.len()),
+                    Some(text.len()),
+                    None,
+                );
+                text
+            }
             Err(e) => {
                 error!("Mistral OCR failed: {}", e);
+                emit_upload_progress(
+                    upload_id,
+                    "step-ocr",
+                    "failed",
+                    format!("Mistral OCR error: {}", e),
+                    None,
+                    None,
+                );
+                close_upload_progress(upload_id);
                 return (
                     axum::http::StatusCode::UNPROCESSABLE_ENTITY,
                     Json(serde_json::json!({
@@ -819,8 +1005,24 @@ async fn handle_upload(
     );
 
     use crate::chunker::HierarchicalChunker;
+    emit_upload_progress(
+        upload_id,
+        "step-chunk",
+        "active",
+        "Tokenizing and chunking document.",
+        None,
+        None,
+    );
     let chunker = HierarchicalChunker::default();
     let chunks = chunker.chunk(&ocr_text, &filename);
+    emit_upload_progress(
+        upload_id,
+        "step-chunk",
+        "completed",
+        format!("Created {} chunks.", chunks.len()),
+        Some(chunks.len()),
+        None,
+    );
 
     info!("Split document into {} chunks.", chunks.len());
 
@@ -832,13 +1034,22 @@ async fn handle_upload(
         "Starting batched embedding for '{}' with batch_size={} across {} chunks.",
         filename, embedding_batch_size, total_chunks
     );
+    let total_batches = total_chunks.div_ceil(embedding_batch_size);
     for (batch_idx, batch) in chunks.chunks(embedding_batch_size).enumerate() {
         let batch_start = batch_idx * embedding_batch_size;
         let batch_end = batch_start + batch.len();
+        emit_upload_progress(
+            upload_id,
+            "step-embedding",
+            "active",
+            format!("Embedding batch {}/{}.", batch_idx + 1, total_batches),
+            Some(batch_idx + 1),
+            Some(total_batches),
+        );
         info!(
             "Embedding batch {}/{} for '{}' covering chunks {}..{}",
             batch_idx + 1,
-            total_chunks.div_ceil(embedding_batch_size),
+            total_batches,
             filename,
             batch_start + 1,
             batch_end
@@ -856,6 +1067,15 @@ async fn handle_upload(
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to generate batched vector embeddings: {}", e);
+                emit_upload_progress(
+                    upload_id,
+                    "step-embedding",
+                    "failed",
+                    format!("Failed to generate vector embeddings: {}", e),
+                    Some(batch_idx + 1),
+                    Some(total_batches),
+                );
+                close_upload_progress(upload_id);
                 return (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -889,9 +1109,17 @@ async fn handle_upload(
         info!(
             "Storing chunk batch {}/{} for '{}' ({} chunks) into PostgreSQL and Qdrant.",
             batch_idx + 1,
-            total_chunks.div_ceil(embedding_batch_size),
+            total_batches,
             filename,
             documents.len()
+        );
+        emit_upload_progress(
+            upload_id,
+            "step-db",
+            "active",
+            format!("Storing batch {}/{}.", batch_idx + 1, total_batches),
+            Some(batch_idx + 1),
+            Some(total_batches),
         );
         match state
             .db_pools
@@ -902,7 +1130,7 @@ async fn handle_upload(
                 info!(
                     "Stored chunk batch {}/{} for '{}' as {} document rows.",
                     batch_idx + 1,
-                    total_chunks.div_ceil(embedding_batch_size),
+                    total_batches,
                     filename,
                     ids.len()
                 );
@@ -910,6 +1138,15 @@ async fn handle_upload(
             }
             Err(e) => {
                 error!("Failed to store document chunk batch: {}", e);
+                emit_upload_progress(
+                    upload_id,
+                    "step-db",
+                    "failed",
+                    format!("Failed to store document chunk batch: {}", e),
+                    Some(batch_idx + 1),
+                    Some(total_batches),
+                );
+                close_upload_progress(upload_id);
                 return (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -920,6 +1157,22 @@ async fn handle_upload(
             }
         }
     }
+    emit_upload_progress(
+        upload_id,
+        "step-embedding",
+        "completed",
+        format!("Generated embeddings for {} chunks.", total_chunks),
+        Some(total_batches),
+        Some(total_batches),
+    );
+    emit_upload_progress(
+        upload_id,
+        "step-db",
+        "completed",
+        format!("Stored {} chunks.", doc_ids.len()),
+        Some(total_batches),
+        Some(total_batches),
+    );
 
     // Auto-extract anchors from headings in the OCR text
     info!("Starting anchor extraction for '{}'.", filename);
@@ -935,6 +1188,7 @@ async fn handle_upload(
         doc_ids.len(),
         anchor_count
     );
+    close_upload_progress(upload_id);
 
     (
         axum::http::StatusCode::OK,

@@ -409,54 +409,92 @@ async function handleFilesUpload(file) {
     const statusPanel = document.getElementById('status-panel');
     const statusFilename = document.getElementById('status-filename');
     const statusError = document.getElementById('status-error');
+    const uploadId = createUploadId();
+    let progressSource = null;
     statusFilename.textContent = file.name;
     statusError.textContent = '';
     statusError.style.display = 'none';
     statusPanel.style.display = 'flex';
     resetSteps();
     updateStep('step-upload', 'active');
+    progressSource = subscribeUploadProgress(uploadId);
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-        updateStep('step-upload', 'completed');
-        if (file.name.match(/\.(txt|md)$/i)) {
-            updateStep('step-ocr', 'completed');
-        } else {
-            updateStep('step-ocr', 'active');
-        }
-        updateStep('step-chunk', 'active');
-        updateStep('step-embedding', 'active');
-        updateStep('step-db', 'active');
-
-        const result = await fetchJson('/upload', {
+        await (progressSource?.ready || Promise.resolve());
+        const result = await fetchJson(`/upload?upload_id=${encodeURIComponent(uploadId)}`, {
             method: 'POST',
             body: formData,
         });
 
-        updateStep('step-ocr', 'completed');
-        updateStep('step-chunk', 'completed');
-        updateStep('step-embedding', 'completed');
-        updateStep('step-db', 'completed');
+        progressSource?.close();
+        completePendingUploadSteps();
         await fetchDocuments();
 
         const newDoc = state.documentList.find((doc) => doc.doc_uuid === result.doc_uuid);
         if (newDoc) selectDocument(newDoc.doc_uuid);
     } catch (error) {
         console.error('Upload failed:', error);
+        progressSource?.close();
         statusError.textContent = error.message;
         statusError.style.display = 'block';
         failActiveUploadStep();
     }
 }
 
-function updateStep(stepId, status) {
+function createUploadId() {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    return `upload-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function subscribeUploadProgress(uploadId) {
+    if (!window.EventSource) return null;
+
+    const source = new EventSource(`/upload/progress/${encodeURIComponent(uploadId)}`);
+    let resolved = false;
+    const ready = new Promise((resolve) => {
+        const finish = () => {
+            if (resolved) return;
+            resolved = true;
+            resolve();
+        };
+        source.onopen = finish;
+        setTimeout(finish, 500);
+    });
+    source.addEventListener('upload-progress', (event) => {
+        try {
+            const progress = JSON.parse(event.data);
+            if (!progress.step || !progress.status) return;
+            updateStep(progress.step, progress.status, progress.message, progress.current, progress.total);
+        } catch (error) {
+            console.error('Failed to parse upload progress event:', error);
+        }
+    });
+    source.onerror = () => {
+        console.warn('Upload progress stream disconnected; upload request will continue.');
+    };
+    return {
+        ready,
+        close: () => source.close(),
+    };
+}
+
+function updateStep(stepId, status, message = '', current = null, total = null) {
     const element = document.getElementById(stepId);
     if (!element) return;
     const normalized = status || 'pending';
     element.classList.remove('pending', 'active', 'completed', 'failed');
     element.classList.add(normalized);
+    if (message) {
+        const progressSuffix = Number.isFinite(current) && Number.isFinite(total) && total > 0
+            ? ` (${current}/${total})`
+            : '';
+        element.title = `${message}${progressSuffix}`;
+    } else {
+        element.removeAttribute('title');
+    }
     const iconEl = element.querySelector('.step-icon');
     if (iconEl) {
         iconEl.innerHTML = `<i class="fa-solid ${STEP_ICONS[normalized] || STEP_ICONS.pending}"></i>`;
@@ -474,6 +512,14 @@ function failActiveUploadStep() {
         document.getElementById(stepId)?.classList.contains('active')
     );
     updateStep(activeStep || 'step-upload', 'failed');
+}
+
+function completePendingUploadSteps() {
+    UPLOAD_STEPS.forEach((stepId) => {
+        const element = document.getElementById(stepId);
+        if (!element || element.classList.contains('failed')) return;
+        updateStep(stepId, 'completed');
+    });
 }
 
 function getSelectedDocument() {

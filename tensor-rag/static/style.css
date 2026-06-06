@@ -736,6 +736,7 @@ body {
     border-radius: 16px;
     max-width: 420px;
     width: 90%;
+    box-sizing: border-box;
     box-shadow: 0 24px 40px var(--shadow-color);
     text-align: center;
 }
@@ -750,6 +751,9 @@ body {
     font-size: 14px;
     line-height: 1.5;
     margin-bottom: 24px;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .confirm-icon {
@@ -771,6 +775,13 @@ body {
 
 .app-dialog-content {
     width: min(460px, 92vw);
+    max-height: min(86vh, 520px);
+    overflow: hidden;
+}
+
+.app-dialog-content #app-dialog-message {
+    max-height: min(36vh, 260px);
+    overflow-y: auto;
 }
 
 .app-dialog-content.is-danger .confirm-icon {
