@@ -27,6 +27,9 @@ The goal is to fix the system iteratively instead of attempting a full rewrite i
    - database/vector writes remain too synchronous
 4. Retrieval quality is currently too weak for exact phrase lookup and targeted QA.
 5. The UI contains several legacy artifacts and multiple regressions in structure, scrolling, and chat presentation.
+6. Local model/world knowledge can mask retrieval failures during manual QA; answers must be checked against retrieved passages, not only against apparent correctness.
+7. Configuration drift can silently put the server into mock mode or lower-throughput defaults even when Docker dependencies are running correctly.
+8. UI phase indicators need explicit backend progress events; frontend-only guesses mix ingestion steps and mislead validation.
 
 ---
 
@@ -41,6 +44,17 @@ The goal is to fix the system iteratively instead of attempting a full rewrite i
   - The answers were manually verified against the retrieved content shown in chat.
 
 This does not close retrieval quality work, but it is an important positive signal: the current retrieval pipeline can handle some targeted literary QA correctly even on a document with messy DOCX/HTML/Markdown structure.
+
+### Later correction for Alice validation
+
+- `confirmed` A later query against `Alice_in_Wonderland_Zakhoder.docx` exposed a false positive validation risk.
+  - Query: `какую песню поёт герцогиня?`
+  - The assistant produced an answer, but the answer was likely supplied from model knowledge rather than retrieved RAG evidence.
+  - The retrieval layer did not reliably surface the relevant passage.
+- Lesson:
+  - Manual validation must inspect retrieved sources/passages, not only the final answer.
+  - Grounding prompts must forbid filling gaps from outside knowledge for local-document questions.
+  - Retrieval fixes must be general; document-specific lexical hardcode is not acceptable.
 
 ---
 
@@ -65,11 +79,21 @@ This does not close retrieval quality work, but it is an important positive sign
   - Mistral OCR
   - embedding server requests
 
+- `fixed` Added retry and better diagnostics for Mistral OCR network calls.
+  - `/v1/files` upload and `/v1/ocr` now retry transient send failures.
+  - Errors include timeout/connect/request classification and source chain details.
+  - Added `MISTRAL_BASE_URL`, `MISTRAL_UPLOAD_TIMEOUT_SECS`, `MISTRAL_OCR_TIMEOUT_SECS`, `MISTRAL_RETRY_ATTEMPTS`, and `MISTRAL_RETRY_DELAY_MS`.
+
 - `fixed` Added race protection when switching documents in the frontend viewer.
 
 - `fixed` Added cleanup of `anchors` / `edges` and anchor embeddings when deleting or clearing documents.
 
 - `fixed` Switched main chunk embedding during ingestion from single-item requests to batched requests.
+
+- `fixed` Restored visible batching and GPU saturation settings after switching embedding models.
+  - `EMBEDDING_BATCH_SIZE` is now present in env examples and local config.
+  - Ollama compose config now exposes `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MAX_QUEUE`, `OLLAMA_KEEP_ALIVE`, and `OLLAMA_FLASH_ATTENTION`.
+  - Current direction is one loaded embedding model with parallel contexts, not multiple duplicate model copies on the same GPU.
 
 - `fixed` Added defensive limits for entity extraction by chunk size / entity count to avoid runaway CPU work.
 
@@ -81,10 +105,33 @@ This does not close retrieval quality work, but it is an important positive sign
 
 - `fixed` Prevented the graph integration test from using the normal application `DATABASE_URL`; it previously deleted real documents and left `doc-a`...`doc-d` mock rows in the live library.
 
+- `fixed` Made `.env` loading failures visible and less dependent on current working directory.
+  - The server now searches for `.env` in the current directory and parent directories.
+  - Startup logs now report whether an environment file was loaded or why it failed.
+  - `DATABASE_URL` logging is redacted.
+  - PostgreSQL initialization retries were added for dependency startup races.
+  - This fixed the observed banner state where both PostgreSQL and Qdrant appeared as `MOCK MODE` even though `.env` contained the URLs.
+  - Operational note: current `docker-compose.yml` starts dependencies only; it does not rebuild or restart the Rust application binary.
+
+- `fixed` Improved mock-mode API behavior.
+  - `/documents` now returns an empty document list plus a warning when PostgreSQL is not connected instead of failing with a generic 500.
+  - reset/reindex/graph endpoints now return structured JSON errors and `503` for missing PostgreSQL.
+
 - `fixed` Removed legacy retrieval response artifacts:
   - synthetic summary injection
   - internal `=== ДОКУМЕНТЫ В ПОИСКЕ ===` TOC block
   - user-facing `Proximity Gap` markers
+
+- `fixed` Replaced document-specific lexical hardcode with a configurable query expansion path.
+  - The initial song/lullaby expansion was rejected as hidden document/domain hardcode.
+  - Query expansion is now disabled by default and can be enabled with explicit dictionary files via `QUERY_EXPANSION_MODE=dictionary`.
+  - Supported dictionary formats include JSON objects, JSON synonym groups, and text synonym groups.
+
+- `fixed` Switched default embeddings to `jeffh/intfloat-multilingual-e5-large-instruct:q8_0`.
+  - Default embedding dimension changed to 1024.
+  - Query embeddings use an instruction template via `EMBEDDING_QUERY_PREFIX`.
+  - Passage prefix defaults to empty for this Ollama model.
+  - Qdrant collection recreation and reindexing are required after this change.
 
 - `in_progress` Tightened lexical retrieval with explicit exact/substring matching boosts and a stronger keyword candidate fallback path.
 
@@ -125,6 +172,7 @@ Completed in this area:
 - Qdrant upserts for chunks and anchors are batched per embedding batch.
 - Qdrant upsert waiting is configurable with `QDRANT_UPSERT_WAIT` and defaults to non-blocking writes.
 - PostgreSQL chunk writes inside each embedding batch now use a single multi-row `INSERT ... RETURNING id` instead of one sequential insert per chunk.
+- Ollama runtime tuning is explicit in compose (`OLLAMA_NUM_PARALLEL`, queue size, keep-alive, flash attention), and application batch size is explicit in env config.
 
 Follow-up work:
 - Validate ingestion throughput against a large real document with Qdrant enabled.
@@ -132,6 +180,7 @@ Follow-up work:
   - chunk preparation
   - embedding requests
   - storage writes
+- Profile whether `EMBEDDING_BATCH_SIZE=64` and `OLLAMA_NUM_PARALLEL=4` are optimal for the current GPU/VRAM; do not assume these are universal defaults.
 
 Notes:
 - `EMBEDDING_BATCH_SIZE` was introduced, but this is only the first step.
@@ -159,6 +208,8 @@ Current status:
 - Legacy context-bloat from summary injection / TOC artifact / proximity markers was removed.
 - RSF is now the default rerank strategy, with BM25 weighted above dense similarity for exact textual matches.
 - Search response shaping now limits ordinary QA context volume by narrowing fallback candidates, avoiding broad macro expansion unless explicitly requested, capping per-document chunks, and reducing the default MCP search response budget.
+- The assistant prompt now explicitly forbids answering local-document questions from outside knowledge when retrieved passages are insufficient.
+- The embedding backend now uses an instruct multilingual E5 model and an explicit query instruction template, replacing the older non-instruct/default configuration.
 
 Remaining hypotheses:
 - Qdrant/dense retrieval is not suitable as the only mechanism for precise chapter, heading, line, or paragraph lookup; PostgreSQL-backed lexical/structured search should be expanded for exact navigation and extraction tasks.
@@ -583,6 +634,30 @@ Completed in this area:
 
 ---
 
+### 15b. AI provider network failures are not retried and overflow the notice modal
+
+Status: `fixed`
+
+Symptoms:
+- Intermittent internet/provider failures produced a hard chat error such as:
+  - `Failed to call AI provider: error sending request for url (...)`
+- Long provider URLs overflowed the notice modal and visually escaped the card bounds.
+
+Impact:
+- Bad connections caused avoidable chat failures.
+- Error display looked broken exactly when the user needed clear diagnostics.
+
+Resolution:
+- Added retry for AI provider chat-completion requests on network/send errors, `429`, and `5xx` responses.
+- Added configurable `AI_REQUEST_TIMEOUT_SECS`, `AI_RETRY_ATTEMPTS`, and `AI_RETRY_DELAY_MS`.
+- Error diagnostics now include timeout/connect/request classification and source-chain details.
+- Notice modal text now wraps long URLs and scrolls inside the dialog instead of overflowing.
+
+Remaining caveat:
+- If streaming has already begun and then fails mid-answer, automatic retry is not yet enabled because replaying the request could duplicate partial output. This should be handled separately if mid-stream failures become common.
+
+---
+
 ## P2 - Medium-priority cleanup and evolution
 
 ### 16. Frontend asset quality regressed
@@ -605,9 +680,14 @@ Follow-up work:
 - `fixed` Removed custom PNG icons from the active UI path and restored Font Awesome / scalable icon rendering for shell, toolbar, chat, upload, and reset controls.
 - `fixed` Restored stateful upload/status step icons for pending, active, completed, and failed states.
 - `fixed` Moved the base UI palette away from the regressed brown/espresso look toward a more neutral operational palette with distinct status accents.
+- `fixed` Added backend-driven upload progress events with SSE.
+  - The frontend no longer marks OCR, chunking, embedding, and DB indexing as active immediately after request start.
+  - The upload banner now receives explicit `active`, `completed`, and `failed` events from the backend pipeline.
+  - The UI waits briefly for the SSE channel before starting `/upload` to avoid losing initial progress events.
 - Restore a clearer animated upload/indexing progress indicator.
 - Ensure the status bar transitions through upload, OCR, tokenization/chunking, embedding, and DB indexing without requiring a page refresh.
-  - Current frontend now updates final state and selected document after upload completion, but true live phase progress still needs backend progress events or polling; otherwise the frontend can only show server-processing state while `/upload` is pending.
+  - `fixed` The main phase-transition mechanism now uses backend SSE progress events.
+  - Remaining: visually validate the banner on long OCR and long embedding runs, especially failure cases and reconnect behavior.
 - Revisit the broader visual design regression caused by the attempted UI refresh.
 
 ---
@@ -637,21 +717,21 @@ Follow-up work:
 
 ### 18. External backends use synthetic stubs instead of real calls
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
-- `get_embedding()` always returns `Array1::from_elem(768, 0.1)` regardless of ML server configuration.
 - Arrow Flight service (`flight.rs`) has all 10 `FlightService` methods returning `Status::unimplemented` — zero working implementation.
-- Without real embeddings or Arrow Flight, horizontal scaling (tasks 4.3.1–4.3.4) is impossible.
+- Without Arrow Flight, horizontal scaling (tasks 4.3.1–4.3.4) is impossible.
 - Observability (tasks 4.4.1–4.4.4) is not started: code uses `println!` instead of structured tracing, no `/metrics` or `/health` endpoints expose real data, circuit breakers exist but are not instrumented.
 
 Impact:
-- Embedding always returns a constant dummy vector regardless of input text — any ML-server-dependent flow gives meaningless results.
 - Arrow Flight distributed data exchange cannot be tested or used.
 - No way to monitor system health or performance in production-like conditions.
 
 Follow-up work:
-- Replace synthetic embedding with real HTTP/gRPC call to configured ML server (OpenAI-compatible `/v1/embeddings` REST API).
+- `fixed` Replaced synthetic embedding with real OpenAI-compatible `/v1/embeddings` HTTP calls when an embedding server is configured.
+- `fixed` Added batch embedding requests for ingestion and anchor embeddings.
+- `fixed` Updated default embedding config to `jeffh/intfloat-multilingual-e5-large-instruct:q8_0` with 1024 dimensions.
 - Implement Arrow Flight `do_put` / `do_get` / `do_exchange` with `RecordBatch` registry.
 - Replace `println!` with `tracing` structured JSON logs.
 - Implement `/health`, `/ready`, and `/metrics` HTTP endpoints.
