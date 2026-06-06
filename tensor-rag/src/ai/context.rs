@@ -119,7 +119,7 @@ fn build_sources_context(sources: &[ChatSource]) -> String {
         .join("\n\n");
 
     format!(
-        "Retrieved context from the local RAG library:\n\n{}\n\nUse this context when it is relevant. If it is insufficient, say so explicitly.",
+        "Retrieved context from the local RAG library:\n\n{}\n\nFor questions about local documents, use only this retrieved context as evidence. Do not answer from outside knowledge. If this context is insufficient, say so explicitly.",
         context
     )
 }
@@ -131,12 +131,14 @@ fn agent_instruction(
 ) -> String {
     let mut lines = vec![
         "You can decide whether to call local MCP-backed tools before answering.".to_string(),
+        "For questions about local documents or the document library, call search_text before answering.".to_string(),
         "Only call a tool when it genuinely helps answer the user's request.".to_string(),
         format!(
             "When using search_text, prefer concise keyword queries and keep final_top_k at or below {}.",
             rag_top_k
         ),
-        "If no tool is needed, answer directly.".to_string(),
+        "If retrieved tool results do not contain enough evidence, say that the local library context is insufficient instead of answering from memory.".to_string(),
+        "If no tool is needed for a non-library question, answer directly.".to_string(),
     ];
 
     if scope_to_selected_document {

@@ -167,6 +167,14 @@ pub fn execute_program<'a>(
                         }
                     }
 
+                    for id in pg_ids {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                            vectors
+                                .push(ndarray::Array1::zeros(crate::config::get_embedding_dim()));
+                        }
+                    }
+
                     let query_entities = crate::entity::extract_query_entities(query);
                     if query_entities.len() >= 2 {
                         let doc_uuid_filter = filters_opt.as_ref().and_then(|f_list| {
@@ -245,6 +253,15 @@ pub fn execute_program<'a>(
                                             vectors.push(ndarray::Array1::from(vec_data));
                                         }
                                     }
+                                }
+                            }
+
+                            for id in entity_ids {
+                                if !ids.contains(&id) {
+                                    ids.push(id);
+                                    vectors.push(ndarray::Array1::zeros(
+                                        crate::config::get_embedding_dim(),
+                                    ));
                                 }
                             }
                         }

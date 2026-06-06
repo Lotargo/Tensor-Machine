@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 pub use context::{AiChatMode, ContextOverflowStrategy};
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a grounded RAG assistant for the local document library. Answer clearly, stay close to the retrieved context, and say when the library does not contain enough evidence. When you rely on retrieved passages, cite them inline as [1], [2], and so on.";
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a grounded RAG assistant for the local document library. For questions about local documents, answer only from retrieved passages and never fill gaps from outside knowledge. If the retrieved library context does not contain enough evidence, say that explicitly. When you rely on retrieved passages, cite them inline as [1], [2], and so on.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {

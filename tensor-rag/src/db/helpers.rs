@@ -15,12 +15,85 @@ pub fn json_array_to_strings(value: serde_json::Value) -> Vec<String> {
 }
 
 pub fn tokenize_lexical_query(query: &str) -> Vec<String> {
-    query
+    let mut terms: Vec<String> = query
         .split_whitespace()
         .filter(|word| !word.is_empty())
         .map(|word| word.replace(|c: char| !c.is_alphanumeric(), ""))
         .filter(|word| !word.is_empty())
-        .collect()
+        .collect();
+
+    for term in lexical_expansion_terms(query) {
+        if !terms.iter().any(|existing| existing == term) {
+            terms.push(term.to_string());
+        }
+    }
+
+    terms
+}
+
+fn lexical_expansion_terms(query: &str) -> Vec<&'static str> {
+    let normalized = query.to_lowercase();
+    let tokens: Vec<String> = normalized
+        .split_whitespace()
+        .map(|word| word.replace(|c: char| !c.is_alphanumeric(), ""))
+        .filter(|word| !word.is_empty())
+        .collect();
+
+    let asks_about_song = tokens.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "song"
+                | "songs"
+                | "sing"
+                | "sings"
+                | "sang"
+                | "sung"
+                | "poem"
+                | "verse"
+                | "lullaby"
+                | "песня"
+                | "песню"
+                | "песне"
+                | "песни"
+                | "поет"
+                | "поёт"
+                | "пел"
+                | "пела"
+                | "спел"
+                | "спела"
+                | "стих"
+                | "стихи"
+                | "колыбельная"
+                | "колыбельную"
+                | "куплет"
+                | "припев"
+        )
+    });
+
+    if asks_about_song {
+        vec![
+            "song",
+            "sing",
+            "sang",
+            "verse",
+            "chorus",
+            "lullaby",
+            "песня",
+            "песню",
+            "поет",
+            "поёт",
+            "пела",
+            "спела",
+            "напевала",
+            "напевая",
+            "колыбельная",
+            "колыбельной",
+            "куплет",
+            "припев",
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn extract_precise_lookup_phrase(query: &str) -> Option<String> {
@@ -232,5 +305,14 @@ mod tests {
             extract_precise_lookup_phrase("exact phrase: Alice met the Rabbit"),
             Some("Alice met the Rabbit".to_string())
         );
+    }
+
+    #[test]
+    fn lexical_query_expands_song_intent_without_document_specific_terms() {
+        let terms = tokenize_lexical_query("какую песню поёт герцогиня?");
+        assert!(terms.contains(&"герцогиня".to_string()));
+        assert!(terms.contains(&"колыбельной".to_string()));
+        assert!(terms.contains(&"напевала".to_string()));
+        assert!(terms.contains(&"припев".to_string()));
     }
 }
