@@ -12,8 +12,47 @@ The server reads configuration from environment variables:
 | `MCP_BIND_ADDR` | `0.0.0.0:8080` | HTTP/MCP/router listen address. When unset and the default port is busy, the server tries fallback ports `8081..8090`. |
 | `PORTAL_HOST` | `127.0.0.1` | Hostname printed for the local portal URL when the router binds to `0.0.0.0` or `::`. |
 | `MAX_CONNECTIONS` | `5` | PostgreSQL connection pool size |
+| `EMBEDDING_BATCH_SIZE` | `64` in `.env.example`, `32` code fallback | Number of chunks sent in one embedding request during ingestion. |
+| `EMBEDDING_REQUEST_TIMEOUT_SECS` | `240` in `.env.example`, `120` code fallback | HTTP timeout for embedding batch requests. |
+| `QDRANT_UPSERT_WAIT` | `false` | Whether ingestion waits for Qdrant writes to be applied before continuing. |
+| `QUERY_EXPANSION_MODE` | `off` | Query expansion mode. Supported values: `off`, `dictionary`. |
+| `QUERY_EXPANSION_DICTIONARY_PATHS` | — | Semicolon- or comma-separated synonym dictionary files used when `QUERY_EXPANSION_MODE=dictionary`. |
+| `QUERY_EXPANSION_MAX_TERMS` | `8` | Maximum extra lexical terms added to a query. |
 
 When no database variables are set, the system runs in **mock mode** and returns synthetic data for all queries.
+
+## Query Expansion
+
+Query expansion is disabled by default. To enable dictionary-based expansion:
+
+```bash
+export QUERY_EXPANSION_MODE=dictionary
+export QUERY_EXPANSION_DICTIONARY_PATHS="config/synonyms.json;config/domain-synonyms.txt"
+export QUERY_EXPANSION_MAX_TERMS=8
+```
+
+Supported JSON dictionary formats:
+
+```json
+{
+  "sing": ["chant", "vocalize"],
+  "lullaby": ["cradle song"]
+}
+```
+
+```json
+[
+  ["song", "tune", "melody"],
+  ["lullaby", "cradle song"]
+]
+```
+
+Text dictionaries use one synonym group per line:
+
+```text
+song, tune, melody
+lullaby => cradle song
+```
 
 ## Database Setup
 
@@ -48,8 +87,26 @@ export QDRANT_COLLECTION="documents"
 
 **Expected vector configuration:**
 
-- Dimension: 768 (configurable via Arrow schema)
+- Dimension: 1024 by default for `jeffh/intfloat-multilingual-e5-large-instruct:q8_0`
 - Distance: Dot product or cosine similarity
+
+Changing `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIM`, or embedding prefixes requires recreating the Qdrant collection and reindexing documents so stored vectors match the active model.
+
+The Docker Compose Ollama setup pulls `jeffh/intfloat-multilingual-e5-large-instruct:q8_0`. If you use a Hugging Face/Text Embeddings Inference/Together-style endpoint instead of Ollama, set `EMBEDDING_MODEL_NAME` to that provider's canonical model identifier, for example `intfloat/multilingual-e5-large-instruct`.
+
+### Ollama Throughput
+
+The compose service passes these runtime settings to Ollama:
+
+```bash
+OLLAMA_NUM_PARALLEL=4
+OLLAMA_MAX_LOADED_MODELS=1
+OLLAMA_MAX_QUEUE=1024
+OLLAMA_KEEP_ALIVE=24h
+OLLAMA_FLASH_ATTENTION=1
+```
+
+`OLLAMA_NUM_PARALLEL` allows concurrent work for the loaded model. `OLLAMA_MAX_LOADED_MODELS=1` is intentional for indexing: it keeps VRAM focused on the embedding model instead of allowing unrelated models to compete for memory. Running two copies of the same quantized embedding model is usually less useful than increasing batch size and pipelining requests, unless separate GPUs/endpoints are available and the client distributes batches across them.
 
 ### Mock Mode
 
@@ -92,7 +149,7 @@ The default RecordBatch schema used across all subsystems:
 | Column | Arrow Type | Description |
 |--------|------------|-------------|
 | `id` | `Int64` | Document ID |
-| `vector` | `FixedSizeList(Float32, 768)` | 768-dim embedding vector |
+| `vector` | `FixedSizeList(Float32, 1024)` | 1024-dim embedding vector |
 | `bm25_score` | `Float32` | Pre-computed BM25 score |
 | `text` | `Utf8` | Document text |
 

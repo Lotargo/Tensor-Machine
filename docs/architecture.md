@@ -162,7 +162,7 @@ All tensor data flows through Apache Arrow `RecordBatch` with a shared schema:
 | Column | Arrow Type | Description |
 |--------|------------|-------------|
 | `id` | `Int64` | Document ID |
-| `vector` | `FixedSizeList(Float32, 768)` | 768-dim embedding |
+| `vector` | `FixedSizeList(Float32, 1024)` | 1024-dim embedding |
 | `bm25_score` | `Float32` | Pre-computed BM25 score |
 | `text` | `Utf8` | Document text |
 

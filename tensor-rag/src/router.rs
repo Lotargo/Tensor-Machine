@@ -6,12 +6,13 @@ use axum::{
     routing::post,
 };
 use std::collections::{HashMap, HashSet};
+use std::error::Error as StdError;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub struct ServerControl {
     pub cancel_token: CancellationToken,
@@ -219,6 +220,33 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         options: &[],
     },
     SettingDescriptor {
+        key: "MISTRAL_BASE_URL",
+        label: "Mistral Base URL",
+        description: "Base URL for Mistral API calls.",
+        category: "ocr",
+        field_type: "text",
+        placeholder: "https://api.mistral.ai/v1",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MISTRAL_UPLOAD_TIMEOUT_SECS",
+        label: "Mistral Upload Timeout",
+        description: "Timeout for uploading source files to Mistral.",
+        category: "ocr",
+        field_type: "number",
+        placeholder: "240",
+        options: &[],
+    },
+    SettingDescriptor {
+        key: "MISTRAL_RETRY_ATTEMPTS",
+        label: "Mistral Retry Attempts",
+        description: "Number of attempts for transient Mistral network requests.",
+        category: "ocr",
+        field_type: "number",
+        placeholder: "3",
+        options: &[],
+    },
+    SettingDescriptor {
         key: "EMBEDDING_SERVER_URL",
         label: "Embedding Server URL",
         description: "Base URL for the local embedding endpoint.",
@@ -233,7 +261,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "The model identifier to pass to the embedding server.",
         category: "embeddings",
         field_type: "text",
-        placeholder: "nomic-embed-text",
+        placeholder: "jeffh/intfloat-multilingual-e5-large-instruct:q8_0",
         options: &[],
     },
     SettingDescriptor {
@@ -251,7 +279,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "Instruction prefix for query embeddings.",
         category: "embeddings",
         field_type: "text",
-        placeholder: "query: ",
+        placeholder: "Instruct: Given a question about a local document library, retrieve passages that contain the answer, including paraphrases and nearby narrative context.\\nQuery: {}",
         options: &[],
     },
     SettingDescriptor {
@@ -260,7 +288,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "Instruction prefix for passage embeddings.",
         category: "embeddings",
         field_type: "text",
-        placeholder: "passage: ",
+        placeholder: "",
         options: &[],
     },
     SettingDescriptor {
@@ -269,7 +297,7 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         description: "Expected embedding vector size.",
         category: "embeddings",
         field_type: "number",
-        placeholder: "768",
+        placeholder: "1024",
         options: &[],
     },
     SettingDescriptor {
@@ -544,12 +572,42 @@ async fn handle_mcp(
     }
 }
 
+fn json_error(
+    status: axum::http::StatusCode,
+    message: impl Into<String>,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    (
+        status,
+        Json(serde_json::json!({
+            "status": "error",
+            "error": message.into()
+        })),
+    )
+}
+
+fn status_for_db_error(message: &str) -> axum::http::StatusCode {
+    if message.contains("PostgreSQL pool not initialized") {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+
 fn env_file_path() -> PathBuf {
-    dotenvy::dotenv().unwrap_or_else(|_| {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(".env")
-    })
+    let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    loop {
+        let candidate = dir.join(".env");
+        if candidate.exists() {
+            return candidate;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".env")
 }
 
 fn read_env_file_map() -> HashMap<String, String> {
@@ -894,6 +952,11 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
     let connect_timeout = Duration::from_secs(crate::config::get_http_connect_timeout_secs());
     let upload_timeout = Duration::from_secs(crate::config::get_mistral_upload_timeout_secs());
     let ocr_timeout = Duration::from_secs(crate::config::get_mistral_ocr_timeout_secs());
+    let retry_attempts = crate::config::get_mistral_retry_attempts();
+    let retry_delay = Duration::from_millis(crate::config::get_mistral_retry_delay_ms());
+    let base_url = crate::config::get_mistral_base_url();
+    let files_url = format!("{}/files", base_url);
+    let ocr_url = format!("{}/ocr", base_url);
 
     let upload_client = reqwest::Client::builder()
         .connect_timeout(connect_timeout)
@@ -906,32 +969,28 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
         .build()
         .map_err(|e| format!("Failed to build Mistral OCR client: {}", e))?;
 
-    let part = reqwest::multipart::Part::bytes(data)
-        .file_name(filename.to_string())
-        .mime_str("application/octet-stream")
-        .map_err(|e| e.to_string())?;
-
-    let form = reqwest::multipart::Form::new()
-        .part("file", part)
-        .text("purpose", "ocr");
-
     #[derive(serde::Deserialize)]
     struct FileUploadResponse {
         id: String,
     }
 
     info!(
-        "Sending file '{}' to Mistral /v1/files with timeout={}s",
+        "Sending file '{}' ({} bytes) to Mistral /files with timeout={}s, attempts={}",
         filename,
-        upload_timeout.as_secs()
+        data.len(),
+        upload_timeout.as_secs(),
+        retry_attempts
     );
-    let file_resp = upload_client
-        .post("https://api.mistral.ai/v1/files")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to send upload request: {}", e))?;
+    let file_resp = send_mistral_file_upload(
+        &upload_client,
+        &files_url,
+        filename,
+        &data,
+        api_key,
+        retry_attempts,
+        retry_delay,
+    )
+    .await?;
 
     let file_status = file_resp.status();
     if !file_status.is_success() {
@@ -967,17 +1026,20 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
     }
 
     info!(
-        "Sending OCR extraction request to Mistral for file_id={} with timeout={}s",
+        "Sending OCR extraction request to Mistral for file_id={} with timeout={}s, attempts={}",
         file_info.id,
-        ocr_timeout.as_secs()
+        ocr_timeout.as_secs(),
+        retry_attempts
     );
-    let ocr_resp = ocr_client
-        .post("https://api.mistral.ai/v1/ocr")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&ocr_payload)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to send OCR request: {}", e))?;
+    let ocr_resp = send_mistral_json_request(
+        &ocr_client,
+        &ocr_url,
+        api_key,
+        &ocr_payload,
+        retry_attempts,
+        retry_delay,
+    )
+    .await?;
 
     let ocr_status = ocr_resp.status();
     if !ocr_status.is_success() {
@@ -1002,6 +1064,121 @@ async fn run_mistral_ocr(filename: &str, data: Vec<u8>, api_key: &str) -> Result
         .map(|page| page.markdown.as_str())
         .collect::<Vec<&str>>()
         .join("\n\n"))
+}
+
+async fn send_mistral_file_upload(
+    client: &reqwest::Client,
+    url: &str,
+    filename: &str,
+    data: &[u8],
+    api_key: &str,
+    attempts: usize,
+    retry_delay: Duration,
+) -> Result<reqwest::Response, String> {
+    let mut last_error = None;
+    for attempt in 1..=attempts {
+        let part = reqwest::multipart::Part::bytes(data.to_vec())
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")
+            .map_err(|e| e.to_string())?;
+        let form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("purpose", "ocr");
+
+        match client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .multipart(form)
+            .send()
+            .await
+        {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let detailed = describe_reqwest_error(&error);
+                warn!(
+                    attempt,
+                    attempts,
+                    "Mistral file upload request failed: {}",
+                    detailed
+                );
+                last_error = Some(detailed);
+                if attempt < attempts {
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to send upload request after {} attempt(s): {}",
+        attempts,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+async fn send_mistral_json_request(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    payload: &serde_json::Value,
+    attempts: usize,
+    retry_delay: Duration,
+) -> Result<reqwest::Response, String> {
+    let mut last_error = None;
+    for attempt in 1..=attempts {
+        match client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(payload)
+            .send()
+            .await
+        {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let detailed = describe_reqwest_error(&error);
+                warn!(
+                    attempt,
+                    attempts,
+                    "Mistral OCR request failed: {}",
+                    detailed
+                );
+                last_error = Some(detailed);
+                if attempt < attempts {
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to send OCR request after {} attempt(s): {}",
+        attempts,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let mut details = vec![error.to_string()];
+    if error.is_timeout() {
+        details.push("kind=timeout".to_string());
+    }
+    if error.is_connect() {
+        details.push("kind=connect".to_string());
+    }
+    if error.is_request() {
+        details.push("kind=request".to_string());
+    }
+    if let Some(url) = error.url() {
+        details.push(format!("url={}", url));
+    }
+
+    let mut source = error.source();
+    while let Some(cause) = source {
+        details.push(format!("caused by: {}", cause));
+        source = cause.source();
+    }
+
+    details.join("; ")
 }
 
 async fn serve_index() -> axum::response::Html<&'static str> {
@@ -1090,19 +1267,23 @@ async fn handle_get_document_graph(
     State(state): State<Arc<AppState>>,
     AxumPath(doc_uuid): AxumPath<String>,
     axum::extract::Query(query): axum::extract::Query<GraphQuery>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let pool = state
-        .db_pools
-        .postgres
-        .as_ref()
-        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let Some(pool) = state.db_pools.postgres.as_ref() else {
+        return Err(json_error(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "PostgreSQL is not connected. Check DATABASE_URL and restart the server.",
+        ));
+    };
 
     let depth = query.depth.unwrap_or(2);
     let graph_data = crate::graph::get_document_neighborhood(pool, &doc_uuid, depth)
         .await
         .map_err(|e| {
             error!("Failed to get document graph: {}", e);
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            json_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get document graph: {}", e),
+            )
         })?;
 
     Ok(Json(graph_data))
@@ -1111,12 +1292,13 @@ async fn handle_get_document_graph(
 async fn handle_get_document_details(
     State(state): State<Arc<AppState>>,
     AxumPath(doc_uuid): AxumPath<String>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let pool = state
-        .db_pools
-        .postgres
-        .as_ref()
-        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let Some(pool) = state.db_pools.postgres.as_ref() else {
+        return Err(json_error(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "PostgreSQL is not connected. Check DATABASE_URL and restart the server.",
+        ));
+    };
 
     use sqlx::Row;
 
@@ -1129,7 +1311,10 @@ async fn handle_get_document_details(
     .await
     .map_err(|e| {
         error!("Failed to fetch document chunks: {}", e);
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        json_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to fetch document chunks: {}", e),
+        )
     })?;
 
     let mut chunks = Vec::new();
@@ -1169,7 +1354,10 @@ async fn handle_get_document_details(
             .await
             .map_err(|e| {
                 error!("Failed to fetch anchors: {}", e);
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+                json_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to fetch anchors: {}", e),
+                )
             })?;
 
     let anchors: Vec<serde_json::Value> = anchor_rows
@@ -1191,7 +1379,10 @@ async fn handle_get_document_details(
     .await
     .map_err(|e| {
         error!("Failed to fetch edges: {}", e);
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        json_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to fetch edges: {}", e),
+        )
     })?;
 
     let edges: Vec<serde_json::Value> = edge_rows.iter().map(|r| {
@@ -1221,18 +1412,22 @@ struct PathQuery {
 async fn handle_find_shortest_path(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<PathQuery>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let pool = state
-        .db_pools
-        .postgres
-        .as_ref()
-        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let Some(pool) = state.db_pools.postgres.as_ref() else {
+        return Err(json_error(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "PostgreSQL is not connected. Check DATABASE_URL and restart the server.",
+        ));
+    };
 
     let path = crate::graph::find_shortest_path(pool, &query.start, &query.end)
         .await
         .map_err(|e| {
             error!("Pathfinding failed: {}", e);
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            json_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Pathfinding failed: {}", e),
+            )
         })?;
 
     Ok(Json(serde_json::json!({
@@ -1248,19 +1443,23 @@ struct AutoLinkQuery {
 async fn handle_auto_link_documents(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<AutoLinkQuery>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let pool = state
-        .db_pools
-        .postgres
-        .as_ref()
-        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let Some(pool) = state.db_pools.postgres.as_ref() else {
+        return Err(json_error(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "PostgreSQL is not connected. Check DATABASE_URL and restart the server.",
+        ));
+    };
 
     let threshold = query.threshold.unwrap_or(3);
     let count = crate::graph::auto_link_by_shared_entities(pool, threshold)
         .await
         .map_err(|e| {
             error!("Auto-linking failed: {}", e);
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            json_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Auto-linking failed: {}", e),
+            )
         })?;
 
     Ok(Json(serde_json::json!({
@@ -1272,11 +1471,14 @@ async fn handle_auto_link_documents(
 async fn handle_list_documents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let pool = state
-        .db_pools
-        .postgres
-        .as_ref()
-        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(pool) = state.db_pools.postgres.as_ref() else {
+        let collection_health = state.db_pools.get_collection_health().await;
+        return Ok(Json(serde_json::json!({
+            "documents": [],
+            "collection_health": collection_health,
+            "warning": "PostgreSQL is not connected. Check DATABASE_URL and restart the server."
+        })));
+    };
 
     let rows = sqlx::query(
         r#"
@@ -1413,10 +1615,10 @@ async fn serve_mammoth() -> impl axum::response::IntoResponse {
 async fn handle_delete_document(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<usize>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     state.db_pools.delete_document(id).await.map_err(|e| {
         error!("Failed to delete document: {}", e);
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        json_error(status_for_db_error(&e), e)
     })?;
 
     Ok(Json(serde_json::json!({
@@ -1427,10 +1629,10 @@ async fn handle_delete_document(
 
 async fn handle_clear_database(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     state.db_pools.clear_documents().await.map_err(|e| {
         error!("Failed to clear database: {}", e);
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        json_error(status_for_db_error(&e), e)
     })?;
 
     Ok(Json(serde_json::json!({
@@ -1441,10 +1643,10 @@ async fn handle_clear_database(
 
 async fn handle_hard_reset_database(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     state.db_pools.hard_reset_database().await.map_err(|e| {
         error!("Failed to perform hard reset: {}", e);
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        json_error(status_for_db_error(&e), e)
     })?;
 
     Ok(Json(serde_json::json!({
@@ -1455,10 +1657,10 @@ async fn handle_hard_reset_database(
 
 async fn handle_reindex_database(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     state.db_pools.reindex_database().await.map_err(|e| {
         error!("Failed to reindex database: {}", e);
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        json_error(status_for_db_error(&e), e)
     })?;
 
     Ok(Json(serde_json::json!({

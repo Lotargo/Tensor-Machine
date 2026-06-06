@@ -6,6 +6,7 @@ pub mod entity;
 pub mod ir;
 pub mod mcp;
 pub mod normalizer;
+pub mod query_expansion;
 pub mod response;
 pub mod rsf;
 pub mod vm;

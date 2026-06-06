@@ -22,16 +22,16 @@ pub struct DbPools {
 impl DbPools {
     fn format_embedding_input(text: &str, is_query: bool) -> String {
         if is_query {
-            let template =
-                std::env::var("EMBEDDING_QUERY_PREFIX").unwrap_or_else(|_| "query: ".to_string());
+            let template = std::env::var("EMBEDDING_QUERY_PREFIX").unwrap_or_else(|_| {
+                "Instruct: Given a question about a local document library, retrieve passages that contain the answer, including paraphrases and nearby narrative context.\nQuery: {}".to_string()
+            });
             if template.contains("{}") {
                 template.replace("{}", text)
             } else {
                 format!("{}{}", template, text)
             }
         } else {
-            let template = std::env::var("EMBEDDING_PASSAGE_PREFIX")
-                .unwrap_or_else(|_| "passage: ".to_string());
+            let template = std::env::var("EMBEDDING_PASSAGE_PREFIX").unwrap_or_default();
             if template.contains("{}") {
                 template.replace("{}", text)
             } else {

@@ -3,7 +3,7 @@ use tensor_rag::db::DbPools;
 use tensor_rag::mcp::{McpRequest, McpServer};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 const DEFAULT_ROUTER_BIND_ADDR: &str = "0.0.0.0:8080";
 
@@ -27,6 +27,67 @@ fn portal_url(bound_addr: std::net::SocketAddr) -> String {
         bound_addr.ip().to_string()
     };
     format!("http://{}:{}", host, bound_addr.port())
+}
+
+fn find_env_file() -> Option<std::path::PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join(".env");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn redact_database_url(url: &str) -> String {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        if let Some(at_idx) = rest.find('@') {
+            return format!("{}://***@{}", scheme, &rest[at_idx + 1..]);
+        }
+    }
+    url.to_string()
+}
+
+fn load_env_file() -> Option<(std::path::PathBuf, Result<(), dotenvy::Error>)> {
+    find_env_file().map(|path| {
+        let result = dotenvy::from_path(&path).map(|_| ());
+        (path, result)
+    })
+}
+
+async fn init_postgres_with_retry(pools: &mut DbPools, url: &str) -> bool {
+    let attempts = std::env::var("POSTGRES_INIT_RETRIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(10)
+        .max(1);
+    let delay_ms = std::env::var("POSTGRES_INIT_RETRY_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000);
+
+    for attempt in 1..=attempts {
+        match pools.init_postgres(url).await {
+            Ok(()) => return true,
+            Err(error) => {
+                tracing::error!(
+                    attempt,
+                    attempts,
+                    "Failed to initialize PostgreSQL pool: {}",
+                    error
+                );
+                if attempt < attempts {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 async fn bind_router_listener(
@@ -67,7 +128,7 @@ async fn bind_router_listener(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::dotenv().ok();
+    let env_load = load_env_file();
 
     tracing_subscriber::fmt()
         .json()
@@ -76,6 +137,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    match env_load {
+        Some((path, Ok(()))) => {
+            info!("Loaded environment file: {}", path.display());
+        }
+        Some((path, Err(error))) => {
+            warn!(
+                "Failed to load environment file {}: {}. The server may start in mock mode if DATABASE_URL or QDRANT_URL are not set elsewhere.",
+                path.display(),
+                error
+            );
+        }
+        None => {
+            warn!(
+                "No .env file found in the current directory or its parents. The server may start in mock mode if DATABASE_URL or QDRANT_URL are not set elsewhere."
+            );
+        }
+    }
 
     let cancel_token = CancellationToken::new();
     let cloned_token = cancel_token.clone();
@@ -106,9 +185,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the DB pools
     let mut pools = DbPools::new();
     if let Ok(url) = std::env::var("DATABASE_URL") {
-        info!("Initializing PostgreSQL pool with URL: {}", url);
-        if let Err(e) = pools.init_postgres(&url).await {
-            tracing::error!("Failed to initialize PostgreSQL pool: {}", e);
+        info!(
+            "Initializing PostgreSQL pool with URL: {}",
+            redact_database_url(&url)
+        );
+        if !init_postgres_with_retry(&mut pools, &url).await {
+            warn!(
+                "PostgreSQL initialization failed after retries; continuing in mock mode. The UI will show a database warning."
+            );
         }
     } else {
         info!("DATABASE_URL not set, running PostgreSQL in mock mode.");

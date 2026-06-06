@@ -41,7 +41,7 @@ fn get_f64_env(key: &str, default: f64) -> f64 {
 
 pub fn get_embedding_dim() -> usize {
     static EMBEDDING_DIM: OnceLock<usize> = OnceLock::new();
-    *EMBEDDING_DIM.get_or_init(|| get_usize_env("EMBEDDING_DIM", 768))
+    *EMBEDDING_DIM.get_or_init(|| get_usize_env("EMBEDDING_DIM", 1024))
 }
 
 pub fn get_qdrant_collection() -> String {
@@ -112,6 +112,36 @@ pub fn get_search_max_response_tokens() -> usize {
         .get_or_init(|| get_usize_env("MCP_SEARCH_MAX_RESPONSE_TOKENS", 5_000))
 }
 
+pub fn get_query_expansion_mode() -> crate::query_expansion::QueryExpansionMode {
+    static QUERY_EXPANSION_MODE: OnceLock<crate::query_expansion::QueryExpansionMode> =
+        OnceLock::new();
+    *QUERY_EXPANSION_MODE.get_or_init(|| {
+        crate::query_expansion::QueryExpansionMode::from_config(
+            &std::env::var("QUERY_EXPANSION_MODE").unwrap_or_else(|_| "off".to_string()),
+        )
+    })
+}
+
+pub fn get_query_expansion_dictionary_paths() -> Vec<String> {
+    static QUERY_EXPANSION_DICTIONARY_PATHS: OnceLock<Vec<String>> = OnceLock::new();
+    QUERY_EXPANSION_DICTIONARY_PATHS
+        .get_or_init(|| {
+            std::env::var("QUERY_EXPANSION_DICTIONARY_PATHS")
+                .unwrap_or_default()
+                .split([';', ','])
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .clone()
+}
+
+pub fn get_query_expansion_max_terms() -> usize {
+    static QUERY_EXPANSION_MAX_TERMS: OnceLock<usize> = OnceLock::new();
+    *QUERY_EXPANSION_MAX_TERMS.get_or_init(|| get_usize_env("QUERY_EXPANSION_MAX_TERMS", 8))
+}
+
 pub fn get_read_document_max_tokens() -> usize {
     static READ_DOCUMENT_MAX_TOKENS: OnceLock<usize> = OnceLock::new();
     *READ_DOCUMENT_MAX_TOKENS.get_or_init(|| get_usize_env("MCP_READ_DOCUMENT_MAX_TOKENS", 10_000))
@@ -130,7 +160,9 @@ pub fn get_embedding_model_name() -> String {
     static EMBEDDING_MODEL_NAME: OnceLock<String> = OnceLock::new();
     EMBEDDING_MODEL_NAME
         .get_or_init(|| {
-            std::env::var("EMBEDDING_MODEL_NAME").unwrap_or_else(|_| "nomic-embed-text".to_string())
+            std::env::var("EMBEDDING_MODEL_NAME").unwrap_or_else(|_| {
+                "jeffh/intfloat-multilingual-e5-large-instruct:q8_0".to_string()
+            })
         })
         .clone()
 }
@@ -167,10 +199,32 @@ pub fn get_embedding_request_timeout_secs() -> u64 {
 
 pub fn get_mistral_upload_timeout_secs() -> u64 {
     static MISTRAL_UPLOAD_TIMEOUT_SECS: OnceLock<u64> = OnceLock::new();
-    *MISTRAL_UPLOAD_TIMEOUT_SECS.get_or_init(|| get_u64_env("MISTRAL_UPLOAD_TIMEOUT_SECS", 120))
+    *MISTRAL_UPLOAD_TIMEOUT_SECS.get_or_init(|| get_u64_env("MISTRAL_UPLOAD_TIMEOUT_SECS", 240))
 }
 
 pub fn get_mistral_ocr_timeout_secs() -> u64 {
     static MISTRAL_OCR_TIMEOUT_SECS: OnceLock<u64> = OnceLock::new();
     *MISTRAL_OCR_TIMEOUT_SECS.get_or_init(|| get_u64_env("MISTRAL_OCR_TIMEOUT_SECS", 300))
+}
+
+pub fn get_mistral_retry_attempts() -> usize {
+    static MISTRAL_RETRY_ATTEMPTS: OnceLock<usize> = OnceLock::new();
+    *MISTRAL_RETRY_ATTEMPTS.get_or_init(|| get_usize_env("MISTRAL_RETRY_ATTEMPTS", 3).max(1))
+}
+
+pub fn get_mistral_retry_delay_ms() -> u64 {
+    static MISTRAL_RETRY_DELAY_MS: OnceLock<u64> = OnceLock::new();
+    *MISTRAL_RETRY_DELAY_MS.get_or_init(|| get_u64_env("MISTRAL_RETRY_DELAY_MS", 1_000))
+}
+
+pub fn get_mistral_base_url() -> String {
+    static MISTRAL_BASE_URL: OnceLock<String> = OnceLock::new();
+    MISTRAL_BASE_URL
+        .get_or_init(|| {
+            std::env::var("MISTRAL_BASE_URL")
+                .unwrap_or_else(|_| "https://api.mistral.ai/v1".to_string())
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .clone()
 }

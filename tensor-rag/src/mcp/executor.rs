@@ -48,7 +48,7 @@ pub fn execute_program<'a>(
                     filters,
                     top_k,
                 } => {
-                    // Generate real query embedding via local model server (with E5 "query: " prefixing)
+                    // Generate real query embedding via local model server with the configured query instruction.
                     let query_vec = db_pools.get_embedding(query, true).await?;
                     vm.query_vector = query_vec.clone();
 

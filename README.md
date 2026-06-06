@@ -381,8 +381,8 @@ cargo bench --bench zero_copy  # Arrow vs Tensor1D
 | `AI_PROVIDER` | `openai` | AI chat provider |
 | `AI_MODEL` | `gpt-4.1-mini` | LLM model |
 | `EMBEDDING_SERVER_URL` | — | OpenAI-compatible embeddings endpoint |
-| `EMBEDDING_MODEL_NAME` | `nomic-embed-text` | Embedding model |
-| `EMBEDDING_DIM` | `768` | Embedding vector dimension |
+| `EMBEDDING_MODEL_NAME` | `jeffh/intfloat-multilingual-e5-large-instruct:q8_0` | Embedding model |
+| `EMBEDDING_DIM` | `1024` | Embedding vector dimension |
 | `MCP_RATE_LIMIT` | `100` | Requests per second |
 | `CB_FAILURE_THRESHOLD` | `5` | Circuit breaker threshold |
 | `VM_MAX_INSTRUCTIONS` | `100000` | Max VM instruction count |
