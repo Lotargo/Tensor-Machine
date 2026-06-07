@@ -252,7 +252,7 @@ The long-term architecture is a shared graph model with interchangeable renderer
 - `[ ]` Node payload fields: `id`, `label`, `type`, `val/weight`, `content`, `count`, `hits`, graph metadata.
 - `[ ]` `/documents/:uuid/details` should stay focused on text/details; graph belongs elsewhere.
 
-## [-] Semantic Clustering Layer
+## [x] Semantic Clustering Layer
 
 UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a visual layout trick.
 
@@ -263,8 +263,8 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 - `[x]` Search VM uses `HdbscanClusterer` for RSF cluster diversity channel, with fallback for insufficient/invalid vectors.
 - `[x]` Document details expose `cluster_id`, `cluster_distance`, `layout_hint` for chunks when `?semantic=true`.
 - `[x]` Semantic cluster data is lazy-loaded (`/documents/:uuid/details?semantic=true`) so ordinary document opening does not pay Qdrant + clustering cost.
-- `[-]` Layout projection is still normalized-prefix / simple projection — a temporary layout hint, not real semantic coordinates.
-- `[ ]` UMAP not implemented yet.
+- `[x]` Layout projection uses UMAP-based 3D coordinates via `UmapReducer` (umap-rs crate) — replaces the old normalized-prefix projection when sufficient data is available.
+- `[x]` UMAP implemented via `umap-rs` crate in `clustering.rs::UmapReducer` with brute-force KNN, power-iteration PCA init, and graceful fallback to PcaFallbackReducer.
 - `[-]` `SemanticClusterLayout`, `SemanticClusterPoint`, `SemanticClusterSummary` structs exist and are serializable.
 
 ### Target direction
@@ -286,18 +286,18 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 
 | Path | Approach | Status |
 |------|----------|--------|
-| Pure Rust | Keep clustering inside `tensor-rag` | `[-]` HDBSCAN done, UMAP crates not evaluated |
+| Pure Rust | Keep clustering inside `tensor-rag` | `[x]` HDBSCAN + UMAP (`umap-rs` crate) implemented |
 | Python/service | Run UMAP/HDBSCAN in a local analysis worker | `[ ]` Feasibility not reviewed |
 | Hybrid | Rust HDBSCAN + deferred UMAP | `[-]` Current approach; working but limited |
 
 ### UMAP-specific remaining work
 
-- `[ ]` Choose implementation path (Rust crate, local Python worker, local analysis service).
-- `[ ]` Define deterministic reducer parameters for document-level layouts: neighbors, min distance, metric, random seed, output dims.
-- `[ ]` Decide scope: per document, per focus neighborhood, per library, or cached multi-level embedding.
+- `[x]` Choose implementation path: Rust crate (`umap-rs` v0.4.5, brute-force KNN for document-scale datasets).
+- `[x]` Define deterministic reducer parameters: `n_components=3`, `n_neighbors=15`, `min_dist=0.1`, `seed=42` — configurable via `UmapReducer` struct fields.
+- `[-]` Decide scope: currently per-call reduction per document; not cached or scoped to library level.
 - `[ ]` Cache invalidation for reindex, delete, replacement, embedding model change, chunking schema change.
 - `[ ]` Store reducer metadata alongside cluster metadata so old layouts can be recognized and rebuilt safely.
-- `[ ]` Use UMAP coordinates as primary layout signal, then apply lightweight collision/label separation in renderer.
+- `[x]` UMAP coordinates used as primary layout signal in `build_semantic_cluster_layout`; collision relaxation still applied in renderer.
 
 ### Open design questions
 
@@ -319,9 +319,9 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 | 7 | Implement MVP 2D map mode (force layout, semantic zoom, click-to-center, side inspector) | `[ ]` | 2D fallback is simple canvas, not product-grade |
 | 8 | Keep 3D available but relabel as experimental flight mode | `[-]` | 3D is default; no mode switch exists |
 | 9 | Add profiling with Selenium/CDP before moving computation to backend | `[ ]` | Not started |
-| 10 | Prototype UMAP or equivalent manifold reduction on stored embeddings | `[ ]` | Not started |
-| 11 | Persist cluster/reducer metadata, expose through dedicated graph/BFF endpoint | `[ ]` | Not started |
-| 12 | Replace frontend layout hints with backend-prepared UMAP/cluster coordinates | `[ ]` | Not started |
+| 10 | Prototype UMAP or equivalent manifold reduction on stored embeddings | `[x]` | `UmapReducer` implemented via `umap-rs` crate with brute-force KNN and PCA init |
+| 11 | Persist cluster/reducer metadata, expose through dedicated graph/BFF endpoint | `[-]` | Reducer runs per-request; no persistence yet |
+| 12 | Replace frontend layout hints with backend-prepared UMAP/cluster coordinates | `[x]` | `build_semantic_cluster_layout` uses `UmapReducer` for 3D layout hints; projection field reports `umap-3d` |
 | 13 | Move heavy graph filtering/layout to backend or worker after metrics | `[ ]` | Not started |
 
 ## Phased Renderer Plan
@@ -356,13 +356,11 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 | Progressive edge/label rendering by camera distance | `[ ]` | Not implemented |
 | "Document universe" feel | `[-]` | Partial: clusters as radial groups, but no constellations/filaments |
 
-### Phase 4: backend graph payload and semantic layout `[ ]`
-
-All items are not started:
+### Phase 4: backend graph payload and semantic layout `[-]`
 
 - `[ ]` Dedicated graph endpoint for overview/focus payloads.
-- `[ ]` Compute caps, neighborhoods, cluster summaries, layout hints server-side.
-- `[ ]` Add UMAP or equivalent reducer.
+- `[-]` Compute caps, neighborhoods, cluster summaries, layout hints server-side — partial: UMAP layout hints computed in `build_semantic_cluster_layout`, but no dedicated graph endpoint.
+- `[x]` Add UMAP or equivalent reducer — `UmapReducer` in `clustering.rs` using `umap-rs` crate.
 - `[ ]` Persist reducer/cluster metadata with invalidation.
 - `[ ]` Typed Rust structs for graph payload (not `serde_json::Value`).
 
@@ -387,7 +385,7 @@ All items are not started:
 |---|------|----------|--------|
 | 1 | Run Selenium/CDP profiling on current 3D graph interactions | high | `[ ]` |
 | 2 | Verify graph behavior after full server restart + reindex | high | `[ ]` |
-| 3 | Implement UMAP or equivalent reducer | high | `[ ]` |
+| 3 | Implement UMAP or equivalent reducer | high | `[x]` |
 | 4 | Add dedicated graph payload endpoint (overview, focus, clusters, caps) | high | `[ ]` |
 | 5 | Decide renderer split: 2D map as MVP default, 3D as experimental flight | medium | `[ ]` |
 | 6 | Add progressive loading / virtualized graph levels for large docs | medium | `[ ]` |

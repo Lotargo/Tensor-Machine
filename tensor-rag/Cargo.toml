@@ -33,6 +33,8 @@ regex = "1"
 once_cell = "1"
 rust-stemmers = "1.2.0"
 hdbscan = "0.12.0"
+umap-rs = "0.4"
+rand = "0.9"
 
 
 [dev-dependencies]

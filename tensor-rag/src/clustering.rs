@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use ndarray::{Array1, Array2};
+use rand::SeedableRng;
 
 #[derive(Debug, Clone)]
 pub struct ClusterAssignment {
@@ -49,6 +51,198 @@ impl DimensionReducer for PcaFallbackReducer {
             .map(|v| v.iter().take(self.components).copied().collect())
             .collect()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct UmapReducer {
+    pub n_components: usize,
+    pub n_neighbors: usize,
+    pub min_dist: f32,
+    pub seed: u64,
+}
+
+impl Default for UmapReducer {
+    fn default() -> Self {
+        Self {
+            n_components: 3,
+            n_neighbors: 15,
+            min_dist: 0.1,
+            seed: 42,
+        }
+    }
+}
+
+impl DimensionReducer for UmapReducer {
+    fn reduce(&self, vectors: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        let n = vectors.len();
+        if n < 2 || n <= self.n_neighbors {
+            return PcaFallbackReducer { components: self.n_components }.reduce(vectors);
+        }
+        if vectors.iter().any(|v| v.len() < 2) {
+            return PcaFallbackReducer { components: self.n_components }.reduce(vectors);
+        }
+
+        let min_dim = vectors.iter().map(|v| v.len()).min().unwrap_or(0);
+        if min_dim < 2 {
+            return Vec::new();
+        }
+
+        let mut data_arr = Array2::zeros((n, min_dim));
+        for (i, v) in vectors.iter().enumerate() {
+            let mut norm = 0.0f32;
+            for j in 0..min_dim {
+                let val = v.get(j).copied().unwrap_or(0.0);
+                data_arr[[i, j]] = val;
+                norm += val * val;
+            }
+            norm = norm.sqrt();
+            if norm > 0.0 {
+                for j in 0..min_dim {
+                    data_arr[[i, j]] /= norm;
+                }
+            }
+        }
+
+        let n_neighbors = self.n_neighbors.min(n - 1);
+
+        let knn_data: Vec<Array1<f32>> = data_arr.rows()
+            .into_iter()
+            .map(|row| row.to_owned())
+            .collect();
+
+        let (knn_indices, knn_dists) = compute_brute_force_knn(&knn_data, n_neighbors);
+
+        let init = if self.n_components <= min_dim {
+            pca_init(&knn_data, self.n_components, self.seed)
+        } else {
+            random_init(n, self.n_components, self.seed)
+        };
+
+        let config = umap_rs::UmapConfig {
+            n_components: self.n_components,
+            manifold: umap_rs::ManifoldParams {
+                min_dist: self.min_dist,
+                ..Default::default()
+            },
+            graph: umap_rs::GraphParams {
+                n_neighbors,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let umap = umap_rs::Umap::new(config);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            umap.fit(
+                data_arr.view(),
+                knn_indices.view(),
+                knn_dists.view(),
+                init.view(),
+            )
+        }));
+
+        match result {
+            Ok(fitted) => {
+                let embedding = fitted.into_embedding();
+                embedding.rows()
+                    .into_iter()
+                    .map(|row| row.to_vec())
+                    .collect()
+            }
+            Err(_) => {
+                PcaFallbackReducer { components: self.n_components }.reduce(vectors)
+            }
+        }
+    }
+}
+
+fn compute_brute_force_knn(data: &[Array1<f32>], k: usize) -> (Array2<u32>, Array2<f32>) {
+    let n = data.len();
+    let mut indices = Array2::zeros((n, k));
+    let mut dists = Array2::zeros((n, k));
+
+    for i in 0..n {
+        let mut pairs: Vec<(usize, f32)> = data.iter()
+            .enumerate()
+            .map(|(j, v)| {
+                let d = (&data[i] - v).mapv(|x| x * x).sum().sqrt();
+                (j, d)
+            })
+            .collect();
+        pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (idx, (j, d)) in pairs.iter().skip(1).take(k).enumerate() {
+            indices[[i, idx]] = *j as u32;
+            dists[[i, idx]] = *d;
+        }
+    }
+
+    (indices, dists)
+}
+
+fn pca_init(data: &[Array1<f32>], n_components: usize, seed: u64) -> Array2<f32> {
+    let n = data.len();
+    let dim = data[0].len();
+    if n == 0 || dim == 0 {
+        return Array2::zeros((n, n_components));
+    }
+
+    let mean = {
+        let mut sum = Array1::zeros(dim);
+        for v in data {
+            sum += v;
+        }
+        sum / n as f32
+    };
+
+    let centered: Vec<Array1<f32>> = data.iter()
+        .map(|v| v - &mean)
+        .collect();
+
+    let n_comp = n_components.min(dim).min(n);
+
+    let mut result = Array2::zeros((n, n_comp));
+
+    for c in 0..n_comp {
+        let mut v = Array1::from_elem(dim, {
+            use rand::Rng;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed + c as u64);
+            rng.random_range(-1.0..1.0)
+        });
+        let s: f32 = v.dot(&v);
+        let norm = s.sqrt();
+        if norm > 0.0 { v /= norm; }
+
+        for _ in 0..3 {
+            let v_dot_data: Vec<f32> = centered.iter()
+                .map(|x| v.dot(x))
+                .collect();
+            let mut new_v = Array1::zeros(dim);
+            for (i, x) in centered.iter().enumerate() {
+                new_v = &new_v + &(x * v_dot_data[i]);
+            }
+            let ns: f32 = new_v.dot(&new_v);
+            let new_norm = ns.sqrt();
+            if new_norm > 0.0 { new_v /= new_norm; }
+            v = new_v;
+        }
+
+        for (i, x) in centered.iter().enumerate() {
+            result[[i, c]] = v.dot(x);
+        }
+    }
+
+    result
+}
+
+fn random_init(n: usize, n_components: usize, seed: u64) -> Array2<f32> {
+    use rand::Rng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let mut result = Array2::zeros((n, n_components));
+    for val in result.iter_mut() {
+        *val = rng.random_range(-0.01..0.01);
+    }
+    result
 }
 
 #[derive(Debug, Clone)]
@@ -186,23 +380,37 @@ pub fn build_semantic_cluster_layout(chunk_vectors: &[(i32, Vec<f32>)]) -> Seman
         .collect::<Vec<_>>();
     let clusterer = HdbscanClusterer::default();
     let assignments = clusterer.cluster(&vectors);
-    let prepared = prepare_density_vectors(&vectors, clusterer.projection_components);
+
+    let umap_coords = UmapReducer::default().reduce(&vectors);
+    let use_umap = umap_coords.len() == vectors.len() && !umap_coords.is_empty();
 
     let points = assignments
         .iter()
         .enumerate()
-        .map(|(idx, assignment)| SemanticClusterPoint {
-            chunk_index: chunk_indexes[idx],
-            cluster_id: assignment.cluster_id,
-            distance_to_centroid: finite_f32(assignment.distance_to_centroid),
-            layout_hint: vector_layout_hint(prepared.get(idx)),
+        .map(|(idx, assignment)| {
+            let layout_hint = if use_umap && idx < umap_coords.len() {
+                let coords = &umap_coords[idx];
+                [
+                    finite_f32(coords.first().copied().unwrap_or(0.0)),
+                    finite_f32(coords.get(1).copied().unwrap_or(0.0)),
+                    finite_f32(coords.get(2).copied().unwrap_or(0.0)),
+                ]
+            } else {
+                vector_layout_hint(vectors.get(idx))
+            };
+            SemanticClusterPoint {
+                chunk_index: chunk_indexes[idx],
+                cluster_id: assignment.cluster_id,
+                distance_to_centroid: finite_f32(assignment.distance_to_centroid),
+                layout_hint,
+            }
         })
         .collect::<Vec<_>>();
     let clusters = summarize_semantic_clusters(&points);
 
     SemanticClusterLayout {
         algorithm: "hdbscan".to_string(),
-        projection: "normalized-prefix-projection".to_string(),
+        projection: if use_umap { "umap-3d".to_string() } else { "normalized-prefix-projection".to_string() },
         points,
         clusters,
     }
@@ -343,7 +551,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Clusterer, HdbscanClusterer};
+    use super::{Clusterer, DimensionReducer, HdbscanClusterer, UmapReducer};
     use std::collections::HashSet;
 
     #[test]
@@ -374,5 +582,47 @@ mod tests {
 
         assert!(dense_labels.len() >= 2);
         assert_eq!(assignments.len(), vectors.len());
+    }
+
+    #[test]
+    fn umap_reducer_reduces_dimensions() {
+        let vectors: Vec<Vec<f32>> = (0..50)
+            .map(|i| {
+                let base = (i / 10) as f32;
+                (0..8).map(|j| base + (j as f32 * 0.1) + ((i % 10) as f32 * 0.01)).collect()
+            })
+            .collect();
+
+        let reducer = UmapReducer {
+            n_components: 2,
+            n_neighbors: 5,
+            min_dist: 0.1,
+            seed: 42,
+        };
+        let reduced = reducer.reduce(&vectors);
+        assert_eq!(reduced.len(), 50);
+        assert_eq!(reduced[0].len(), 2);
+    }
+
+    #[test]
+    fn umap_reducer_few_points_falls_back() {
+        let vectors = vec![
+            vec![1.0, 2.0, 3.0],
+            vec![1.1, 2.0, 3.0],
+        ];
+        let reducer = UmapReducer::default();
+        let reduced = reducer.reduce(&vectors);
+        assert_eq!(reduced.len(), 2);
+        assert_eq!(reduced[0].len(), 3);
+    }
+
+    #[test]
+    fn umap_reducer_small_vectors_falls_back() {
+        let vectors = vec![
+            vec![1.0],
+        ];
+        let reducer = UmapReducer::default();
+        let reduced = reducer.reduce(&vectors);
+        assert_eq!(reduced.len(), 1);
     }
 }
