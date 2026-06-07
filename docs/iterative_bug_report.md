@@ -30,6 +30,9 @@ The goal is to fix the system iteratively instead of attempting a full rewrite i
 6. Local model/world knowledge can mask retrieval failures during manual QA; answers must be checked against retrieved passages, not only against apparent correctness.
 7. Configuration drift can silently put the server into mock mode or lower-throughput defaults even when Docker dependencies are running correctly.
 8. UI phase indicators need explicit backend progress events; frontend-only guesses mix ingestion steps and mislead validation.
+9. The current knowledge graph visualization is not readable at real document scale; the graph view can contain hundreds of nodes/edges but still fail to communicate structure.
+10. Frontend rendering and animation performance remain a product-level issue; large derived views must not be fully computed or rendered on the main UI thread.
+11. Persisted theme preferences are applied too late during page load, causing a visible light/dark flash when the saved theme differs from the default.
 
 ---
 
@@ -391,9 +394,23 @@ Symptoms:
 - The 2D canvas gives weak navigation value.
 - The viewport is too small.
 - The `Граф связей` tab visualization is still not resolved and should not be treated as product-ready.
+- On real data the graph can become a dense 2D hairball: node labels overlap, edges cover the canvas, and clusters cannot be understood visually.
+- Hundreds of section/subsection/entity nodes are drawn at once without useful level-of-detail, clustering, filtering, or progressive disclosure.
+- The current rendering does not communicate semantic layers such as document -> section -> subsection -> entity -> relation.
+- The current graph rendering path has accumulated too many partial repairs around layout, buttons, controls, and canvas behavior; continuing to patch the same method may be more expensive than replacing it.
 
 Impact:
 - The feature exists visually but does not help analysis.
+- The user cannot reliably answer basic questions from the visualization: what clusters exist, which entities are central, which parts of the document are connected, and which relationships are important.
+- The graph also contributes to frontend performance problems because layout/rendering work is pushed into the browser for a large, dense dataset.
+
+Decision:
+- Treat the current 2D graph as a temporary debugging view, not as the final knowledge graph UX.
+- Prefer a clean graph visualization refactor/rewrite if the current renderer cannot be simplified safely. The goal is to redesign the graph surface around clear data contracts and interaction requirements, not to preserve the existing method structure.
+- Investigate a 3D graph view for real-scale exploration, with camera controls, depth separation, semantic clustering, and level-of-detail.
+- Re-evaluate the rendering engine instead of assuming the current canvas approach is mandatory. Candidate directions may include Three.js/WebGL, a specialized graph engine, or a hybrid where 2D remains only for small/debug graphs.
+- Move expensive graph preparation out of the frontend where practical: backend or BFF should produce pre-filtered, clustered, positioned, and paginated graph payloads rather than forcing the browser to derive everything from raw nodes/edges.
+- The frontend should remain responsible for interactive presentation, selection, camera/navigation state, and small incremental updates, not heavyweight graph analytics or full-layout recomputation.
 
 Follow-up work:
 - `fixed` Graph auto-linking now groups shared entities by hot-path normalized keys instead of raw labels, so inflected RU/EN forms can create `shares_entities` edges.
@@ -409,8 +426,23 @@ Follow-up work:
 - `fixed` Added "Авто-линковка" button in graph controls and empty overlay, calling `POST /documents/auto-link?threshold=3`.
 - Verify graph data population against real documents in the running app.
 - Add auto-link trigger from UI (call `POST /documents/auto-link`).
-- Reconsider layout and navigation model.
-- Possibly move to a richer visualization approach once the backend graph is actually meaningful.
+- Audit the existing graph implementation and decide whether to keep any reusable pieces or start a new visualization module from a minimal interface.
+- Define the graph view contract first: input payload shape, selected/focused node behavior, filters, clustering, controls, fullscreen behavior, and performance budget.
+- Reconsider layout and navigation model around semantic layers, clustering, filters, and "focus neighborhood" exploration.
+- Prototype a 3D knowledge graph view and compare it against the current 2D canvas on a large real document.
+- Compare graph engine options before committing to the rewrite, including:
+  - Three.js/WebGL for custom 3D rendering;
+  - a mature graph visualization library with force simulation and level-of-detail support;
+  - keeping a simplified 2D debug renderer only for small graphs and tests.
+- Add backend/BFF graph endpoints that can return:
+  - graph summary statistics;
+  - clusters/communities;
+  - focus neighborhoods around a selected node;
+  - paginated node/edge slices;
+  - optional precomputed coordinates/layout hints;
+  - level-of-detail payloads for zoomed-out and zoomed-in states.
+- Avoid rendering every node, edge, and label at once; add label culling, edge bundling/filtering, and progressive reveal.
+- Define performance budgets for graph load, pan/zoom, node selection, and animation smoothness.
 
 ---
 
@@ -426,6 +458,8 @@ Symptoms:
   - `Граф связей`
 - Noticeable sluggishness while the agent is responding in chat.
 - The interface feels too heavy once large documents and large derived views are loaded.
+- Animations are not consistently smooth; layout and rendering work visibly competes with user interaction.
+- Heavy document-derived views can make otherwise simple UI actions feel delayed.
 
 Likely causes:
 - Large DOM trees rendered eagerly.
@@ -433,6 +467,8 @@ Likely causes:
 - No virtualization / pagination for large entity lists and large hierarchical views.
 - Expensive repeated parsing/rendering during chat updates.
 - Some views likely rebuild from raw data too often instead of reusing cached derived structures.
+- Graph layout/rendering, markdown/document rendering, hierarchy building, entity clouds, and chat/source panels are not yet separated into explicit performance tiers.
+- Too much derived presentation data is computed in the browser instead of being pre-aggregated, paginated, or cached by the backend/BFF.
 
 Impact:
 - The UI feels unstable and slow even when the backend is functioning.
@@ -452,11 +488,51 @@ Follow-up work:
 - Cache derived structures for hierarchy/entities/graph inputs.
 - Avoid full rerender of inactive tabs.
 - Consider incremental rendering for large panels.
-- Evaluate whether a BFF-style layer is useful for pre-aggregated frontend payloads once the current data contracts are stabilized.
+- Use memoization for stable derived data and event handlers in the remaining frontend code paths.
+- Add request/response contracts that let the frontend ask for slices of data rather than full document-scale payloads when only a small viewport is visible.
+- Move heavy rendering preparation to backend/BFF where it has clear product value:
+  - graph clustering/layout hints;
+  - hierarchy slices;
+  - entity buckets;
+  - search/source summaries;
+  - precomputed counts and facets.
+- Keep browser work bounded with pagination, virtualization, memoization, throttled animation frames, and cancellation of stale renders.
+- Define measurable budgets for tab switch latency, chat streaming rerender cadence, graph frame time, and large document viewer responsiveness.
 
 Notes:
-- A BFF may help reduce frontend work, but should not be treated as the first fix.
-- First priority is to eliminate obvious expensive rerenders and heavy client-side rebuilding.
+- A BFF/backend view-model layer is now a likely part of the solution for graph and document-scale views, but should be introduced around stable contracts instead of becoming an unstructured duplicate frontend.
+- First priority is to eliminate obvious expensive rerenders and heavy client-side rebuilding, then move expensive derivations behind explicit backend APIs.
+
+---
+
+### 10b. Saved theme is applied too late and causes a visible flash on load
+
+Status: `open`
+
+Symptoms:
+- The default UI theme is light.
+- If the user previously selected the dark theme, the page can still render briefly in the light theme during load before JavaScript applies the saved preference.
+- The resulting flash is visually jarring and makes the app feel unstable.
+
+Likely causes:
+- Theme preference is read from `localStorage` only after the main frontend bundle starts.
+- The initial HTML/CSS does not receive the resolved `data-theme` before first paint.
+- There is no early inline theme bootstrap or server-rendered theme attribute.
+
+Impact:
+- Users who choose dark mode see a repeated theme-switch glitch on page load.
+- This is especially noticeable because the app has large full-screen panels with strong background colors.
+
+Follow-up work:
+- Add a small early theme bootstrap script in `index.html` before stylesheet-dependent paint, reading `tensor-rag-ui-theme` and setting `document.documentElement.dataset.theme`.
+- Keep the bootstrap script minimal and dependency-free so it runs before the app bundle.
+- Ensure `system` mode resolves against `prefers-color-scheme` before first paint.
+- Consider `color-scheme` CSS metadata so native controls and scrollbars match the resolved theme.
+- Verify page load visually for:
+  - saved `dark`;
+  - saved `light`;
+  - saved `system` on dark OS theme;
+  - saved `system` on light OS theme.
 
 ---
 
@@ -819,9 +895,21 @@ Notes:
   - add background entity enrichment / NER / canonicalization
   - persist canonical entities, aliases, mentions, confidence, and enrichment status
   - recalculate graph edges from enriched entities before investing heavily in graph UX
+- Rework graph visualization as a real analysis surface:
+  - allow a clean rewrite of the graph visualization module instead of preserving the current patched canvas method
+  - evaluate graph rendering engines and keep only the parts of the current implementation that clearly reduce risk
+  - prototype 3D graph navigation for large document-scale graphs
+  - add clustering, focus neighborhoods, filtering, and level-of-detail
+  - move graph preparation/layout hints and paginated graph payloads to backend/BFF APIs
+  - keep the frontend bounded to interaction, camera state, and incremental rendering
 
 ### Phase 5
-- Polish chat/agent UX and visual design
+- Fix product-level frontend performance and visual stability:
+  - remove the saved-theme load flash before broader visual polish
+  - add profiling budgets for tabs, chat streaming, graph interaction, and large document views
+  - apply pagination, virtualization, memoization, throttled animation frames, and stale-render cancellation
+  - move expensive document/graph/entity view-model preparation behind explicit backend/BFF contracts
+- Polish chat/agent UX and visual design after performance budgets are met
 
 ---
 
@@ -829,6 +917,10 @@ Notes:
 
 - Do not treat the current graph UI as product-complete until the underlying graph data is meaningful.
 - Do not treat raw hot-path entity candidates as final semantic entities; they are allowed to be useful immediately, but cold enrichment should own final cleanup/canonicalization.
+- Do not spend excessive time preserving the current graph renderer if a clean module rewrite gives a simpler, faster, and more capable visualization path.
+- Do not treat 3D graph rendering as a pure frontend skin; real graph UX needs backend/BFF support for clustering, focus neighborhoods, paging, and level-of-detail.
+- Do not allow heavy document-scale frontend panels to render or recompute unbounded data on the main UI thread.
+- Do not ship theme selection with a first-paint flash; the saved theme must be applied before the app visibly renders.
 - Do not invest in superficial UI polish before retrieval and document structure are trustworthy.
 - Do not reintroduce legacy Mongo-era response artifacts into the new PostgreSQL-backed system.
 - A future knowledge graph layer has been captured as a concept in `docs/knowledge_graph_concept.md`; it requires web research and architecture review before implementation.
