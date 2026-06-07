@@ -1,19 +1,19 @@
 const THREE_MODULE_URL = '/vendor/three/three.module.js';
 
 const NODE_COLORS = {
-    root: 0x68b8b1,
-    doc: 0x8b95a1,
-    macro: 0x5b8def,
-    medium: 0x27b7c6,
-    micro: 0x7c8a93,
-    entity: 0xd99a2b,
+    root: 0xffe6ff,
+    doc: 0x8ea4b7,
+    macro: 0xff9a9e,
+    medium: 0x76f4ff,
+    micro: 0xcfeaff,
+    entity: 0xffc0c6,
 };
 
 const EDGE_COLORS = {
-    default: 0xbed2cd,
-    hierarchy: 0x68b8b1,
-    active: 0xd9fff7,
-    relation: 0x8aa2b3,
+    default: 0xb9c7d8,
+    hierarchy: 0xd8b4ff,
+    active: 0xfff0ff,
+    relation: 0x9be8ff,
 };
 
 export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, options = {}) {
@@ -29,14 +29,14 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
     renderer.setClearColor(0x000000, 0);
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x111a17, 0.00072);
+    scene.fog = new THREE.FogExp2(0x07101d, 0.00052);
     const camera = new THREE.PerspectiveCamera(50, 1, 1, 5000);
     const graphGroup = new THREE.Group();
     scene.add(graphGroup);
 
-    const ambientLight = new THREE.AmbientLight(0xdcefe9, 0.68);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.78);
-    const fillLight = new THREE.DirectionalLight(0x68b8b1, 0.24);
+    const ambientLight = new THREE.AmbientLight(0xe8f3ff, 0.74);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.7);
+    const fillLight = new THREE.DirectionalLight(0x9be8ff, 0.2);
     keyLight.position.set(180, 260, 360);
     fillLight.position.set(-280, -120, 180);
     scene.add(ambientLight, keyLight, fillLight);
@@ -64,7 +64,7 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
             edgeMaterials.set(key, new THREE.LineBasicMaterial({
                 color: isActiveEdge ? EDGE_COLORS.active : (isHierarchy ? EDGE_COLORS.hierarchy : EDGE_COLORS.relation),
                 transparent: true,
-                opacity: isActiveEdge ? 0.52 : (isHierarchy ? 0.2 : 0.14),
+                opacity: isActiveEdge ? 0.6 : (isHierarchy ? 0.26 : 0.16),
                 depthWrite: false,
             }));
         }
@@ -90,16 +90,16 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
         const geometryKey = Math.round(radius);
         let geometry = geometries.get(geometryKey);
         if (!geometry) {
-            geometry = new THREE.SphereGeometry(radius, 16, 12);
+            geometry = new THREE.SphereGeometry(radius, 14, 10);
             geometries.set(geometryKey, geometry);
         }
 
         const material = new THREE.MeshStandardMaterial({
             color: NODE_COLORS[node.type] || NODE_COLORS.doc,
-            roughness: 0.86,
+            roughness: 0.78,
             metalness: 0.0,
             emissive: NODE_COLORS[node.type] || NODE_COLORS.doc,
-            emissiveIntensity: node.isActive ? 0.22 : 0.035,
+            emissiveIntensity: node.isActive ? 0.34 : 0.08,
         });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.set(node.x, node.y, node.z);
@@ -112,7 +112,7 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
             const haloMaterial = new THREE.MeshBasicMaterial({
                 color: 0xd9fff7,
                 transparent: true,
-                opacity: 0.12,
+                opacity: 0.18,
                 depthWrite: false,
             });
             const halo = new THREE.Mesh(haloGeometry, haloMaterial);
@@ -137,10 +137,10 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
         moved: false,
         lastX: 0,
         lastY: 0,
-        rotationX: -0.28,
-        rotationY: 0.36,
-        targetRotationX: -0.28,
-        targetRotationY: 0.36,
+        rotationX: -0.08,
+        rotationY: 0.18,
+        targetRotationX: -0.08,
+        targetRotationY: 0.18,
         zoom: defaultZoom,
         targetZoom: defaultZoom,
     };
@@ -280,8 +280,8 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
             renderer.dispose();
         },
         resetView() {
-            state.targetRotationX = -0.28;
-            state.targetRotationY = 0.36;
+            state.targetRotationX = -0.08;
+            state.targetRotationY = 0.18;
             state.targetZoom = defaultZoom;
         },
         zoomIn() {
@@ -309,37 +309,8 @@ function layoutNodes(nodes, edges) {
     const chunkNodes = [...macros, ...mediums, ...micros];
 
     roots.forEach((node) => setPosition(node, 0, 0, 0));
+    placeRadialDocumentStructure(chunkNodes);
     placeRelatedDocuments(docs);
-
-    const macroByChunkIndex = new Map(macros.map((node) => [node.chunk_index, node]));
-    const mediumByChunkIndex = new Map(mediums.map((node) => [node.chunk_index, node]));
-    const usedSemanticLayout = placeSemanticHints(chunkNodes);
-
-    if (!usedSemanticLayout) {
-        placePrimaryClusters(macros, 210, -10, -20);
-
-        const orphanMediums = [];
-        mediums.forEach((node) => {
-            const parent = macroByChunkIndex.get(node.parent_chunk_index);
-            if (!parent) {
-                orphanMediums.push(node);
-                return;
-            }
-            placeChildNearParent(node, parent, node.chunk_index, 58, 26, -18);
-        });
-        placePrimaryClusters(orphanMediums, 260, -34, -60, 0.42);
-
-        const orphanMicros = [];
-        micros.forEach((node) => {
-            const parent = mediumByChunkIndex.get(node.parent_chunk_index) || macroByChunkIndex.get(node.parent_chunk_index);
-            if (!parent) {
-                orphanMicros.push(node);
-                return;
-            }
-            placeChildNearParent(node, parent, node.chunk_index, 44, 20, -30);
-        });
-        placePrimaryClusters(orphanMicros, 300, -70, -100, 0.68);
-    }
 
     edges.forEach((edge) => {
         const source = byId.get(edge.source);
@@ -364,58 +335,98 @@ function layoutNodes(nodes, edges) {
         }
         const anchor = averagePosition(chunks);
         const angle = seededAngle(node.id);
-        const lift = 42 + (index % 5) * 10;
+        const lift = 10 + (index % 4) * 8;
         setPosition(
             node,
-            anchor.x + Math.cos(angle) * (54 + (index % 4) * 12),
+            anchor.x + Math.cos(angle) * (42 + (index % 5) * 13),
             anchor.y + lift,
-            anchor.z + Math.sin(angle) * (50 + (index % 3) * 14),
+            anchor.z + Math.sin(angle) * (40 + (index % 4) * 12),
         );
     });
-    placePrimaryClusters(looseEntities, 310, 96, 70, 0.18);
+    placePrimaryClusters(looseEntities, 560, 42, 0, 0.18);
 }
 
-function placeSemanticHints(nodes) {
-    const hinted = nodes.filter((node) => Array.isArray(node.layout_hint) && node.layout_hint.length >= 2);
-    if (hinted.length < Math.max(4, Math.floor(nodes.length * 0.45))) return false;
+function placeRadialDocumentStructure(nodes) {
+    if (nodes.length === 0) return;
 
-    const clusterIds = Array.from(new Set(hinted.map((node) => Number(node.cluster_id ?? -1)))).sort((a, b) => a - b);
-    const clusterOffset = new Map();
-    clusterIds.forEach((clusterId, index) => {
-        if (clusterId < 0) {
-            clusterOffset.set(clusterId, { x: 0, z: 150 });
+    const groups = groupStructureBranches(nodes);
+    const branchCount = groups.length;
+    const baseRadius = branchCount > 24 ? 170 : 145;
+    const radialStep = branchCount > 24 ? 34 : 42;
+    const tangentSpread = branchCount > 24 ? 34 : 46;
+
+    groups.forEach((group, branchIndex) => {
+        const angle = (branchIndex / branchCount) * Math.PI * 2 - Math.PI / 2;
+        const tangent = angle + Math.PI / 2;
+        const ordered = group.nodes
+            .slice()
+            .sort((a, b) => graphNodeRank(a) - graphNodeRank(b) || ((a.chunk_index ?? 0) - (b.chunk_index ?? 0)));
+        const branchDepth = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
+
+        ordered.forEach((node, localIndex) => {
+            const level = graphNodeLevel(node);
+            const ring = Math.floor(localIndex / branchDepth);
+            const lane = localIndex % branchDepth;
+            const laneCenter = (branchDepth - 1) / 2;
+            const semanticNudge = Array.isArray(node.layout_hint)
+                ? Number(node.layout_hint[0] || 0) * 18 + Number(node.layout_hint[1] || 0) * 12
+                : 0;
+            const radius = baseRadius + level * 82 + ring * radialStep + Math.max(0, group.nodes.length - 12) * 1.3;
+            const side = (lane - laneCenter) * tangentSpread + semanticNudge;
+            const lift = level === 0 ? 18 : (level === 1 ? 0 : -18);
+
+            setPosition(
+                node,
+                Math.cos(angle) * radius + Math.cos(tangent) * side,
+                lift + ((localIndex % 3) - 1) * 4,
+                Math.sin(angle) * radius * 0.76 + Math.sin(tangent) * side * 0.8,
+            );
+        });
+    });
+}
+
+function groupStructureBranches(nodes) {
+    const byCluster = new Map();
+    const byMacro = new Map();
+
+    nodes.forEach((node) => {
+        const clusterId = Number(node.cluster_id ?? Number.NaN);
+        if (Number.isFinite(clusterId) && clusterId >= 0) {
+            const key = `cluster:${clusterId}`;
+            const list = byCluster.get(key) || [];
+            list.push(node);
+            byCluster.set(key, list);
             return;
         }
-        const angle = goldenAngle(index);
-        const radius = 130 + Math.sqrt(index + 1) * 48;
-        clusterOffset.set(clusterId, {
-            x: Math.cos(angle) * radius,
-            z: Math.sin(angle) * radius * 0.78,
-        });
+
+        const macroKey = node.type === 'macro'
+            ? node.chunk_index
+            : (node.macro_index ?? node.parent_chunk_index ?? node.chunk_index);
+        const key = `macro:${macroKey ?? node.id}`;
+        const list = byMacro.get(key) || [];
+        list.push(node);
+        byMacro.set(key, list);
     });
 
-    hinted.forEach((node) => {
-        const clusterId = Number(node.cluster_id ?? -1);
-        const offset = clusterOffset.get(clusterId) || { x: 0, z: 0 };
-        const hint = node.layout_hint;
-        const distance = Number(node.cluster_distance || 0);
-        const levelLift = node.type === 'macro' ? 34 : (node.type === 'medium' ? 0 : -30);
-        setPosition(
-            node,
-            offset.x + Number(hint[0] || 0) * 380 + seededUnit(node.id) * 36,
-            levelLift - Math.min(42, distance * 120),
-            offset.z + Number(hint[1] || 0) * 280 + Number(hint[2] || 0) * 120,
-        );
-    });
-
-    nodes
-        .filter((node) => !hinted.includes(node))
-        .forEach((node, index) => {
-            const angle = goldenAngle(index);
-            setPosition(node, Math.cos(angle) * 260, -50, Math.sin(angle) * 180 - 90);
+    const source = byCluster.size >= 2 ? byCluster : byMacro;
+    return Array.from(source.entries())
+        .map(([key, branchNodes]) => ({ key, nodes: branchNodes }))
+        .sort((a, b) => {
+            const aIndex = Math.min(...a.nodes.map((node) => node.chunk_index ?? Number.MAX_SAFE_INTEGER));
+            const bIndex = Math.min(...b.nodes.map((node) => node.chunk_index ?? Number.MAX_SAFE_INTEGER));
+            return aIndex - bIndex || a.key.localeCompare(b.key);
         });
+}
 
-    return true;
+function graphNodeRank(node) {
+    return graphNodeLevel(node) * 100000 + (node.chunk_index ?? 0);
+}
+
+function graphNodeLevel(node) {
+    if (node.type === 'macro') return 0;
+    if (node.type === 'medium') return 1;
+    if (node.type === 'micro') return 2;
+    return 1;
 }
 
 function setPosition(node, x, y, z) {
@@ -443,7 +454,7 @@ function placePrimaryClusters(nodes, radius, yOffset, zOffset, phase = 0) {
 function placeRelatedDocuments(nodes) {
     nodes.forEach((node, index) => {
         const angle = goldenAngle(index) + 0.9;
-        setPosition(node, Math.cos(angle) * 360, 78 + (index % 3) * 18, Math.sin(angle) * 210 - 150);
+        setPosition(node, Math.cos(angle) * 650, 44 + (index % 3) * 14, Math.sin(angle) * 460);
     });
 }
 
@@ -487,17 +498,17 @@ function seededUnit(value) {
 }
 
 function getVisualRadius(node) {
-    if (node.isActive) return Math.max(11, Math.min(18, (node.radius || 10) * 0.72));
-    if (node.type === 'root') return 14;
-    if (node.type === 'macro') return 10;
-    if (node.type === 'medium') return 7.5;
-    if (node.type === 'micro') return 5.2;
-    if (node.type === 'entity') return 5.8;
-    return 8;
+    if (node.isActive) return Math.max(10, Math.min(16, (node.radius || 10) * 0.62));
+    if (node.type === 'root') return 12;
+    if (node.type === 'macro') return 8.5;
+    if (node.type === 'medium') return 6.2;
+    if (node.type === 'micro') return 3.8;
+    if (node.type === 'entity') return 5.0;
+    return 7;
 }
 
 function shouldShowLabel(node) {
-    return node.isActive || node.type === 'root' || (node.type === 'macro' && node.radius >= 16);
+    return node.isActive || node.type === 'root';
 }
 
 function createLabelSprite(THREE, text, isActive) {
@@ -541,6 +552,14 @@ function renderStats(nodes, edges, statsEl, language) {
     statsEl.innerHTML = [
         `<span><i class="fa-solid fa-cube"></i> ${nodes.length}</span>`,
         `<span><i class="fa-solid fa-link"></i> ${edges.length}</span>`,
+        byType.macro ? `<span style="color:#ffb3b8;">• ${byType.macro} ${isRu ? 'разделов' : 'sections'}</span>` : '',
+        byType.medium ? `<span style="color:#76f4ff;">• ${byType.medium} ${isRu ? 'подразделов' : 'subsections'}</span>` : '',
+        byType.entity ? `<span style="color:#ffc0c6;">• ${byType.entity} ${isRu ? 'сущностей' : 'entities'}</span>` : '',
+    ].filter(Boolean).join(' ');
+    return;
+    statsEl.innerHTML = [
+        `<span><i class="fa-solid fa-cube"></i> ${nodes.length}</span>`,
+        `<span><i class="fa-solid fa-link"></i> ${edges.length}</span>`,
         byType.macro ? `<span style="color:#93c5fd;">● ${byType.macro} ${isRu ? 'разделов' : 'sections'}</span>` : '',
         byType.medium ? `<span style="color:#67e8f9;">● ${byType.medium} ${isRu ? 'подразделов' : 'subsections'}</span>` : '',
         byType.entity ? `<span style="color:#fbbf24;">● ${byType.entity} ${isRu ? 'сущностей' : 'entities'}</span>` : '',
@@ -550,6 +569,14 @@ function renderStats(nodes, edges, statsEl, language) {
 function renderLegend(legendEl, language) {
     if (!legendEl) return;
     const isRu = language === 'ru';
+    legendEl.innerHTML = `
+        <span><span class="graph-legend-dot" style="background:#ffe6ff;color:#ffe6ff;"></span>${isRu ? 'Документ' : 'Document'}</span>
+        <span><span class="graph-legend-dot" style="background:#ff9a9e;color:#ff9a9e;"></span>${isRu ? 'Раздел' : 'Section'}</span>
+        <span><span class="graph-legend-dot" style="background:#76f4ff;color:#76f4ff;"></span>${isRu ? 'Подраздел' : 'Subsection'}</span>
+        <span><span class="graph-legend-dot" style="background:#ffc0c6;color:#ffc0c6;"></span>${isRu ? 'Сущность' : 'Entity'}</span>
+        <span><span class="graph-legend-line" style="border-color:rgba(216,180,255,0.58);"></span>${isRu ? 'Связь / иерархия' : 'Link / hierarchy'}</span>
+    `;
+    return;
     legendEl.innerHTML = `
         <span><span class="graph-legend-dot" style="background:#68b8b1;box-shadow:0 0 6px #68b8b1;"></span>${isRu ? 'Документ' : 'Document'}</span>
         <span><span class="graph-legend-dot" style="background:#3b82f6;"></span>${isRu ? 'Раздел' : 'Section'}</span>

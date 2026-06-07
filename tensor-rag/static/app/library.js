@@ -1269,6 +1269,8 @@ function buildDocumentGraphData(details, activeDocUuid, focusNodeId = null) {
             type: level,
             chunk_index: idx,
             parent_chunk_index: ch.parent_chunk_index,
+            macro_index: ch.macro_index,
+            medium_index: ch.medium_index,
             cluster_id: ch.cluster_id,
             cluster_distance: ch.cluster_distance,
             layout_hint: ch.layout_hint,
