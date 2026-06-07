@@ -724,7 +724,7 @@ impl VM {
 
                 if let Some(vectors) = self.batch_vectors() {
                     use crate::clustering::Clusterer;
-                    let clusterer = crate::clustering::RadiusClusterer::default();
+                    let clusterer = crate::clustering::HdbscanClusterer::default();
                     let assignments = clusterer.cluster(&vectors);
                     let cluster_scores = crate::clustering::cluster_diversity_bonus(&assignments);
                     channels.push((crate::rsf::RsfChannel::Cluster, cluster_scores));

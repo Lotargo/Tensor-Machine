@@ -74,6 +74,64 @@ impl Clusterer for RadiusClusterer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct HdbscanClusterer {
+    pub min_cluster_size: usize,
+    pub min_samples: usize,
+    pub projection_components: usize,
+    pub fallback: RadiusClusterer,
+}
+
+impl Default for HdbscanClusterer {
+    fn default() -> Self {
+        Self {
+            min_cluster_size: 4,
+            min_samples: 2,
+            projection_components: 32,
+            fallback: RadiusClusterer::default(),
+        }
+    }
+}
+
+impl Clusterer for HdbscanClusterer {
+    fn cluster(&self, vectors: &[Vec<f32>]) -> Vec<ClusterAssignment> {
+        if vectors.len() < self.min_cluster_size || vectors.iter().any(|v| v.is_empty()) {
+            return self.fallback.cluster(vectors);
+        }
+
+        let prepared = prepare_density_vectors(vectors, self.projection_components);
+        if prepared.len() != vectors.len() || prepared.iter().any(|v| v.is_empty()) {
+            return self.fallback.cluster(vectors);
+        }
+
+        let config = hdbscan::HdbscanHyperParams::builder()
+            .min_cluster_size(self.min_cluster_size)
+            .min_samples(self.min_samples)
+            .build();
+        let clusterer = hdbscan::Hdbscan::new(&prepared, config);
+        let labels = match clusterer.cluster() {
+            Ok(labels) if labels.len() == vectors.len() => labels,
+            _ => return self.fallback.cluster(vectors),
+        };
+
+        let centroids = calculate_centroids(&prepared, &labels);
+        labels
+            .into_iter()
+            .enumerate()
+            .map(|(idx, cluster_id)| {
+                let distance_to_centroid = centroids
+                    .get(&cluster_id)
+                    .map(|centroid| euclidean_distance(&prepared[idx], centroid))
+                    .unwrap_or(0.0);
+                ClusterAssignment {
+                    cluster_id,
+                    distance_to_centroid,
+                }
+            })
+            .collect()
+    }
+}
+
 pub fn cluster_diversity_bonus(assignments: &[ClusterAssignment]) -> Vec<f32> {
     let mut seen: HashMap<i32, usize> = HashMap::new();
     assignments
@@ -94,6 +152,77 @@ pub fn cluster_diversity_bonus(assignments: &[ClusterAssignment]) -> Vec<f32> {
         .collect()
 }
 
+fn prepare_density_vectors(vectors: &[Vec<f32>], components: usize) -> Vec<Vec<f32>> {
+    let target_dim = vectors
+        .iter()
+        .map(|v| v.len())
+        .min()
+        .unwrap_or(0)
+        .min(components.max(2));
+    if target_dim == 0 {
+        return Vec::new();
+    }
+
+    vectors
+        .iter()
+        .map(|vector| {
+            let mut projected = vector
+                .iter()
+                .take(target_dim)
+                .map(|value| if value.is_finite() { *value } else { 0.0 })
+                .collect::<Vec<_>>();
+            l2_normalize(&mut projected);
+            projected
+        })
+        .collect()
+}
+
+fn calculate_centroids(vectors: &[Vec<f32>], labels: &[i32]) -> HashMap<i32, Vec<f32>> {
+    let mut sums: HashMap<i32, Vec<f32>> = HashMap::new();
+    let mut counts: HashMap<i32, usize> = HashMap::new();
+
+    for (vector, label) in vectors.iter().zip(labels.iter().copied()) {
+        if label < 0 {
+            continue;
+        }
+        let sum = sums.entry(label).or_insert_with(|| vec![0.0; vector.len()]);
+        for (idx, value) in vector.iter().enumerate() {
+            sum[idx] += *value;
+        }
+        *counts.entry(label).or_insert(0) += 1;
+    }
+
+    for (label, sum) in sums.iter_mut() {
+        let count = counts.get(label).copied().unwrap_or(1).max(1) as f32;
+        for value in sum.iter_mut() {
+            *value /= count;
+        }
+    }
+
+    sums
+}
+
+fn l2_normalize(vector: &mut [f32]) {
+    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return;
+    }
+    for value in vector.iter_mut() {
+        *value /= norm;
+    }
+}
+
+fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let delta = x - y;
+            delta * delta
+        })
+        .sum::<f32>()
+        .sqrt()
+}
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     let mut dot = 0.0;
     let mut an = 0.0;
@@ -107,5 +236,41 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
         0.0
     } else {
         dot / (an.sqrt() * bn.sqrt())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Clusterer, HdbscanClusterer};
+    use std::collections::HashSet;
+
+    #[test]
+    fn hdbscan_clusterer_finds_multiple_dense_groups() {
+        let vectors = vec![
+            vec![1.0, 1.0, 0.0],
+            vec![1.1, 1.0, 0.0],
+            vec![0.9, 1.0, 0.0],
+            vec![1.0, 1.1, 0.0],
+            vec![-1.0, -1.0, 0.0],
+            vec![-1.1, -1.0, 0.0],
+            vec![-0.9, -1.0, 0.0],
+            vec![-1.0, -1.1, 0.0],
+            vec![0.0, 5.0, 0.0],
+        ];
+        let clusterer = HdbscanClusterer {
+            min_cluster_size: 3,
+            min_samples: 2,
+            projection_components: 3,
+            ..HdbscanClusterer::default()
+        };
+
+        let assignments = clusterer.cluster(&vectors);
+        let dense_labels = assignments
+            .iter()
+            .filter_map(|assignment| (assignment.cluster_id >= 0).then_some(assignment.cluster_id))
+            .collect::<HashSet<_>>();
+
+        assert!(dense_labels.len() >= 2);
+        assert_eq!(assignments.len(), vectors.len());
     }
 }
