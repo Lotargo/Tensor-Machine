@@ -483,6 +483,23 @@ Completed in this area:
 - Main document tabs now use stable flex/scroll containers, reducing layout churn during tab switches.
 
 Follow-up work:
+- Before starting broad optimization, run an instrumented Selenium + Chrome DevTools Protocol profiling pass on real MVP scenarios and use the results to choose optimization targets.
+- Capture objective frontend metrics via CDP rather than relying only on visual impressions:
+  - long tasks and main-thread blocking time;
+  - scripting, rendering, layout, paint, and compositing time;
+  - frame rate / dropped frames during graph pan/zoom and tab switching;
+  - DOM node counts and style/layout invalidations;
+  - JS heap growth and detached nodes after repeated tab switches;
+  - network payload sizes and API response timings for document details, graph data, chat sources, and settings;
+  - first paint / first contentful paint / theme bootstrap behavior.
+- Profile at least these scenarios:
+  - initial load with saved dark theme;
+  - selecting a large document;
+  - switching `Текст` -> `Иерархия` -> `Сущности` -> `Граф связей`;
+  - opening fullscreen graph and interacting with pan/zoom;
+  - streaming an agent/RAG response while sources are produced;
+  - opening and editing AI settings, including secret field reveal.
+- Use the Selenium/CDP report to decide what must move to backend/BFF computation, for example graph clustering/layout hints, hierarchy slices, entity buckets, source summaries, or document view-model aggregation.
 - Add view-level profiling for tab switches and chat rendering.
 - Introduce virtualization or pagination for large lists and clouds.
 - Cache derived structures for hierarchy/entities/graph inputs.
@@ -905,6 +922,7 @@ Notes:
 
 ### Phase 5
 - Fix product-level frontend performance and visual stability:
+  - run Selenium + CDP profiling first and create a metrics report before choosing optimization work
   - remove the saved-theme load flash before broader visual polish
   - add profiling budgets for tabs, chat streaming, graph interaction, and large document views
   - apply pagination, virtualization, memoization, throttled animation frames, and stale-render cancellation
@@ -919,6 +937,7 @@ Notes:
 - Do not treat raw hot-path entity candidates as final semantic entities; they are allowed to be useful immediately, but cold enrichment should own final cleanup/canonicalization.
 - Do not spend excessive time preserving the current graph renderer if a clean module rewrite gives a simpler, faster, and more capable visualization path.
 - Do not treat 3D graph rendering as a pure frontend skin; real graph UX needs backend/BFF support for clustering, focus neighborhoods, paging, and level-of-detail.
+- Do not begin broad UI optimization without Selenium + CDP metrics from real MVP scenarios; use the report to decide what stays in the browser and what moves to backend/BFF computation.
 - Do not allow heavy document-scale frontend panels to render or recompute unbounded data on the main UI thread.
 - Do not ship theme selection with a first-paint flash; the saved theme must be applied before the app visibly renders.
 - Do not invest in superficial UI polish before retrieval and document structure are trustworthy.

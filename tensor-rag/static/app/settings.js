@@ -164,7 +164,7 @@ function createSettingField(setting, section) {
 
     wrapper.innerHTML = `
         <label for="${inputId}">${escapeHtml(setting.label)}</label>
-        <div class="settings-input-row">
+        <div class="settings-input-row${setting.field_type === 'password' ? ' has-secret' : ''}">
             ${control}
             ${setting.field_type === 'password' ? `<button type="button" class="secret-toggle-btn" data-secret-toggle="${inputId}"><i class="fa-solid fa-eye"></i></button>` : ''}
         </div>

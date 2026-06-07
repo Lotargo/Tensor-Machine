@@ -553,9 +553,42 @@
 }
 
 .chat-scope-toggle input {
+    appearance: none;
+    -webkit-appearance: none;
     flex: 0 0 auto;
     margin-top: 2px;
-    accent-color: var(--color-primary);
+    width: 16px;
+    height: 16px;
+    border: 1px solid color-mix(in srgb, var(--border-color) 82%, var(--text-secondary) 18%);
+    border-radius: 4px;
+    background: var(--bg-card);
+    display: grid;
+    place-content: center;
+}
+
+.chat-scope-toggle input::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    transform: scale(0);
+    transition: transform 0.12s ease;
+    background: #ffffff;
+    clip-path: polygon(14% 44%, 0 60%, 39% 100%, 100% 17%, 84% 0, 36% 62%);
+}
+
+.chat-scope-toggle input:checked {
+    border-color: var(--color-primary);
+    background: var(--color-primary);
+}
+
+.chat-scope-toggle input:checked::before {
+    transform: scale(1);
+}
+
+.chat-scope-toggle input:focus-visible {
+    outline: 2px solid var(--color-primary-light);
+    outline-offset: 2px;
 }
 
 .chat-scope-caption {
