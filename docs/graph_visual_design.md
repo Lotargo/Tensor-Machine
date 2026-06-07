@@ -4,6 +4,8 @@ Date: 2026-06-07
 
 This document tracks the intended visual direction for the knowledge graph UI. It is separate from the iterative bug report because these notes describe target design and interaction principles, not only defects.
 
+Last updated: 2026-06-07, after the first 3D graph refactor pass.
+
 ## Goal
 
 Make the graph feel like a readable knowledge map, not a dense hierarchy preview. The user should be able to understand document structure, entity relationships, and local neighborhoods without fighting visual noise or animation freezes.
@@ -28,6 +30,14 @@ The target style is a "knowledge space": clusters, local focus, soft depth, and 
 
 ## Layout Model
 
+Current implemented baseline:
+
+- The graph now uses a local Three.js renderer loaded from `/vendor/three/three.module.js`.
+- Inline and fullscreen renderers are isolated so fullscreen no longer keeps the inline WebGL scene rendering behind it.
+- Overview layout is no longer a pure concentric ring/donut layout; it uses radial branches grouped by semantic cluster when cluster ids are available, otherwise by macro/parent structure.
+- A static collision-relaxation pass separates node spheres after layout to reduce overlap without adding a per-frame physics simulation cost.
+- Fullscreen uses expanded graph caps, while inline mode keeps smaller caps to protect the main UI.
+
 Default overview:
 
 - Document node near the center.
@@ -45,6 +55,12 @@ Focus mode:
 - Distant context remains hidden or visually subdued.
 - Clicking the selected node again, or the root document, returns to overview.
 
+Current gap:
+
+- Focus mode exists, but it is still mostly a filtered hierarchy/entity neighborhood, not a truly semantic graph dependency view.
+- The layout still needs more "air" for dense documents and better cluster separation after real UMAP coordinates are available.
+- Some segment visibility is controlled by graph caps; fullscreen caps were increased, but huge documents still need progressive loading or renderer-level virtualization.
+
 ## 3D Style
 
 - Use matte spheres or low-gloss points instead of shiny balls.
@@ -54,6 +70,13 @@ Focus mode:
 - Highlight only the selected node, direct neighbors, and active links.
 - Show labels for the selected node, important section nodes, and hovered nodes only.
 - Avoid permanent labels for dense medium/micro/entity sets.
+
+Recent implementation notes:
+
+- Current renderer uses matte spheres, reduced permanent labels, fog, low-opacity edges, and selected-node halos.
+- Click selection in fullscreen opens a non-blocking side inspector with selected chunk text.
+- Hover still uses a compact tooltip.
+- Next visual pass should improve depth ordering, active-neighbor highlighting, and selected cluster emphasis.
 
 ## Color Palette
 
@@ -82,6 +105,11 @@ Graph controls should become a compact toolbar rather than detached buttons.
 - Controls expected in the first pass: zoom in, zoom out, fit/reset view, fullscreen, refresh.
 - Later controls: 2D/3D switch, labels toggle, edge filter, layout mode.
 
+Current status:
+
+- Zoom controls have been visually centered inside stable square buttons.
+- Controls are still separate from a full graph toolbar model; the 2D/3D switch, label toggle, edge filters, and layout mode remain open.
+
 ## 2D And 3D Combined Architecture
 
 The desired long-term architecture is a shared graph model with interchangeable renderers.
@@ -100,10 +128,12 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 
 Current state:
 
-- The Rust codebase has clustering traits and fallback implementations.
-- `PcaFallbackReducer` is only a simple dimensionality fallback.
-- `RadiusClusterer` is only a lightweight similarity-threshold clusterer.
-- The current search VM can use cluster diversity as an RSF channel, but it does not yet use full manifold reduction or density clustering.
+- The Rust codebase has clustering traits, fallback implementations, and an `HdbscanClusterer`.
+- The search VM now uses `HdbscanClusterer` for the RSF cluster diversity channel, with fallback behavior for insufficient/invalid vectors.
+- Document details can expose `cluster_id`, `cluster_distance`, and `layout_hint` for chunks when graph semantic details are requested.
+- Semantic cluster data is now lazy-loaded for graph rendering through `/documents/:uuid/details?semantic=true`, so ordinary document opening does not pay the Qdrant + clustering cost.
+- The current layout projection is still a normalized-prefix/simple projection used as a temporary layout hint.
+- UMAP has not been implemented yet.
 
 Target direction:
 
@@ -126,6 +156,15 @@ Implementation options to evaluate:
 - Python/service path: run UMAP/HDBSCAN in a local analysis worker if Rust libraries are not mature enough for production.
 - Hybrid path: start with Rust DBSCAN/HDBSCAN-compatible clustering and add UMAP later once graph/search contracts are stable.
 
+UMAP-specific remaining work:
+
+- Choose implementation path: Rust crate, local Python worker, or a small local analysis service.
+- Define deterministic reducer parameters for document-level graph layouts: neighbors, min distance, metric, random seed, and output dimensions.
+- Decide whether UMAP runs per document, per focus neighborhood, per library, or as a cached multi-level embedding.
+- Add cache invalidation for reindex, delete, document replacement, embedding model changes, and chunking schema changes.
+- Store reducer metadata alongside cluster metadata so old layouts can be recognized and rebuilt safely.
+- Use UMAP coordinates as the primary layout signal, then apply lightweight collision/label separation in the renderer.
+
 Open design questions:
 
 - Should cluster ids be persisted per document version, per library, or per query result set?
@@ -135,14 +174,17 @@ Open design questions:
 
 ## Implementation Plan
 
-1. Fix immediate visual regressions in the current graph surface: toolbar centering, spacing, labels, and palette.
-2. Add profiling with Selenium/CDP before moving more graph computation to backend.
-3. Define a semantic clustering contract for graph/search payloads.
-4. Prototype UMAP/HDBSCAN or an equivalent density-clustering path on stored embeddings.
-5. Persist cluster metadata and expose it through backend/BFF graph endpoints.
-6. Replace artificial frontend layout hints with cluster-aware layout hints from backend.
-7. Add explicit 2D/3D renderer boundary before introducing Graphology/Sigma.
-8. Move heavy graph filtering/layout preparation to backend or worker after metrics show the true bottlenecks.
+1. Done: fix first-pass visual regressions in the current graph surface: toolbar centering, spacing, labels, palette direction, isolated fullscreen render, and click inspector.
+2. Done partially: define and expose a semantic clustering payload for graph/search use (`cluster_id`, `cluster_distance`, `layout_hint`, `semantic_clusters`).
+3. Done partially: add HDBSCAN-backed clustering in Rust with fallback behavior.
+4. Done partially: lazy-load graph semantic details so normal document viewing is not slowed by clustering.
+5. Next: add profiling with Selenium/CDP before moving more graph computation to backend.
+6. Next: prototype UMAP or equivalent manifold reduction on stored embeddings.
+7. Next: persist cluster/reducer metadata and expose it through a dedicated graph/BFF endpoint instead of overloading document details.
+8. Next: replace temporary frontend layout hints with backend-prepared UMAP/cluster-aware layout coordinates.
+9. Next: add explicit 2D/3D renderer boundary before introducing Graphology/Sigma.
+10. Next: evaluate Graphology + Sigma for fast 2D mode and shared graph model.
+11. Next: move heavy graph filtering/layout preparation to backend or worker after metrics show the true bottlenecks.
 
 ## MVP Acceptance Criteria
 
@@ -152,3 +194,14 @@ Open design questions:
 - Graph stays smooth enough for large documents after caps and focus filtering.
 - Colors feel native to both app themes.
 - Controls look like part of the product UI, not a debug overlay.
+
+## Remaining MVP Work
+
+- Run Selenium/CDP profiling on current 3D graph interactions: first render, fullscreen open, node click/focus, zoom, rotate, and large document caps.
+- Verify graph behavior after a full server restart and document reindex, especially documents indexed before semantic cluster metadata existed.
+- Implement UMAP or equivalent reducer; current HDBSCAN is useful, but layout coordinates are still temporary.
+- Add a dedicated graph payload endpoint that can return overview, focus neighborhood, semantic clusters, and renderer caps without refetching full document details.
+- Decide renderer split: keep Three.js for 3D, add Graphology/Sigma for 2D, and share the same normalized graph model.
+- Add progressive loading/virtualized graph levels for very large documents so "all segments" can be explored without dumping every node at once.
+- Improve fullscreen side inspector: entity detail mode, neighbor list, jump-to-text action, and close behavior that does not disrupt graph selection.
+- Clean up the old 2D fallback code path and duplicate inspector/legend logic after the new renderer boundary is stable.

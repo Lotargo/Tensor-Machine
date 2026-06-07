@@ -399,6 +399,16 @@
     overflow: hidden;
 }
 
+.graph-inspector-side {
+    right: 12px;
+    top: 48px;
+    bottom: 12px;
+    width: min(390px, 32vw);
+    max-height: none;
+    background: color-mix(in srgb, var(--bg-card-strong) 94%, transparent);
+    border-color: color-mix(in srgb, var(--border-color) 76%, transparent);
+}
+
 .graph-inspector-header {
     display: flex;
     align-items: center;
@@ -406,7 +416,6 @@
     padding: 8px 12px;
     background: rgba(255, 255, 255, 0.05);
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    cursor: pointer;
 }
 
 .graph-inspector-title {
@@ -463,6 +472,20 @@
     background: rgba(0, 0, 0, 0.3);
     padding: 8px;
     border-radius: 4px;
+}
+
+.graph-inspector-side .graph-inspector-text {
+    max-height: none;
+}
+
+@media (max-width: 900px) {
+    .graph-inspector-side {
+        left: 12px;
+        right: 12px;
+        width: auto;
+        top: auto;
+        max-height: 42%;
+    }
 }
 
 .sidebar {

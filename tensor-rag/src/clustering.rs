@@ -194,7 +194,7 @@ pub fn build_semantic_cluster_layout(chunk_vectors: &[(i32, Vec<f32>)]) -> Seman
         .map(|(idx, assignment)| SemanticClusterPoint {
             chunk_index: chunk_indexes[idx],
             cluster_id: assignment.cluster_id,
-            distance_to_centroid: assignment.distance_to_centroid,
+            distance_to_centroid: finite_f32(assignment.distance_to_centroid),
             layout_hint: vector_layout_hint(prepared.get(idx)),
         })
         .collect::<Vec<_>>();
@@ -269,10 +269,14 @@ fn vector_layout_hint(vector: Option<&Vec<f32>>) -> [f32; 3] {
         return [0.0, 0.0, 0.0];
     };
     [
-        vector.first().copied().unwrap_or(0.0),
-        vector.get(1).copied().unwrap_or(0.0),
-        vector.get(2).copied().unwrap_or(0.0),
+        finite_f32(vector.first().copied().unwrap_or(0.0)),
+        finite_f32(vector.get(1).copied().unwrap_or(0.0)),
+        finite_f32(vector.get(2).copied().unwrap_or(0.0)),
     ]
+}
+
+fn finite_f32(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
 }
 
 fn calculate_centroids(vectors: &[Vec<f32>], labels: &[i32]) -> HashMap<i32, Vec<f32>> {

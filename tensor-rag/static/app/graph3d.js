@@ -51,6 +51,8 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
 
     nodes.forEach((node) => nodeById.set(node.id, node));
     layoutNodes(nodes, edges);
+    relaxNodeCollisions(nodes);
+    recenterNodes(nodes);
     renderStats(nodes, edges, options.statsEl, options.language);
     renderLegend(options.legendEl, options.language);
 
@@ -75,6 +77,7 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
         const source = nodeById.get(edge.source);
         const target = nodeById.get(edge.target);
         if (!source || !target) return;
+        if (!hasFinitePosition(source) || !hasFinitePosition(target)) return;
 
         const geometry = new THREE.BufferGeometry().setFromPoints([
             new THREE.Vector3(source.x, source.y, source.z),
@@ -86,6 +89,7 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
 
     const geometries = new Map();
     nodes.forEach((node) => {
+        if (!hasFinitePosition(node)) setPosition(node, 0, 0, 0);
         const radius = getVisualRadius(node);
         const geometryKey = Math.round(radius);
         let geometry = geometries.get(geometryKey);
@@ -227,8 +231,10 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
             return;
         }
         if (['macro', 'medium', 'micro'].includes(node.type)) {
-            if (event.shiftKey || event.altKey || !options.onFocusNode) {
-                showChunkInspector(canvasWrapper, node, options.chunks || [], options.language);
+            if (options.inspectOnSelect || event.shiftKey || event.altKey || !options.onFocusNode) {
+                showChunkInspector(canvasWrapper, node, options.chunks || [], options.language, {
+                    sidePanel: Boolean(options.inspectOnSelect),
+                });
             } else {
                 options.onFocusNode(node.id);
             }
@@ -346,6 +352,78 @@ function layoutNodes(nodes, edges) {
     placePrimaryClusters(looseEntities, 560, 42, 0, 0.18);
 }
 
+function relaxNodeCollisions(nodes) {
+    const colliders = nodes.filter((node) => node.type !== 'doc' && hasFinitePosition(node));
+    if (colliders.length < 2) return;
+
+    const iterations = colliders.length > 420 ? 22 : (colliders.length > 260 ? 30 : 42);
+    for (let iteration = 0; iteration < iterations; iteration++) {
+        let moved = false;
+        for (let i = 0; i < colliders.length; i++) {
+            const a = colliders[i];
+            for (let j = i + 1; j < colliders.length; j++) {
+                const b = colliders[j];
+                const rawDx = finiteNumber(b.x) - finiteNumber(a.x);
+                const rawDz = finiteNumber(b.z) - finiteNumber(a.z);
+                const samePoint = Math.abs(rawDx) < 0.001 && Math.abs(rawDz) < 0.001;
+                const fallbackAngle = seededAngle(`${a.id}:${b.id}:collision`);
+                const dx = samePoint ? Math.cos(fallbackAngle) * 0.001 : rawDx;
+                const dz = samePoint ? Math.sin(fallbackAngle) * 0.001 : rawDz;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+                const minDistance = collisionRadius(a) + collisionRadius(b);
+                if (distance >= minDistance) continue;
+
+                const overlap = (minDistance - distance) * 0.52;
+                const nx = dx / distance;
+                const nz = dz / distance;
+                const aLocked = a.type === 'root';
+                const bLocked = b.type === 'root';
+
+                if (!aLocked) {
+                    const share = bLocked ? 1 : 0.5;
+                    a.x -= nx * overlap * share;
+                    a.z -= nz * overlap * share;
+                    a.y += ySeparation(a, b, iteration) * share;
+                }
+                if (!bLocked) {
+                    const share = aLocked ? 1 : 0.5;
+                    b.x += nx * overlap * share;
+                    b.z += nz * overlap * share;
+                    b.y -= ySeparation(b, a, iteration) * share;
+                }
+                moved = true;
+            }
+        }
+        if (!moved) break;
+    }
+}
+
+function collisionRadius(node) {
+    const base = getVisualRadius(node);
+    if (node.type === 'root') return base * 2.6 + 18;
+    if (node.type === 'macro') return base * 2.45 + 15;
+    if (node.type === 'medium') return base * 2.3 + 12;
+    if (node.type === 'entity') return base * 2.15 + 13;
+    return base * 2.0 + 9;
+}
+
+function ySeparation(node, other, iteration) {
+    const direction = seededUnit(`${node.id}:${other.id}`) > 0.5 ? 1 : -1;
+    const damping = iteration < 8 ? 1 : 0.35;
+    return direction * damping * 0.8;
+}
+
+function recenterNodes(nodes) {
+    if (nodes.length === 0) return;
+    const movable = nodes.filter((node) => node.type !== 'root');
+    if (movable.length === 0) return;
+    const center = averagePosition(movable);
+    movable.forEach((node) => {
+        node.x -= center.x * 0.42;
+        node.z -= center.z * 0.42;
+    });
+}
+
 function placeRadialDocumentStructure(nodes) {
     if (nodes.length === 0) return;
 
@@ -368,9 +446,7 @@ function placeRadialDocumentStructure(nodes) {
             const ring = Math.floor(localIndex / branchDepth);
             const lane = localIndex % branchDepth;
             const laneCenter = (branchDepth - 1) / 2;
-            const semanticNudge = Array.isArray(node.layout_hint)
-                ? Number(node.layout_hint[0] || 0) * 18 + Number(node.layout_hint[1] || 0) * 12
-                : 0;
+            const semanticNudge = layoutHintValue(node.layout_hint, 0) * 18 + layoutHintValue(node.layout_hint, 1) * 12;
             const radius = baseRadius + level * 82 + ring * radialStep + Math.max(0, group.nodes.length - 12) * 1.3;
             const side = (lane - laneCenter) * tangentSpread + semanticNudge;
             const lift = level === 0 ? 18 : (level === 1 ? 0 : -18);
@@ -430,9 +506,9 @@ function graphNodeLevel(node) {
 }
 
 function setPosition(node, x, y, z) {
-    node.x = x;
-    node.y = y;
-    node.z = z;
+    node.x = finiteNumber(x);
+    node.y = finiteNumber(y);
+    node.z = finiteNumber(z);
 }
 
 function placePrimaryClusters(nodes, radius, yOffset, zOffset, phase = 0) {
@@ -470,13 +546,28 @@ function placeChildNearParent(node, parent, seed, radius, yStep, zOffset) {
 }
 
 function averagePosition(nodes) {
-    const total = nodes.reduce((acc, node) => ({
+    const validNodes = nodes.filter(hasFinitePosition);
+    const total = validNodes.reduce((acc, node) => ({
         x: acc.x + node.x,
         y: acc.y + node.y,
         z: acc.z + node.z,
     }), { x: 0, y: 0, z: 0 });
-    const count = Math.max(1, nodes.length);
+    const count = Math.max(1, validNodes.length);
     return { x: total.x / count, y: total.y / count, z: total.z / count };
+}
+
+function layoutHintValue(layoutHint, index) {
+    if (!Array.isArray(layoutHint)) return 0;
+    return finiteNumber(layoutHint[index]);
+}
+
+function finiteNumber(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+
+function hasFinitePosition(node) {
+    return Number.isFinite(node?.x) && Number.isFinite(node?.y) && Number.isFinite(node?.z);
 }
 
 function goldenAngle(index) {
@@ -536,7 +627,7 @@ function createLabelSprite(THREE, text, isActive) {
 
 function computeCameraDistance(nodes) {
     const maxRadius = nodes.reduce((max, node) => {
-        const distance = Math.sqrt((node.x || 0) ** 2 + (node.y || 0) ** 2 + (node.z || 0) ** 2);
+        const distance = Math.sqrt(finiteNumber(node.x) ** 2 + finiteNumber(node.y) ** 2 + finiteNumber(node.z) ** 2);
         return Math.max(max, distance);
     }, 280);
     return Math.max(420, Math.min(1250, maxRadius * 2.35));
@@ -606,7 +697,7 @@ function updateTooltip(tooltip, node, event, language) {
     tooltip.innerHTML = `<b>${escapeHtml(node.label)}</b><br>${isRu ? 'Тип' : 'Type'}: ${escapeHtml(node.type)}`;
 }
 
-function showChunkInspector(parent, node, chunks, language) {
+function showChunkInspector(parent, node, chunks, language, options = {}) {
     const chunk = chunks.find((item) => item.chunk_index === node.chunk_index);
     if (!chunk) return;
 
@@ -617,7 +708,7 @@ function showChunkInspector(parent, node, chunks, language) {
     const header = Array.isArray(chunk.header_chain) ? chunk.header_chain.join(' > ') : '';
     const entities = Array.isArray(chunk.entities) ? chunk.entities.join(', ') : '';
     const inspector = document.createElement('div');
-    inspector.className = 'graph-inspector';
+    inspector.className = options.sidePanel ? 'graph-inspector graph-inspector-side' : 'graph-inspector';
     inspector.innerHTML = `
         <div class="graph-inspector-header">
             <span class="graph-inspector-title">${escapeHtml(header || node.label)}</span>
@@ -633,7 +724,6 @@ function showChunkInspector(parent, node, chunks, language) {
         </div>
     `;
     inspector.querySelector('.graph-inspector-close').onclick = () => inspector.remove();
-    inspector.querySelector('.graph-inspector-header').onclick = () => inspector.remove();
     parent.appendChild(inspector);
 }
 

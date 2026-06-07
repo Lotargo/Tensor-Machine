@@ -1091,7 +1091,8 @@ async function renderDocumentGraph(container, docUuid) {
     
     if (emptyOverlay) emptyOverlay.style.display = 'none';
 
-    const details = state.selectedDocDetails;
+    const details = await ensureGraphSemanticDetails(docUuid);
+    if (requestId !== graphRenderRequestId || state.selectedDocUuid !== docUuid) return;
     if (!details || !Array.isArray(details.chunks) || details.chunks.length === 0) {
         // Retry when details arrive
         const check = () => {
@@ -1131,6 +1132,27 @@ async function renderDocumentGraph(container, docUuid) {
     wireGraphZoomButtons(currentGraphSim);
 }
 
+async function ensureGraphSemanticDetails(docUuid) {
+    const details = state.selectedDocDetails;
+    if (!details || !Array.isArray(details.chunks)) return details;
+    if (details.semantic_clusters_loaded) return details;
+
+    try {
+        const semanticDetails = await fetchJson(`/documents/${docUuid}/details?semantic=true`);
+        if (state.selectedDocUuid !== docUuid) return details;
+        semanticDetails.render_revision = details.render_revision;
+        state.selectedDocDetails = semanticDetails;
+        const doc = state.documentList.find((item) => item.doc_uuid === docUuid);
+        if (doc) hydrateDocumentFromDetails(doc, semanticDetails);
+        return semanticDetails;
+    } catch (error) {
+        console.warn('Failed to fetch graph semantic details:', error);
+        details.semantic_clusters_loaded = true;
+        details.semantic_clusters = null;
+        return details;
+    }
+}
+
 function resetGraphCanvasElement(canvas) {
     const freshCanvas = canvas.cloneNode(false);
     canvas.replaceWith(freshCanvas);
@@ -1139,7 +1161,7 @@ function resetGraphCanvasElement(canvas) {
 
 async function startGraphRenderer(canvas, graphData, docUuid, options) {
     try {
-        const { createGraph3dRenderer } = await import('./graph3d.js?v=3d-local-20260607');
+        const { createGraph3dRenderer } = await import('./graph3d.js?v=3d-local-20260608-finite');
         return await createGraph3dRenderer(canvas, graphData, docUuid, options);
     } catch (error) {
         console.warn('3D graph renderer unavailable, falling back to 2D canvas renderer:', error);
@@ -1176,18 +1198,19 @@ function handleGraphFocusNode(nodeId) {
     renderDocumentGraph(null, state.selectedDocUuid);
 }
 
-function buildDocumentGraphData(details, activeDocUuid, focusNodeId = null) {
+function buildDocumentGraphData(details, activeDocUuid, focusNodeId = null, options = {}) {
     const chunks = details.chunks || [];
     const edges = details.edges || [];
     const doc = state.documentList.find(d => d.doc_uuid === activeDocUuid);
     const docLabel = doc?.filename || 'Document';
-    const MAX_ENTITIES = 60;
-    const MAX_MEDIUM_NODES = 180;
-    const MAX_ENTITY_EDGES = 520;
-    const MAX_FOCUS_SIBLINGS = 44;
-    const MAX_FOCUS_CHILDREN = 140;
-    const MAX_FOCUS_ENTITIES = 70;
-    const MAX_ENTITY_FOCUS_CHUNKS = 170;
+    const expanded = options.expanded === true;
+    const MAX_ENTITIES = expanded ? 90 : 60;
+    const MAX_MEDIUM_NODES = expanded ? 520 : 180;
+    const MAX_ENTITY_EDGES = expanded ? 900 : 520;
+    const MAX_FOCUS_SIBLINGS = expanded ? 88 : 44;
+    const MAX_FOCUS_CHILDREN = expanded ? 320 : 140;
+    const MAX_FOCUS_ENTITIES = expanded ? 90 : 70;
+    const MAX_ENTITY_FOCUS_CHUNKS = expanded ? 300 : 170;
     
     const nodes = [];
     const edgeSet = [];
@@ -2039,7 +2062,8 @@ async function openGraphFullscreen() {
     canvas.style.width = (rect.width || 800) + 'px';
     canvas.style.height = (rect.height || 600) + 'px';
     
-    const details = state.selectedDocDetails;
+    const details = await ensureGraphSemanticDetails(state.selectedDocUuid);
+    if (requestId !== graphModalRenderRequestId || modal.style.display === 'none') return;
     if (!details || !Array.isArray(details.chunks) || details.chunks.length === 0) {
         const check = () => {
             if (state.selectedDocDetails && Array.isArray(state.selectedDocDetails.chunks) && state.selectedDocDetails.chunks.length > 0) {
@@ -2052,7 +2076,9 @@ async function openGraphFullscreen() {
         return;
     }
     
-    const graphData = buildDocumentGraphData(details, state.selectedDocUuid, graphFocusNodeId);
+    const graphData = buildDocumentGraphData(details, state.selectedDocUuid, graphFocusNodeId, {
+        expanded: true,
+    });
     const hasEdges = (graphData.edges || []).length > 0;
     if (!hasEdges && emptyOverlay) {
         emptyOverlay.style.display = 'flex';
@@ -2070,6 +2096,7 @@ async function openGraphFullscreen() {
         },
         onFocusNode: handleGraphFocusNode,
         onEntitySearch: handleGraphEntitySearch,
+        inspectOnSelect: true,
     });
     if (requestId !== graphModalRenderRequestId || modal.style.display === 'none') {
         sim.stop();
