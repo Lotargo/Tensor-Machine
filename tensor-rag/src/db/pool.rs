@@ -499,6 +499,14 @@ impl DbPools {
         super::search::fetch_bm25_scores(self, ids, query).await
     }
 
+    pub async fn fetch_document_chunk_vectors(
+        &self,
+        doc_uuid: &str,
+        limit: usize,
+    ) -> Result<Vec<(usize, Vec<f32>)>, String> {
+        super::search::fetch_document_chunk_vectors(self, doc_uuid, limit).await
+    }
+
     pub async fn search_keyword_candidate_ids(
         &self,
         query: &str,

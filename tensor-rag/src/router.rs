@@ -1625,6 +1625,7 @@ async fn handle_get_document_details(
     })?;
 
     let mut chunks = Vec::new();
+    let mut chunk_id_to_index = std::collections::HashMap::new();
     for r in chunk_rows {
         let id: i64 = r.try_get("id").unwrap_or(0);
         let text: String = r.try_get("text").unwrap_or_default();
@@ -1638,6 +1639,7 @@ async fn handle_get_document_details(
         let zone_keywords: serde_json::Value =
             r.try_get("zone_keywords").unwrap_or(serde_json::json!([]));
         let entities: serde_json::Value = r.try_get("entities").unwrap_or(serde_json::json!([]));
+        chunk_id_to_index.insert(id as usize, chunk_index);
 
         chunks.push(serde_json::json!({
             "id": id,
@@ -1652,6 +1654,63 @@ async fn handle_get_document_details(
             "entities": entities
         }));
     }
+
+    let semantic_clusters = match state
+        .db_pools
+        .fetch_document_chunk_vectors(&doc_uuid, chunks.len().max(1))
+        .await
+    {
+        Ok(chunk_vectors) if !chunk_vectors.is_empty() => {
+            let indexed_vectors = chunk_vectors
+                .into_iter()
+                .filter_map(|(id, vector)| {
+                    chunk_id_to_index
+                        .get(&id)
+                        .copied()
+                        .map(|chunk_index| (chunk_index, vector))
+                })
+                .collect::<Vec<_>>();
+            let layout = crate::clustering::build_semantic_cluster_layout(&indexed_vectors);
+            let point_by_chunk = layout
+                .points
+                .iter()
+                .map(|point| (point.chunk_index, point))
+                .collect::<std::collections::HashMap<_, _>>();
+            for chunk in chunks.iter_mut() {
+                let Some(chunk_index) = chunk.get("chunk_index").and_then(|value| value.as_i64())
+                else {
+                    continue;
+                };
+                let Some(point) = point_by_chunk.get(&(chunk_index as i32)) else {
+                    continue;
+                };
+                if let Some(object) = chunk.as_object_mut() {
+                    object.insert(
+                        "cluster_id".to_string(),
+                        serde_json::Value::Number(serde_json::Number::from(point.cluster_id)),
+                    );
+                    object.insert(
+                        "cluster_distance".to_string(),
+                        serde_json::json!(point.distance_to_centroid),
+                    );
+                    object.insert(
+                        "layout_hint".to_string(),
+                        serde_json::json!(point.layout_hint),
+                    );
+                }
+            }
+            serde_json::to_value(layout).unwrap_or_else(|_| serde_json::json!(null))
+        }
+        Ok(_) => serde_json::json!(null),
+        Err(error) => {
+            tracing::warn!(
+                "Failed to build semantic clusters for document {}: {}",
+                doc_uuid,
+                error
+            );
+            serde_json::json!(null)
+        }
+    };
 
     // 2. Fetch anchors
     let anchor_rows =
@@ -1706,7 +1765,8 @@ async fn handle_get_document_details(
         "doc_uuid": doc_uuid,
         "chunks": chunks,
         "anchors": anchors,
-        "edges": edges
+        "edges": edges,
+        "semantic_clusters": semantic_clusters
     })))
 }
 

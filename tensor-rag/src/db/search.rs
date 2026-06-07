@@ -6,8 +6,9 @@ use super::helpers::{
 };
 use super::types::ChunkDetail;
 use qdrant_client::qdrant::{
-    Condition, FieldCondition, Filter as QFilter, Match, PointId, SearchPoints, VectorsOutput,
-    WithVectorsSelector, condition::ConditionOneOf, r#match::MatchValue, point_id::PointIdOptions,
+    Condition, FieldCondition, Filter as QFilter, Match, PointId, ScrollPointsBuilder,
+    SearchPoints, VectorsOutput, WithVectorsSelector, condition::ConditionOneOf,
+    r#match::MatchValue, point_id::PointIdOptions,
 };
 use sqlx::{Postgres, QueryBuilder, Row};
 
@@ -283,6 +284,58 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
         }
     }
     vec![0.0; ids.len()]
+}
+
+pub async fn fetch_document_chunk_vectors(
+    pools: &DbPools,
+    doc_uuid: &str,
+    limit: usize,
+) -> Result<Vec<(usize, Vec<f32>)>, String> {
+    if pools.qdrant_cb.is_open() {
+        return Err("Circuit breaker is open for Qdrant".to_string());
+    }
+
+    let Some(client) = pools.qdrant_clients.get("default") else {
+        return Ok(Vec::new());
+    };
+
+    let collection = crate::config::get_qdrant_collection();
+    let response = client
+        .scroll(
+            ScrollPointsBuilder::new(collection)
+                .filter(QFilter::must([Condition::matches(
+                    "doc_uuid",
+                    doc_uuid.to_string(),
+                )]))
+                .limit(limit as u32)
+                .with_payload(false)
+                .with_vectors(true),
+        )
+        .await
+        .map_err(|error| {
+            pools.qdrant_cb.record_failure();
+            error.to_string()
+        })?;
+
+    let mut chunk_vectors = Vec::new();
+    for point in response.result {
+        let Some(PointId {
+            point_id_options: Some(PointIdOptions::Num(id)),
+        }) = point.id
+        else {
+            continue;
+        };
+        let Some(vector) = point.vectors.and_then(|vectors| vectors.get_vector()) else {
+            continue;
+        };
+        let qdrant_client::qdrant::vector_output::Vector::Dense(dense) = vector else {
+            continue;
+        };
+        chunk_vectors.push((id as usize, dense.data));
+    }
+
+    pools.qdrant_cb.record_success();
+    Ok(chunk_vectors)
 }
 
 pub async fn search_keyword_candidate_ids(

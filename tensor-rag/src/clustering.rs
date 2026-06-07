@@ -6,6 +6,29 @@ pub struct ClusterAssignment {
     pub distance_to_centroid: f32,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SemanticClusterPoint {
+    pub chunk_index: i32,
+    pub cluster_id: i32,
+    pub distance_to_centroid: f32,
+    pub layout_hint: [f32; 3],
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SemanticClusterSummary {
+    pub cluster_id: i32,
+    pub size: usize,
+    pub medoid_chunk_index: i32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SemanticClusterLayout {
+    pub algorithm: String,
+    pub projection: String,
+    pub points: Vec<SemanticClusterPoint>,
+    pub clusters: Vec<SemanticClusterSummary>,
+}
+
 pub trait DimensionReducer {
     fn reduce(&self, vectors: &[Vec<f32>]) -> Vec<Vec<f32>>;
 }
@@ -152,6 +175,39 @@ pub fn cluster_diversity_bonus(assignments: &[ClusterAssignment]) -> Vec<f32> {
         .collect()
 }
 
+pub fn build_semantic_cluster_layout(chunk_vectors: &[(i32, Vec<f32>)]) -> SemanticClusterLayout {
+    let chunk_indexes = chunk_vectors
+        .iter()
+        .map(|(chunk_index, _)| *chunk_index)
+        .collect::<Vec<_>>();
+    let vectors = chunk_vectors
+        .iter()
+        .map(|(_, vector)| vector.clone())
+        .collect::<Vec<_>>();
+    let clusterer = HdbscanClusterer::default();
+    let assignments = clusterer.cluster(&vectors);
+    let prepared = prepare_density_vectors(&vectors, clusterer.projection_components);
+
+    let points = assignments
+        .iter()
+        .enumerate()
+        .map(|(idx, assignment)| SemanticClusterPoint {
+            chunk_index: chunk_indexes[idx],
+            cluster_id: assignment.cluster_id,
+            distance_to_centroid: assignment.distance_to_centroid,
+            layout_hint: vector_layout_hint(prepared.get(idx)),
+        })
+        .collect::<Vec<_>>();
+    let clusters = summarize_semantic_clusters(&points);
+
+    SemanticClusterLayout {
+        algorithm: "hdbscan".to_string(),
+        projection: "normalized-prefix-projection".to_string(),
+        points,
+        clusters,
+    }
+}
+
 fn prepare_density_vectors(vectors: &[Vec<f32>], components: usize) -> Vec<Vec<f32>> {
     let target_dim = vectors
         .iter()
@@ -175,6 +231,48 @@ fn prepare_density_vectors(vectors: &[Vec<f32>], components: usize) -> Vec<Vec<f
             projected
         })
         .collect()
+}
+
+fn summarize_semantic_clusters(points: &[SemanticClusterPoint]) -> Vec<SemanticClusterSummary> {
+    let mut groups: HashMap<i32, Vec<&SemanticClusterPoint>> = HashMap::new();
+    for point in points {
+        if point.cluster_id < 0 {
+            continue;
+        }
+        groups.entry(point.cluster_id).or_default().push(point);
+    }
+
+    let mut summaries = groups
+        .into_iter()
+        .map(|(cluster_id, mut points)| {
+            points.sort_by(|a, b| {
+                a.distance_to_centroid
+                    .partial_cmp(&b.distance_to_centroid)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            SemanticClusterSummary {
+                cluster_id,
+                size: points.len(),
+                medoid_chunk_index: points
+                    .first()
+                    .map(|point| point.chunk_index)
+                    .unwrap_or_default(),
+            }
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by_key(|summary| summary.cluster_id);
+    summaries
+}
+
+fn vector_layout_hint(vector: Option<&Vec<f32>>) -> [f32; 3] {
+    let Some(vector) = vector else {
+        return [0.0, 0.0, 0.0];
+    };
+    [
+        vector.first().copied().unwrap_or(0.0),
+        vector.get(1).copied().unwrap_or(0.0),
+        vector.get(2).copied().unwrap_or(0.0),
+    ]
 }
 
 fn calculate_centroids(vectors: &[Vec<f32>], labels: &[i32]) -> HashMap<i32, Vec<f32>> {

@@ -306,35 +306,40 @@ function layoutNodes(nodes, edges) {
     const mediums = nodes.filter((node) => node.type === 'medium');
     const micros = nodes.filter((node) => node.type === 'micro');
     const entities = nodes.filter((node) => node.type === 'entity');
+    const chunkNodes = [...macros, ...mediums, ...micros];
 
     roots.forEach((node) => setPosition(node, 0, 0, 0));
-    placePrimaryClusters(macros, 210, -10, -20);
     placeRelatedDocuments(docs);
 
     const macroByChunkIndex = new Map(macros.map((node) => [node.chunk_index, node]));
     const mediumByChunkIndex = new Map(mediums.map((node) => [node.chunk_index, node]));
+    const usedSemanticLayout = placeSemanticHints(chunkNodes);
 
-    const orphanMediums = [];
-    mediums.forEach((node) => {
-        const parent = macroByChunkIndex.get(node.parent_chunk_index);
-        if (!parent) {
-            orphanMediums.push(node);
-            return;
-        }
-        placeChildNearParent(node, parent, node.chunk_index, 58, 26, -18);
-    });
-    placePrimaryClusters(orphanMediums, 260, -34, -60, 0.42);
+    if (!usedSemanticLayout) {
+        placePrimaryClusters(macros, 210, -10, -20);
 
-    const orphanMicros = [];
-    micros.forEach((node) => {
-        const parent = mediumByChunkIndex.get(node.parent_chunk_index) || macroByChunkIndex.get(node.parent_chunk_index);
-        if (!parent) {
-            orphanMicros.push(node);
-            return;
-        }
-        placeChildNearParent(node, parent, node.chunk_index, 44, 20, -30);
-    });
-    placePrimaryClusters(orphanMicros, 300, -70, -100, 0.68);
+        const orphanMediums = [];
+        mediums.forEach((node) => {
+            const parent = macroByChunkIndex.get(node.parent_chunk_index);
+            if (!parent) {
+                orphanMediums.push(node);
+                return;
+            }
+            placeChildNearParent(node, parent, node.chunk_index, 58, 26, -18);
+        });
+        placePrimaryClusters(orphanMediums, 260, -34, -60, 0.42);
+
+        const orphanMicros = [];
+        micros.forEach((node) => {
+            const parent = mediumByChunkIndex.get(node.parent_chunk_index) || macroByChunkIndex.get(node.parent_chunk_index);
+            if (!parent) {
+                orphanMicros.push(node);
+                return;
+            }
+            placeChildNearParent(node, parent, node.chunk_index, 44, 20, -30);
+        });
+        placePrimaryClusters(orphanMicros, 300, -70, -100, 0.68);
+    }
 
     edges.forEach((edge) => {
         const source = byId.get(edge.source);
@@ -368,6 +373,49 @@ function layoutNodes(nodes, edges) {
         );
     });
     placePrimaryClusters(looseEntities, 310, 96, 70, 0.18);
+}
+
+function placeSemanticHints(nodes) {
+    const hinted = nodes.filter((node) => Array.isArray(node.layout_hint) && node.layout_hint.length >= 2);
+    if (hinted.length < Math.max(4, Math.floor(nodes.length * 0.45))) return false;
+
+    const clusterIds = Array.from(new Set(hinted.map((node) => Number(node.cluster_id ?? -1)))).sort((a, b) => a - b);
+    const clusterOffset = new Map();
+    clusterIds.forEach((clusterId, index) => {
+        if (clusterId < 0) {
+            clusterOffset.set(clusterId, { x: 0, z: 150 });
+            return;
+        }
+        const angle = goldenAngle(index);
+        const radius = 130 + Math.sqrt(index + 1) * 48;
+        clusterOffset.set(clusterId, {
+            x: Math.cos(angle) * radius,
+            z: Math.sin(angle) * radius * 0.78,
+        });
+    });
+
+    hinted.forEach((node) => {
+        const clusterId = Number(node.cluster_id ?? -1);
+        const offset = clusterOffset.get(clusterId) || { x: 0, z: 0 };
+        const hint = node.layout_hint;
+        const distance = Number(node.cluster_distance || 0);
+        const levelLift = node.type === 'macro' ? 34 : (node.type === 'medium' ? 0 : -30);
+        setPosition(
+            node,
+            offset.x + Number(hint[0] || 0) * 380 + seededUnit(node.id) * 36,
+            levelLift - Math.min(42, distance * 120),
+            offset.z + Number(hint[1] || 0) * 280 + Number(hint[2] || 0) * 120,
+        );
+    });
+
+    nodes
+        .filter((node) => !hinted.includes(node))
+        .forEach((node, index) => {
+            const angle = goldenAngle(index);
+            setPosition(node, Math.cos(angle) * 260, -50, Math.sin(angle) * 180 - 90);
+        });
+
+    return true;
 }
 
 function setPosition(node, x, y, z) {
