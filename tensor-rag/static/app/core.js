@@ -336,7 +336,26 @@ export function resolveThemeMode() {
 }
 
 export function applyTheme() {
-    document.documentElement.setAttribute('data-theme', resolveThemeMode());
+    const theme = resolveThemeMode();
+    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.style.colorScheme = theme;
+}
+
+export function measureUiFrame(label, startedAt = performance.now(), budgetMs = 50) {
+    requestAnimationFrame(() => {
+        const durationMs = performance.now() - startedAt;
+        const detail = {
+            label,
+            durationMs,
+            budgetMs,
+            exceeded: durationMs > budgetMs,
+        };
+
+        document.dispatchEvent(new CustomEvent('tensor-rag:ui-perf', { detail }));
+        if (detail.exceeded) {
+            console.warn(`[ui-perf] ${label}: ${durationMs.toFixed(1)}ms exceeds ${budgetMs}ms budget`);
+        }
+    });
 }
 
 function setText(selector, value) {

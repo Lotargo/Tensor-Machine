@@ -4,6 +4,7 @@ import {
     buildLocalizedWarning,
     escapeHtml,
     fetchJson,
+    measureUiFrame,
     renderWarningBanner,
     showNotice,
     t,
@@ -653,6 +654,7 @@ async function printActiveDocument() {
 
 // Tab Switching & Caching
 export function switchTab(tabName) {
+    const startedAt = performance.now();
     state.activeTab = tabName;
 
     if (tabName !== 'graph') {
@@ -677,6 +679,7 @@ export function switchTab(tabName) {
     });
 
     renderActiveTab();
+    measureUiFrame(`tab:${tabName}`, startedAt, 50);
 }
 
 export function renderActiveTab() {

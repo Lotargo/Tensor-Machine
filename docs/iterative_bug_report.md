@@ -507,7 +507,7 @@ Notes:
 
 ### 10b. Saved theme is applied too late and causes a visible flash on load
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - The default UI theme is light.
@@ -524,10 +524,10 @@ Impact:
 - This is especially noticeable because the app has large full-screen panels with strong background colors.
 
 Follow-up work:
-- Add a small early theme bootstrap script in `index.html` before stylesheet-dependent paint, reading `tensor-rag-ui-theme` and setting `document.documentElement.dataset.theme`.
-- Keep the bootstrap script minimal and dependency-free so it runs before the app bundle.
-- Ensure `system` mode resolves against `prefers-color-scheme` before first paint.
-- Consider `color-scheme` CSS metadata so native controls and scrollbars match the resolved theme.
+- `fixed` Add a small early theme bootstrap script in `index.html` before stylesheet-dependent paint, reading `tensor-rag-ui-theme` and setting `document.documentElement.dataset.theme`.
+- `fixed` Keep the bootstrap script minimal and dependency-free so it runs before the app bundle.
+- `fixed` Ensure `system` mode resolves against `prefers-color-scheme` before first paint.
+- `fixed` Add `color-scheme` CSS metadata so native controls and scrollbars match the resolved theme.
 - Verify page load visually for:
   - saved `dark`;
   - saved `light`;

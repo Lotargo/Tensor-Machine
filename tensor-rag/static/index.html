@@ -4,6 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tensor Machine: Document Portal</title>
+    <script>
+        (() => {
+            const themeKey = 'tensor-rag-ui-theme';
+            const resolveTheme = (theme) => {
+                if (theme === 'dark' || theme === 'light') return theme;
+                return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            };
+
+            try {
+                const savedTheme = localStorage.getItem(themeKey) || 'system';
+                const resolvedTheme = resolveTheme(savedTheme);
+                document.documentElement.dataset.theme = resolvedTheme;
+                document.documentElement.style.colorScheme = resolvedTheme;
+            } catch (_error) {
+                const resolvedTheme = resolveTheme('system');
+                document.documentElement.dataset.theme = resolvedTheme;
+                document.documentElement.style.colorScheme = resolvedTheme;
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/katex.min.css">
     <link rel="stylesheet" href="/style.css">

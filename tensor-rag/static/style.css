@@ -1,4 +1,5 @@
 :root {
+    color-scheme: light;
     --bg-app: #f4f6f8;
     --bg-card: #ffffff;
     --bg-card-strong: #ffffff;
@@ -22,6 +23,7 @@
 }
 
 :root[data-theme="dark"] {
+    color-scheme: dark;
     --bg-app: #171b1a;
     --bg-card: #202624;
     --bg-card-strong: #262d2a;
