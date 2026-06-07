@@ -534,7 +534,7 @@
 .chat-scope-caption {
     font-size: 12px;
     color: var(--text-secondary);
-    line-height: 1.5;
+    line-height: 1.45;
 }
 
 .chat-panel-actions {
@@ -544,15 +544,28 @@
 
 .chat-scope-toggle {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     padding: 0 18px;
     font-size: 13px;
     font-weight: 500;
+    line-height: 1.35;
+}
+
+.chat-scope-toggle input {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    accent-color: var(--color-primary);
 }
 
 .chat-scope-caption {
-    padding: 4px 18px 0 18px;
+    margin: 8px 18px 12px 18px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent 18%);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-muted) 52%, var(--bg-card) 48%);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
 }
 
 .chat-messages {
@@ -579,6 +592,34 @@
 
 .chat-message[data-role="assistant"] {
     align-items: flex-start;
+}
+
+.chat-empty-state {
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 96px;
+    padding: 16px 12px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.chat-empty-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    color: var(--color-primary);
+    background: var(--color-primary-light);
+}
+
+.chat-empty-text {
+    max-width: 260px;
+    font-size: 13px;
+    line-height: 1.55;
 }
 
 .chat-bubble {

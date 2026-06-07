@@ -76,7 +76,7 @@ export function renderChatScope() {
     if (getChatMode() === 'agent') {
         caption.textContent = getScopeValue() && state.selectedDocUuid
             ? `${t('chat_scope_active')}: ${getSelectedDocLabel()}`
-            : 'Agent mode: the model will decide on its own whether to use MCP tools.';
+            : t('chat_scope_agent');
         return;
     }
     caption.textContent = getScopeValue() && state.selectedDocUuid ? `${t('chat_scope_active')}: ${getSelectedDocLabel()}` : getSelectedDocLabel();
@@ -98,6 +98,16 @@ function renderMessagesInto(container) {
         wrapper.className = 'chat-message';
         wrapper.dataset.role = message.role;
         if (message.loading) wrapper.classList.add('chat-loading');
+
+        if (message.role === 'system') {
+            wrapper.classList.add('chat-empty-state');
+            wrapper.innerHTML = `
+                <div class="chat-empty-icon"><i class="fa-solid fa-message"></i></div>
+                <div class="chat-empty-text">${escapeHtml(message.content)}</div>
+            `;
+            container.appendChild(wrapper);
+            return;
+        }
 
         const bubble = document.createElement('div');
         bubble.className = 'chat-bubble';
