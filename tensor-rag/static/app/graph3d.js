@@ -191,12 +191,24 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
             options.onNavigate?.(node.id.replace(/^doc:/, ''));
             return;
         }
+        if (node.id === `doc:${activeDocUuid}`) {
+            options.onFocusNode?.(node.id);
+            return;
+        }
         if (['macro', 'medium', 'micro'].includes(node.type)) {
-            showChunkInspector(canvasWrapper, node, options.chunks || [], options.language);
+            if (event.shiftKey || event.altKey || !options.onFocusNode) {
+                showChunkInspector(canvasWrapper, node, options.chunks || [], options.language);
+            } else {
+                options.onFocusNode(node.id);
+            }
             return;
         }
         if (node.type === 'entity') {
-            options.onEntitySearch?.(node.label);
+            if (event.shiftKey || event.altKey || !options.onFocusNode) {
+                options.onEntitySearch?.(node.label);
+            } else {
+                options.onFocusNode(node.id);
+            }
         }
     }
 

@@ -53,6 +53,7 @@ export function initLibrary() {
     if (rebuildBtn) {
         rebuildBtn.addEventListener('click', () => {
             if (state.selectedDocUuid) {
+                graphFocusNodeId = null;
                 renderDocumentGraph(null, state.selectedDocUuid);
             }
         });
@@ -179,6 +180,7 @@ export function filterLibrary(query) {
 
 export function resetViewerState() {
     cleanupGraphRenderer();
+    graphFocusNodeId = null;
     setSelectedDocUuid(null);
     state.selectedDocDetails = null;
     document.getElementById('viewer-section').style.display = 'none';
@@ -191,6 +193,9 @@ export function resetViewerState() {
 export async function selectDocument(docUuid) {
     const doc = state.documentList.find((item) => item.doc_uuid === docUuid);
     if (!doc) return;
+    if (state.selectedDocUuid !== docUuid) {
+        graphFocusNodeId = null;
+    }
     const requestId = ++activeDocumentRequestId;
 
     setSelectedDocUuid(docUuid);
@@ -1051,6 +1056,7 @@ function renderEntities(container, chunks) {
 let currentGraphSim = null;
 let graphRenderRequestId = 0;
 let graphModalRenderRequestId = 0;
+let graphFocusNodeId = null;
 
 function cleanupGraphRenderer() {
     graphRenderRequestId++;
@@ -1099,7 +1105,7 @@ async function renderDocumentGraph(container, docUuid) {
         return;
     }
 
-    const graphData = buildDocumentGraphData(details, docUuid);
+    const graphData = buildDocumentGraphData(details, docUuid, graphFocusNodeId);
     const hasEdges = (graphData.edges || []).length > 0;
     if (!hasEdges && emptyOverlay) {
         emptyOverlay.style.display = 'flex';
@@ -1114,6 +1120,7 @@ async function renderDocumentGraph(container, docUuid) {
         onNavigate: (nodeId) => {
             selectDocument(nodeId);
         },
+        onFocusNode: handleGraphFocusNode,
         onEntitySearch: handleGraphEntitySearch,
     });
     if (requestId !== graphRenderRequestId || state.activeTab !== 'graph') {
@@ -1153,7 +1160,23 @@ function handleGraphEntitySearch(entityLabel) {
     );
 }
 
-function buildDocumentGraphData(details, activeDocUuid) {
+function handleGraphFocusNode(nodeId) {
+    if (!state.selectedDocUuid || !nodeId) return;
+
+    graphFocusNodeId = nodeId === `doc:${state.selectedDocUuid}` || graphFocusNodeId === nodeId
+        ? null
+        : nodeId;
+
+    const modal = document.getElementById('graph-modal');
+    if (modal && modal.style.display !== 'none') {
+        openGraphFullscreen();
+        return;
+    }
+
+    renderDocumentGraph(null, state.selectedDocUuid);
+}
+
+function buildDocumentGraphData(details, activeDocUuid, focusNodeId = null) {
     const chunks = details.chunks || [];
     const edges = details.edges || [];
     const doc = state.documentList.find(d => d.doc_uuid === activeDocUuid);
@@ -1161,17 +1184,29 @@ function buildDocumentGraphData(details, activeDocUuid) {
     const MAX_ENTITIES = 60;
     const MAX_MEDIUM_NODES = 180;
     const MAX_ENTITY_EDGES = 520;
+    const MAX_FOCUS_SIBLINGS = 44;
+    const MAX_FOCUS_CHILDREN = 140;
+    const MAX_FOCUS_ENTITIES = 70;
+    const MAX_ENTITY_FOCUS_CHUNKS = 170;
     
     const nodes = [];
     const edgeSet = [];
     const entityCount = {};
+    const chunkByIndex = new Map(chunks.map((chunk) => [chunk.chunk_index, chunk]));
+    const childrenByParent = new Map();
+    chunks.forEach((chunk) => {
+        if (chunk.parent_chunk_index == null) return;
+        const list = childrenByParent.get(chunk.parent_chunk_index) || [];
+        list.push(chunk);
+        childrenByParent.set(chunk.parent_chunk_index, list);
+    });
     
     // Root node
     nodes.push({
         id: `doc:${activeDocUuid}`,
         label: docLabel,
         type: 'root',
-        isActive: true,
+        isActive: !focusNodeId || focusNodeId === `doc:${activeDocUuid}`,
         radius: 26,
     });
     
@@ -1191,28 +1226,27 @@ function buildDocumentGraphData(details, activeDocUuid) {
         .map(([name, count]) => name);
     const entitySet = new Set(topEntities);
     const entityRank = new Map(topEntities.map((name, index) => [name, index]));
-    const includedChunkIndexes = new Set();
-    const mediumChunks = [];
-    
-    chunks.forEach(ch => {
-        const level = (ch.chunk_level || 'micro').toLowerCase();
-        if (level === 'macro') {
-            includedChunkIndexes.add(ch.chunk_index);
-        } else if (level === 'medium') {
-            mediumChunks.push(ch);
-        }
-    });
-
-    mediumChunks
-        .map((ch) => ({
-            chunk: ch,
-            score: (Array.isArray(ch.entities) ? ch.entities : [])
-                .filter((entity) => entitySet.has((entity || '').trim()))
-                .length,
-        }))
-        .sort((a, b) => (b.score - a.score) || ((a.chunk.chunk_index ?? 0) - (b.chunk.chunk_index ?? 0)))
-        .slice(0, MAX_MEDIUM_NODES)
-        .forEach(({ chunk }) => includedChunkIndexes.add(chunk.chunk_index));
+    const includedChunkIndexes = getIncludedGraphChunkIndexes(
+        chunks,
+        focusNodeId,
+        entitySet,
+        chunkByIndex,
+        childrenByParent,
+        {
+            maxMediumNodes: MAX_MEDIUM_NODES,
+            maxFocusSiblings: MAX_FOCUS_SIBLINGS,
+            maxFocusChildren: MAX_FOCUS_CHILDREN,
+            maxEntityFocusChunks: MAX_ENTITY_FOCUS_CHUNKS,
+        },
+    );
+    const focusedEntityName = focusNodeId?.startsWith('entity:') ? focusNodeId.slice('entity:'.length) : null;
+    const graphEntitySet = collectGraphEntities(
+        chunks,
+        includedChunkIndexes,
+        focusedEntityName,
+        topEntities,
+        MAX_FOCUS_ENTITIES,
+    );
 
     // Build overview nodes for document sections and top entities. Micro chunks are intentionally
     // omitted from this overview graph; they should be loaded later through focus-neighborhood APIs.
@@ -1236,7 +1270,7 @@ function buildDocumentGraphData(details, activeDocUuid) {
             chunk_index: idx,
             parent_chunk_index: ch.parent_chunk_index,
             radius,
-            isActive: false,
+            isActive: focusNodeId === chunkId,
         });
 
         // Edge: root -> macro, parent -> child. If the parent is not part of the overview,
@@ -1251,13 +1285,13 @@ function buildDocumentGraphData(details, activeDocUuid) {
     });
     
     // Entity nodes
-    topEntities.forEach(name => {
+    Array.from(graphEntitySet).forEach(name => {
         nodes.push({
             id: `entity:${name}`,
             label: name,
             type: 'entity',
             radius: 7,
-            isActive: false,
+            isActive: focusNodeId === `entity:${name}`,
         });
     });
 
@@ -1267,9 +1301,9 @@ function buildDocumentGraphData(details, activeDocUuid) {
         const chunkId = `chunk:${ch.chunk_index}`;
         const rankedEntities = Array.from(new Set((Array.isArray(ch.entities) ? ch.entities : [])
             .map((entity) => (entity || '').trim())
-            .filter((entity) => entitySet.has(entity))))
+            .filter((entity) => graphEntitySet.has(entity))))
             .sort((a, b) => (entityRank.get(a) ?? Infinity) - (entityRank.get(b) ?? Infinity))
-            .slice(0, 3);
+            .slice(0, focusedEntityName ? 8 : 3);
 
         rankedEntities.forEach(name => {
             if (entityEdgeCount >= MAX_ENTITY_EDGES) return;
@@ -1304,7 +1338,119 @@ function buildDocumentGraphData(details, activeDocUuid) {
     return { nodes, edges: edgeSet };
 }
 
-function createGraphSimulation(canvas, data, activeDocUuid, { statsEl, legendEl, onNavigate } = {}) {
+function getIncludedGraphChunkIndexes(chunks, focusNodeId, entitySet, chunkByIndex, childrenByParent, limits) {
+    const included = new Set();
+    const addChunk = (chunk) => {
+        if (!chunk || chunk.chunk_index == null) return;
+        included.add(chunk.chunk_index);
+    };
+    const addAncestors = (chunk) => {
+        let current = chunk;
+        const seen = new Set();
+        while (current && current.parent_chunk_index != null && !seen.has(current.parent_chunk_index)) {
+            seen.add(current.parent_chunk_index);
+            const parent = chunkByIndex.get(current.parent_chunk_index);
+            addChunk(parent);
+            current = parent;
+        }
+    };
+
+    if (focusNodeId?.startsWith('chunk:')) {
+        const focusIndex = Number(focusNodeId.slice('chunk:'.length));
+        const focusChunk = chunkByIndex.get(focusIndex);
+        addChunk(focusChunk);
+        addAncestors(focusChunk);
+
+        (childrenByParent.get(focusIndex) || [])
+            .slice()
+            .sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0))
+            .slice(0, limits.maxFocusChildren)
+            .forEach(addChunk);
+
+        if (focusChunk?.parent_chunk_index != null) {
+            (childrenByParent.get(focusChunk.parent_chunk_index) || [])
+                .filter((chunk) => chunk.chunk_index !== focusIndex)
+                .sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0))
+                .slice(0, limits.maxFocusSiblings)
+                .forEach(addChunk);
+        }
+        return included;
+    }
+
+    if (focusNodeId?.startsWith('entity:')) {
+        const entityName = focusNodeId.slice('entity:'.length);
+        chunks
+            .filter((chunk) => (Array.isArray(chunk.entities) ? chunk.entities : [])
+                .some((entity) => (entity || '').trim() === entityName))
+            .map((chunk) => ({
+                chunk,
+                score: getGraphChunkLevelWeight(chunk) + (Array.isArray(chunk.entities) ? chunk.entities.length : 0) / 100,
+            }))
+            .sort((a, b) => (b.score - a.score) || ((a.chunk.chunk_index ?? 0) - (b.chunk.chunk_index ?? 0)))
+            .slice(0, limits.maxEntityFocusChunks)
+            .forEach(({ chunk }) => {
+                addChunk(chunk);
+                addAncestors(chunk);
+            });
+        return included;
+    }
+
+    const mediumChunks = [];
+    chunks.forEach((chunk) => {
+        const level = (chunk.chunk_level || 'micro').toLowerCase();
+        if (level === 'macro') {
+            addChunk(chunk);
+        } else if (level === 'medium') {
+            mediumChunks.push(chunk);
+        }
+    });
+
+    mediumChunks
+        .map((chunk) => ({
+            chunk,
+            score: (Array.isArray(chunk.entities) ? chunk.entities : [])
+                .filter((entity) => entitySet.has((entity || '').trim()))
+                .length,
+        }))
+        .sort((a, b) => (b.score - a.score) || ((a.chunk.chunk_index ?? 0) - (b.chunk.chunk_index ?? 0)))
+        .slice(0, limits.maxMediumNodes)
+        .forEach(({ chunk }) => addChunk(chunk));
+
+    return included;
+}
+
+function collectGraphEntities(chunks, includedChunkIndexes, focusedEntityName, fallbackEntities, limit) {
+    const counts = new Map();
+    chunks.forEach((chunk) => {
+        if (!includedChunkIndexes.has(chunk.chunk_index)) return;
+        (Array.isArray(chunk.entities) ? chunk.entities : []).forEach((entity) => {
+            const name = (entity || '').trim();
+            if (!name) return;
+            counts.set(name, (counts.get(name) || 0) + 1);
+        });
+    });
+
+    const entities = new Set();
+    if (focusedEntityName) entities.add(focusedEntityName);
+    Array.from(counts.entries())
+        .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+        .slice(0, limit)
+        .forEach(([name]) => entities.add(name));
+
+    if (entities.size === 0) {
+        fallbackEntities.slice(0, limit).forEach((name) => entities.add(name));
+    }
+    return entities;
+}
+
+function getGraphChunkLevelWeight(chunk) {
+    const level = (chunk?.chunk_level || 'micro').toLowerCase();
+    if (level === 'macro') return 3;
+    if (level === 'medium') return 2;
+    return 1;
+}
+
+function createGraphSimulation(canvas, data, activeDocUuid, { statsEl, legendEl, onNavigate, onFocusNode, onEntitySearch } = {}) {
     const nodesData = data.nodes || [];
     const edgesData = data.edges || [];
     const canvasWrapper = canvas.parentElement;
@@ -1547,7 +1693,7 @@ function createGraphSimulation(canvas, data, activeDocUuid, { statsEl, legendEl,
         }
     }
     
-    function onMouseUp() {
+    function onMouseUp(event) {
         const wasDragged = draggedNode !== null;
         if (draggedNode) draggedNode = null;
         if (isPanning) isPanning = false;
@@ -1568,12 +1714,24 @@ function createGraphSimulation(canvas, data, activeDocUuid, { statsEl, legendEl,
                 if (onNavigate) onNavigate(docUuid);
                 return;
             }
-            // Show chunk content
-            if (['macro', 'medium', 'micro'].includes(mouseDownNode.type)) {
-                showChunkContent(mouseDownNode);
+            if (mouseDownNode.id === `doc:${activeDocUuid}`) {
+                onFocusNode?.(mouseDownNode.id);
                 return;
             }
-            // Search entity
+            // Focus chunk by default; keep the old inspector available through a modifier click.
+            if (['macro', 'medium', 'micro'].includes(mouseDownNode.type)) {
+                if (event?.shiftKey || event?.altKey || !onFocusNode) {
+                    showChunkContent(mouseDownNode);
+                } else {
+                    onFocusNode(mouseDownNode.id);
+                }
+                return;
+            }
+            if (mouseDownNode.type === 'entity' && !(event?.shiftKey || event?.altKey) && onFocusNode) {
+                onFocusNode(mouseDownNode.id);
+                return;
+            }
+            // Focus entity by default; keep the old library search available through a modifier click.
             if (mouseDownNode.type === 'entity') {
                 const searchInput = document.getElementById('library-search');
                 if (searchInput) {
@@ -1889,7 +2047,7 @@ async function openGraphFullscreen() {
         return;
     }
     
-    const graphData = buildDocumentGraphData(details, state.selectedDocUuid);
+    const graphData = buildDocumentGraphData(details, state.selectedDocUuid, graphFocusNodeId);
     const hasEdges = (graphData.edges || []).length > 0;
     if (!hasEdges && emptyOverlay) {
         emptyOverlay.style.display = 'flex';
@@ -1905,6 +2063,7 @@ async function openGraphFullscreen() {
             closeGraphFullscreen(false);
             selectDocument(nodeId);
         },
+        onFocusNode: handleGraphFocusNode,
         onEntitySearch: handleGraphEntitySearch,
     });
     if (requestId !== graphModalRenderRequestId || modal.style.display === 'none') {
