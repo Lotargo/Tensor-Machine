@@ -14,6 +14,7 @@ The server reads configuration from environment variables:
 | `MAX_CONNECTIONS` | `5` | PostgreSQL connection pool size |
 | `EMBEDDING_BATCH_SIZE` | `64` in `.env.example`, `32` code fallback | Number of chunks sent in one embedding request during ingestion. |
 | `EMBEDDING_REQUEST_TIMEOUT_SECS` | `240` in `.env.example`, `120` code fallback | HTTP timeout for embedding batch requests. |
+| `UPLOAD_MAX_BYTES` | `268435456` | Maximum accepted multipart upload size for `/upload` in bytes. |
 | `QDRANT_UPSERT_WAIT` | `false` | Whether ingestion waits for Qdrant writes to be applied before continuing. |
 | `QUERY_EXPANSION_MODE` | `off` | Query expansion mode. Supported values: `off`, `dictionary`. |
 | `QUERY_EXPANSION_DICTIONARY_PATHS` | — | Semicolon- or comma-separated synonym dictionary files used when `QUERY_EXPANSION_MODE=dictionary`. |

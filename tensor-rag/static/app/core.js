@@ -131,8 +131,27 @@ const TEXT = {
         tab_graph: 'Граф связей',
         entities_header: 'Извлечённые сущности (Entities)',
         keywords_header: 'Ключевые слова (Keywords)',
-        graph_help_text: 'Навигация: перетаскивайте вершины мышкой',
+        graph_help_text: 'Колесо — зум, фон — панорама, вершины — перетащить / выбрать',
         graph_rebuild_btn: 'Обновить граф',
+        graph_zoom_in: 'Приблизить',
+        graph_zoom_out: 'Отдалить',
+        graph_fit_view: 'По размеру экрана',
+        graph_fullscreen: 'На весь экран',
+        graph_nodes_label: 'узлов',
+        graph_edges_label: 'связей',
+        graph_legend_active: 'Активный документ',
+        graph_legend_related: 'Связанный документ',
+        graph_legend_entities: 'Общие сущности',
+        graph_modal_title: 'Граф связей',
+        graph_modal_meta: 'Полноэкранный просмотр графа',
+        graph_auto_link: 'Авто-линковка',
+        graph_empty_title: 'Нет связей между документами',
+        graph_empty_desc: 'Граф показывает соединения между документами на основе общих сущностей. Запустите авто-линковку, чтобы найти связи.',
+        graph_auto_link_complete_title: 'Линковка завершена',
+        graph_auto_link_complete_msg: 'Авто-линковка завершена. Создано связей: {count}',
+        graph_auto_link_none_title: 'Новых связей не найдено',
+        graph_auto_link_none_msg: 'Документы не имеют достаточного количества общих сущностей для создания связей (порог: 3).',
+        graph_auto_link_failed_title: 'Ошибка авто-линковки',
     },
     en: {
         page_title: 'Tensor Machine: Document Portal',
@@ -264,8 +283,27 @@ const TEXT = {
         tab_graph: 'Connections Graph',
         entities_header: 'Extracted Entities',
         keywords_header: 'Key Terms & Keywords',
-        graph_help_text: 'Navigation: drag nodes to reposition them',
+        graph_help_text: 'Scroll to zoom, drag background to pan, drag/click nodes to navigate',
         graph_rebuild_btn: 'Refresh Graph',
+        graph_zoom_in: 'Zoom In',
+        graph_zoom_out: 'Zoom Out',
+        graph_fit_view: 'Fit to Screen',
+        graph_fullscreen: 'Fullscreen',
+        graph_nodes_label: 'nodes',
+        graph_edges_label: 'edges',
+        graph_legend_active: 'Active Document',
+        graph_legend_related: 'Related Document',
+        graph_legend_entities: 'Shared Entities',
+        graph_modal_title: 'Connections Graph',
+        graph_modal_meta: 'Fullscreen graph view',
+        graph_auto_link: 'Auto-link',
+        graph_empty_title: 'No connections between documents',
+        graph_empty_desc: 'The graph shows connections between documents based on shared entities. Run auto-linking to discover connections.',
+        graph_auto_link_complete_title: 'Linking complete',
+        graph_auto_link_complete_msg: 'Auto-linking complete. Edges created: {count}',
+        graph_auto_link_none_title: 'No new connections',
+        graph_auto_link_none_msg: 'Documents do not share enough entities to create edges (threshold: 3).',
+        graph_auto_link_failed_title: 'Auto-linking failed',
     },
 };
 
@@ -386,6 +424,21 @@ export function applyTranslations() {
     if (rebuildBtn) {
         rebuildBtn.innerHTML = `${icon('fa-arrows-rotate')} ${t('graph_rebuild_btn')}`;
     }
+    const fullscreenBtn = document.getElementById('btn-fullscreen-graph');
+    if (fullscreenBtn) {
+        fullscreenBtn.innerHTML = `${icon('fa-expand')} ${t('graph_fullscreen')}`;
+    }
+    setText('#graph-modal-title', t('graph_modal_title'));
+    setText('#graph-modal-meta', t('graph_modal_meta'));
+    document.querySelectorAll('.graph-zoom-btn[data-zoom="in"]').forEach(el => el.title = t('graph_zoom_in'));
+    document.querySelectorAll('.graph-zoom-btn[data-zoom="out"]').forEach(el => el.title = t('graph_zoom_out'));
+    document.querySelectorAll('.graph-zoom-btn[data-zoom="fit"]').forEach(el => el.title = t('graph_fit_view'));
+    document.querySelectorAll('#graph-empty-title').forEach(el => el.textContent = t('graph_empty_title'));
+    document.querySelectorAll('#graph-empty-desc').forEach(el => el.textContent = t('graph_empty_desc'));
+    document.querySelectorAll('#btn-auto-link-graph, #btn-auto-link-graph-controls, .graph-modal-auto-link-btn').forEach(el => {
+        const span = el.querySelector('span');
+        if (span) span.textContent = t('graph_auto_link');
+    });
     document.dispatchEvent(new CustomEvent('tensor-rag:translations-applied'));
 }
 

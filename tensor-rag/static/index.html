@@ -171,13 +171,32 @@
                             </div>
                         </div>
                         <div id="tab-content-graph" class="tab-content" style="display: none;">
-                            <div id="graph-container" style="width: 100%; height: 500px; background: rgba(0, 0, 0, 0.1); border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; justify-content: space-between; padding: 12px; overflow: hidden;">
-                                <div id="graph-canvas-wrapper" style="flex-grow: 1; position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center;">
-                                    <div id="graph-canvas" style="width: 100%; height: 100%;"></div>
+                            <div id="graph-container">
+                                <div id="graph-stats"></div>
+                                <div id="graph-canvas-wrapper">
+                                    <canvas id="graph-canvas"></canvas>
+                                    <div id="graph-empty-overlay" style="display: none;">
+                                        <div class="graph-empty-content">
+                                            <i class="fa-solid fa-link"></i>
+                                            <h3 id="graph-empty-title">Нет связей между документами</h3>
+                                            <p id="graph-empty-desc">Граф показывает соединения между документами на основе общих сущностей. Запустите авто-линковку, чтобы найти связи.</p>
+                                            <button class="btn btn-primary" id="btn-auto-link-graph" style="margin-top: 8px;"><i class="fa-solid fa-wand-magic-sparkles"></i> <span>Авто-линковка</span></button>
+                                        </div>
+                                    </div>
+                                    <div id="graph-legend"></div>
+                                    <div id="graph-zoom-controls">
+                                        <button class="btn btn-ghost graph-zoom-btn" data-zoom="in" title="Приблизить"><i class="fa-solid fa-plus"></i></button>
+                                        <button class="btn btn-ghost graph-zoom-btn" data-zoom="out" title="Отдалить"><i class="fa-solid fa-minus"></i></button>
+                                        <button class="btn btn-ghost graph-zoom-btn" data-zoom="fit" title="По размеру экрана"><i class="fa-solid fa-arrows-to-dot"></i></button>
+                                    </div>
                                 </div>
-                                <div id="graph-controls" style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); padding-top: 8px; margin-top: 8px; font-size: 11px; color: var(--text-secondary); flex-wrap: wrap; gap: 6px;">
-                                    <span id="graph-help-text">Навигация: перетаскивайте вершины мышкой</span>
-                                    <button class="btn btn-ghost" id="btn-rebuild-graph" style="font-size: 11px; padding: 4px 8px; height: 26px;"><i class="fa-solid fa-arrows-rotate"></i> Обновить граф</button>
+                                <div id="graph-controls">
+                                    <span id="graph-help-text">Колесо — зум, фон — панорама, вершины — перетащить / выбрать</span>
+                                    <div class="graph-controls-right">
+                                        <button class="btn btn-ghost" id="btn-auto-link-graph-controls" style="font-size: 11px; padding: 4px 8px; height: 26px;"><i class="fa-solid fa-wand-magic-sparkles"></i> <span>Авто-линковка</span></button>
+                                        <button class="btn btn-ghost" id="btn-fullscreen-graph" style="font-size: 11px; padding: 4px 8px; height: 26px;"><i class="fa-solid fa-expand"></i> <span>На весь экран</span></button>
+                                        <button class="btn btn-ghost" id="btn-rebuild-graph" style="font-size: 11px; padding: 4px 8px; height: 26px;"><i class="fa-solid fa-arrows-rotate"></i> <span>Обновить граф</span></button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -378,6 +397,40 @@
                         <button class="btn btn-primary" id="send-chat-modal-btn">
                             <i class="fa-solid fa-paper-plane"></i> Отправить
                         </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="graph-modal" class="modal" style="display: none;">
+        <div class="modal-content graph-modal-content">
+            <div class="graph-modal-header">
+                <div>
+                    <h3 id="graph-modal-title">Граф связей</h3>
+                    <span id="graph-modal-meta">Полноэкранный просмотр графа</span>
+                </div>
+                <button id="graph-modal-close-btn" class="icon-btn">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="graph-modal-body">
+                <div id="graph-modal-container">
+                    <div id="graph-modal-stats"></div>
+                    <canvas id="graph-modal-canvas"></canvas>
+                    <div id="graph-modal-empty-overlay" style="display: none;">
+                        <div class="graph-empty-content">
+                            <i class="fa-solid fa-link"></i>
+                            <h3 id="graph-empty-title">Нет связей между документами</h3>
+                            <p id="graph-empty-desc">Граф показывает соединения между документами на основе общих сущностей. Запустите авто-линковку, чтобы найти связи.</p>
+                            <button class="btn btn-primary graph-modal-auto-link-btn" style="margin-top: 8px;"><i class="fa-solid fa-wand-magic-sparkles"></i> <span>Авто-линковка</span></button>
+                        </div>
+                    </div>
+                    <div id="graph-modal-legend"></div>
+                    <div id="graph-modal-zoom-controls">
+                        <button class="btn btn-ghost graph-zoom-btn" data-zoom="in" title="Приблизить"><i class="fa-solid fa-plus"></i></button>
+                        <button class="btn btn-ghost graph-zoom-btn" data-zoom="out" title="Отдалить"><i class="fa-solid fa-minus"></i></button>
+                        <button class="btn btn-ghost graph-zoom-btn" data-zoom="fit" title="По размеру экрана"><i class="fa-solid fa-arrows-to-dot"></i></button>
                     </div>
                 </div>
             </div>

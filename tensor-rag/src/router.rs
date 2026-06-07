@@ -2,7 +2,7 @@ use crate::mcp::{McpRequest, McpResponse};
 use axum::{
     Router,
     body::Body,
-    extract::{Json, Multipart, Path as AxumPath, State},
+    extract::{DefaultBodyLimit, Json, Multipart, Path as AxumPath, State},
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
 };
@@ -557,7 +557,10 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/chat/stream", post(handle_chat_stream))
         .route("/mcp", post(handle_mcp))
         .route("/upload/progress/:upload_id", get(handle_upload_progress))
-        .route("/upload", post(handle_upload))
+        .route(
+            "/upload",
+            post(handle_upload).layer(DefaultBodyLimit::max(crate::config::get_upload_max_bytes())),
+        )
         .route("/clear", post(handle_clear_database))
         .with_state(state)
 }
@@ -860,13 +863,56 @@ async fn handle_upload(
     let mut file_data = Vec::new();
     let mut filename = String::new();
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(error) => {
+                error!("Failed to read multipart upload: {}", error);
+                emit_upload_progress(
+                    upload_id,
+                    "step-upload",
+                    "failed",
+                    format!("Failed to read upload: {}", error),
+                    None,
+                    None,
+                );
+                close_upload_progress(upload_id);
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "error": format!("Failed to read uploaded file: {}", error)
+                    })),
+                );
+            }
+        };
         let name = field.name().unwrap_or("").to_string();
         if name == "file" {
             filename = field.file_name().unwrap_or("document").to_string();
-            if let Ok(bytes) = field.bytes().await {
-                file_data = bytes.to_vec();
-            }
+            let bytes = match field.bytes().await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    error!("Failed to read uploaded file bytes: {}", error);
+                    emit_upload_progress(
+                        upload_id,
+                        "step-upload",
+                        "failed",
+                        format!("Failed to read file bytes: {}", error),
+                        None,
+                        None,
+                    );
+                    close_upload_progress(upload_id);
+                    return (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "error": format!("Failed to read uploaded file bytes: {}", error)
+                        })),
+                    );
+                }
+            };
+            file_data = bytes.to_vec();
         }
     }
 

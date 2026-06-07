@@ -383,7 +383,7 @@ Follow-up work:
 
 ### 10. Graph visualization is too weak to be useful
 
-Status: `open`
+Status: `in_progress`
 
 Symptoms:
 - The graph often shows only the active document node.
@@ -397,8 +397,18 @@ Impact:
 
 Follow-up work:
 - `fixed` Graph auto-linking now groups shared entities by hot-path normalized keys instead of raw labels, so inflected RU/EN forms can create `shares_entities` edges.
+- `fixed` Added zoom/pan with mouse wheel and background drag.
+- `fixed` Added zoom control buttons (+, -, fit-to-screen).
+- `fixed` Added graph legend (active document, related document, shared entities).
+- `fixed` Added graph statistics bar (node/edge counts).
+- `fixed` Added fullscreen modal graph view.
+- `fixed` Added semantic zoom for node labels (labels scale and truncate based on zoom level).
+- `fixed` Added glow effect for active/hovered nodes.
+- `fixed` Node labels now dynamically truncate based on zoom level.
+- `fixed` Added empty-graph overlay with auto-link prompt when no edges exist.
+- `fixed` Added "Авто-линковка" button in graph controls and empty overlay, calling `POST /documents/auto-link?threshold=3`.
 - Verify graph data population against real documents in the running app.
-- Add fullscreen / expanded graph mode.
+- Add auto-link trigger from UI (call `POST /documents/auto-link`).
 - Reconsider layout and navigation model.
 - Possibly move to a richer visualization approach once the backend graph is actually meaningful.
 

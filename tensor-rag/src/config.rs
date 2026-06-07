@@ -197,6 +197,11 @@ pub fn get_embedding_request_timeout_secs() -> u64 {
         .get_or_init(|| get_u64_env("EMBEDDING_REQUEST_TIMEOUT_SECS", 120))
 }
 
+pub fn get_upload_max_bytes() -> usize {
+    static UPLOAD_MAX_BYTES: OnceLock<usize> = OnceLock::new();
+    *UPLOAD_MAX_BYTES.get_or_init(|| get_usize_env("UPLOAD_MAX_BYTES", 256 * 1024 * 1024).max(1))
+}
+
 pub fn get_mistral_upload_timeout_secs() -> u64 {
     static MISTRAL_UPLOAD_TIMEOUT_SECS: OnceLock<u64> = OnceLock::new();
     *MISTRAL_UPLOAD_TIMEOUT_SECS.get_or_init(|| get_u64_env("MISTRAL_UPLOAD_TIMEOUT_SECS", 240))

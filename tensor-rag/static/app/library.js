@@ -57,6 +57,44 @@ export function initLibrary() {
         });
     }
 
+    // Wire up fullscreen graph button
+    const fullscreenBtn = document.getElementById('btn-fullscreen-graph');
+    if (fullscreenBtn) {
+        fullscreenBtn.addEventListener('click', () => {
+            if (state.selectedDocUuid) {
+                openGraphFullscreen();
+            }
+        });
+    }
+
+    // Wire up auto-link buttons
+    const autoLinkBtn = document.getElementById('btn-auto-link-graph');
+    if (autoLinkBtn) {
+        autoLinkBtn.addEventListener('click', runAutoLink);
+    }
+    const autoLinkControlsBtn = document.getElementById('btn-auto-link-graph-controls');
+    if (autoLinkControlsBtn) {
+        autoLinkControlsBtn.addEventListener('click', runAutoLink);
+    }
+    document.querySelectorAll('.graph-modal-auto-link-btn').forEach(btn => {
+        btn.addEventListener('click', runAutoLink);
+    });
+
+    // Wire up graph modal close
+    const graphModalCloseBtn = document.getElementById('graph-modal-close-btn');
+    if (graphModalCloseBtn) {
+        graphModalCloseBtn.addEventListener('click', closeGraphFullscreen);
+    }
+    const graphModal = document.getElementById('graph-modal');
+    if (graphModal) {
+        const closeOnBg = (event) => {
+            if (event.target === graphModal) closeGraphFullscreen();
+        };
+        graphModal.addEventListener('click', closeOnBg);
+        // Store reference so applyTranslations doesn't reregister
+        graphModal._closeOnBg = closeOnBg;
+    }
+
     initUpload();
 }
 
@@ -1007,75 +1045,233 @@ function renderEntities(container, chunks) {
     }
 }
 
+let currentGraphSim = null;
+
 function cleanupGraphRenderer() {
+    if (currentGraphSim) {
+        currentGraphSim.stop();
+        currentGraphSim = null;
+    }
     if (graphAnimationId) {
         cancelAnimationFrame(graphAnimationId);
         graphAnimationId = null;
-    }
-
-    const canvasWrapper = document.getElementById('graph-canvas-wrapper');
-    const oldCanvas = canvasWrapper?.querySelector('canvas');
-    if (oldCanvas && oldCanvas.cleanupGraph) {
-        oldCanvas.cleanupGraph();
     }
 }
 
 function renderDocumentGraph(container, docUuid) {
     cleanupGraphRenderer();
 
+    const canvas = document.getElementById('graph-canvas');
     const canvasWrapper = document.getElementById('graph-canvas-wrapper');
-    if (!canvasWrapper) return;
+    const statsEl = document.getElementById('graph-stats');
+    const legendEl = document.getElementById('graph-legend');
+    const emptyOverlay = document.getElementById('graph-empty-overlay');
+    if (!canvas || !canvasWrapper) return;
 
-    canvasWrapper.innerHTML = '';
-    const canvas = document.createElement('canvas');
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.display = 'block';
-    canvasWrapper.appendChild(canvas);
-    
     const rect = canvasWrapper.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     canvas.width = (rect.width || 600) * dpr;
     canvas.height = (rect.height || 450) * dpr;
+    canvas.style.width = (rect.width || 600) + 'px';
+    canvas.style.height = (rect.height || 450) + 'px';
     const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     
     const width = rect.width || 600;
     const height = rect.height || 450;
     
-    ctx.fillStyle = '#9ca3af';
-    ctx.font = '14px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(state.uiPrefs.language === 'ru' ? 'Загрузка графа...' : 'Loading graph...', width / 2, height / 2);
-    
-    fetchJson(`/documents/${docUuid}/graph?depth=2`)
-        .then(data => {
-            initGraphSimulation(canvas, ctx, width, height, data, docUuid);
-        })
-        .catch(err => {
-            console.error("Failed to load graph:", err);
-            ctx.clearRect(0, 0, width, height);
-            ctx.fillStyle = '#ef4444';
-            ctx.fillText(state.uiPrefs.language === 'ru' ? `Ошибка загрузки графа: ${err.message}` : `Failed to load graph: ${err.message}`, width / 2, height / 2);
-        });
+    if (emptyOverlay) emptyOverlay.style.display = 'none';
+
+    const details = state.selectedDocDetails;
+    if (!details || !Array.isArray(details.chunks) || details.chunks.length === 0) {
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(state.uiPrefs.language === 'ru' ? 'Загрузка данных документа...' : 'Loading document data...', width / 2, height / 2);
+        // Retry when details arrive
+        const check = () => {
+            if (state.selectedDocDetails && Array.isArray(state.selectedDocDetails.chunks) && state.selectedDocDetails.chunks.length > 0) {
+                renderDocumentGraph(container, docUuid);
+            } else {
+                setTimeout(check, 300);
+            }
+        };
+        setTimeout(check, 300);
+        return;
+    }
+
+    const graphData = buildDocumentGraphData(details, docUuid);
+    const hasEdges = (graphData.edges || []).length > 0;
+    if (!hasEdges && emptyOverlay) {
+        emptyOverlay.style.display = 'flex';
+        ctx.clearRect(0, 0, width, height);
+        return;
+    }
+
+    currentGraphSim = createGraphSimulation(canvas, graphData, docUuid, {
+        statsEl,
+        legendEl,
+        onNavigate: (nodeId) => {
+            selectDocument(nodeId);
+        }
+    });
+    wireGraphZoomButtons(currentGraphSim);
 }
 
-function initGraphSimulation(canvas, ctx, width, height, data, activeDocUuid) {
+function buildDocumentGraphData(details, activeDocUuid) {
+    const chunks = details.chunks || [];
+    const edges = details.edges || [];
+    const doc = state.documentList.find(d => d.doc_uuid === activeDocUuid);
+    const docLabel = doc?.filename || 'Document';
+    const MAX_ENTITIES = 80;
+    
+    const nodes = [];
+    const edgeSet = [];
+    const entityCount = {};
+    const chunkHierarchy = {};
+    
+    // Root node
+    nodes.push({
+        id: `doc:${activeDocUuid}`,
+        label: docLabel,
+        type: 'root',
+        isActive: true,
+        radius: 26,
+    });
+    
+    // Collect entities and count them
+    chunks.forEach(ch => {
+        const ents = Array.isArray(ch.entities) ? ch.entities : [];
+        ents.forEach(e => {
+            const name = (e || '').trim();
+            if (name) entityCount[name] = (entityCount[name] || 0) + 1;
+        });
+    });
+    
+    // Sort entities by frequency and cap
+    const topEntities = Object.entries(entityCount)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, MAX_ENTITIES)
+        .map(([name, count]) => name);
+    const entitySet = new Set(topEntities);
+    
+    // Build nodes for chunks and entities
+    chunks.forEach(ch => {
+        const idx = ch.chunk_index;
+        const level = (ch.chunk_level || 'micro').toLowerCase();
+        const chunkId = `chunk:${idx}`;
+        
+        let radius = 10;
+        if (level === 'macro') radius = 16;
+        else if (level === 'medium') radius = 13;
+        
+        const header = Array.isArray(ch.header_chain) ? ch.header_chain : [];
+        const label = header.length > 0 ? header[header.length - 1] : `${level} ${idx}`;
+        
+        nodes.push({
+            id: chunkId,
+            label: String(label),
+            type: level,
+            chunk_index: idx,
+            parent_chunk_index: ch.parent_chunk_index,
+            radius,
+            isActive: false,
+        });
+        
+        chunkHierarchy[idx] = { id: chunkId, level, parent: ch.parent_chunk_index };
+        
+        // Edge: root → macro, parent → child
+        if (level === 'macro') {
+            edgeSet.push({ source: `doc:${activeDocUuid}`, target: chunkId, type: 'contains' });
+        } else if (ch.parent_chunk_index != null) {
+            edgeSet.push({ source: `chunk:${ch.parent_chunk_index}`, target: chunkId, type: 'contains' });
+        }
+        
+        // Entity edges
+        const ents = Array.isArray(ch.entities) ? ch.entities : [];
+        ents.forEach(e => {
+            const name = (e || '').trim();
+            if (name && entitySet.has(name)) {
+                edgeSet.push({ source: chunkId, target: `entity:${name}`, type: 'has_entity' });
+            }
+        });
+    });
+    
+    // Entity nodes
+    topEntities.forEach(name => {
+        nodes.push({
+            id: `entity:${name}`,
+            label: name,
+            type: 'entity',
+            radius: 7,
+            isActive: false,
+        });
+    });
+    
+    // Also add inter-document edges from details if they exist
+    if (Array.isArray(edges) && edges.length > 0) {
+        edges.forEach(e => {
+            const otherUuid = e.source === activeDocUuid ? e.target : e.source;
+            // Add the other document as a node if not already present
+            if (!nodes.find(n => n.id === `doc:${otherUuid}`)) {
+                const otherDoc = state.documentList.find(d => d.doc_uuid === otherUuid);
+                nodes.push({
+                    id: `doc:${otherUuid}`,
+                    label: otherDoc?.filename || 'Related Document',
+                    type: 'doc',
+                    radius: 16,
+                    isActive: false,
+                });
+            }
+            edgeSet.push({
+                source: `doc:${e.source}`,
+                target: `doc:${e.target}`,
+                type: e.type || 'shares_entities',
+            });
+        });
+    }
+    
+    return { nodes, edges: edgeSet };
+}
+
+function createGraphSimulation(canvas, data, activeDocUuid, { statsEl, legendEl, onNavigate } = {}) {
     const nodesData = data.nodes || [];
     const edgesData = data.edges || [];
+    const canvasWrapper = canvas.parentElement;
+    
+    function resizeCanvas() {
+        const rect = canvasWrapper.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = (rect.width || 600) * dpr;
+        canvas.height = (rect.height || 450) * dpr;
+        canvas.style.width = (rect.width || 600) + 'px';
+        canvas.style.height = (rect.height || 450) + 'px';
+        return { width: rect.width || 600, height: rect.height || 450, dpr };
+    }
+    
+    let dims = resizeCanvas();
+    const ctx = canvas.getContext('2d');
+    
+    const tooltipEl = document.createElement('div');
+    tooltipEl.className = 'graph-tooltip';
+    tooltipEl.style.display = 'none';
+    canvasWrapper.appendChild(tooltipEl);
+    
+    const view = { x: 0, y: 0, scale: 1 };
     
     const nodes = nodesData.map((n, i) => {
         const angle = (i / nodesData.length) * Math.PI * 2;
-        const radius = 100 * Math.random();
+        const spread = 100 * Math.random();
         return {
-            id: n.doc_uuid,
-            label: n.filename || 'Unknown',
-            x: width / 2 + Math.cos(angle) * radius,
-            y: height / 2 + Math.sin(angle) * radius,
-            vx: 0,
-            vy: 0,
-            radius: n.doc_uuid === activeDocUuid ? 22 : 16,
-            isActive: n.doc_uuid === activeDocUuid
+            id: n.id,
+            label: n.label || 'Unknown',
+            type: n.type || 'doc',
+            x: dims.width / 2 + Math.cos(angle) * spread,
+            y: dims.height / 2 + Math.sin(angle) * spread,
+            vx: 0, vy: 0,
+            radius: n.radius || 10,
+            isActive: n.isActive || false,
+            chunk_index: n.chunk_index,
         };
     });
     
@@ -1089,71 +1285,277 @@ function initGraphSimulation(canvas, ctx, width, height, data, activeDocUuid) {
                 source: sourceNode,
                 target: targetNode,
                 type: e.type,
-                metadata: e.metadata
             });
         }
     });
     
+    function getNodeColor(n) {
+        if (n.isActive) return '#8b5cf6';
+        if (n.type === 'macro') return '#3b82f6';
+        if (n.type === 'medium') return '#06b6d4';
+        if (n.type === 'micro') return '#64748b';
+        if (n.type === 'entity') return '#f59e0b';
+        if (n.type === 'doc') return '#374151';
+        return '#374151';
+    }
+    
+    function getNodeStrokeColor(n) {
+        if (n.isActive) return '#c084fc';
+        if (n.type === 'macro') return '#93c5fd';
+        if (n.type === 'medium') return '#67e8f9';
+        if (n.type === 'micro') return '#94a3b8';
+        if (n.type === 'entity') return '#fbbf24';
+        if (n.type === 'doc') return '#6b7280';
+        return '#6b7280';
+    }
+    
+    if (statsEl) {
+        const byType = {};
+        nodes.forEach(n => { byType[n.type] = (byType[n.type] || 0) + 1; });
+        const parts = [
+            `<span><i class="fa-solid fa-circle-nodes"></i> ${nodes.length}</span>`,
+            `<span><i class="fa-solid fa-link"></i> ${edges.length}</span>`,
+        ];
+        if (byType.macro) parts.push(`<span style="color:#93c5fd;">● ${byType.macro} ${state.uiPrefs.language === 'ru' ? 'разделов' : 'sections'}</span>`);
+        if (byType.medium) parts.push(`<span style="color:#67e8f9;">● ${byType.medium} ${state.uiPrefs.language === 'ru' ? 'подразделов' : 'subsections'}</span>`);
+        if (byType.entity) parts.push(`<span style="color:#fbbf24;">● ${byType.entity} ${state.uiPrefs.language === 'ru' ? 'сущностей' : 'entities'}</span>`);
+        statsEl.innerHTML = parts.join(' ');
+    }
+    
+    if (legendEl) {
+        const isRu = state.uiPrefs.language === 'ru';
+        legendEl.innerHTML = `
+            <span><span class="graph-legend-dot" style="background:#8b5cf6;box-shadow:0 0 6px #8b5cf6;"></span>${isRu ? 'Документ' : 'Document'}</span>
+            <span><span class="graph-legend-dot" style="background:#3b82f6;"></span>${isRu ? 'Раздел' : 'Section'}</span>
+            <span><span class="graph-legend-dot" style="background:#06b6d4;"></span>${isRu ? 'Подраздел' : 'Subsection'}</span>
+            <span><span class="graph-legend-dot" style="background:#f59e0b;"></span>${isRu ? 'Сущность' : 'Entity'}</span>
+            <span><span class="graph-legend-line" style="border-color:rgba(59,130,246,0.4);"></span>${isRu ? 'Иерархия' : 'Hierarchy'}</span>
+            <span><span style="width:12px;height:0;border-top:2px dashed rgba(245,158,11,0.5);display:inline-block;flex:0 0 auto;"></span>${isRu ? 'Содержит сущность' : 'Has entity'}</span>
+        `;
+    }
+    
+    const repulsion = 400;
+    const attraction = 0.04;
+    const gravity = 0.02;
+    const damping = 0.85;
+    let alpha = 1.0;
+    const alphaDecay = 0.02;
+    const alphaMin = 0.001;
+    const energyThreshold = 0.5;
+    let tickCount = 0;
+    let frozen = false;
+    
+    function warmUp() {
+        if (frozen) {
+            frozen = false;
+            alpha = 0.3;
+            tick();
+        }
+    }
+    
+    function showChunkContent(node) {
+        const chunks = (state.selectedDocDetails && state.selectedDocDetails.chunks) || [];
+        const chunk = chunks.find(c => c.chunk_index === node.chunk_index);
+        if (!chunk) return;
+        
+        const text = chunk.text || '';
+        const header = Array.isArray(chunk.header_chain) ? chunk.header_chain.join(' > ') : '';
+        const entities = Array.isArray(chunk.entities) ? chunk.entities.join(', ') : '';
+        
+        const existing = canvasWrapper.querySelector('.graph-inspector');
+        if (existing) existing.remove();
+        
+        const inspector = document.createElement('div');
+        inspector.className = 'graph-inspector';
+        inspector.innerHTML = `
+            <div class="graph-inspector-header">
+                <span class="graph-inspector-title">${escapeHtml(header || node.label)}</span>
+                <button class="graph-inspector-close">&times;</button>
+            </div>
+            <div class="graph-inspector-body">
+                <div class="graph-inspector-meta">
+                    <span>${state.uiPrefs.language === 'ru' ? 'Уровень' : 'Level'}: ${node.type}</span>
+                    <span>${state.uiPrefs.language === 'ru' ? 'Индекс' : 'Index'}: ${node.chunk_index}</span>
+                    ${entities ? `<span>${state.uiPrefs.language === 'ru' ? 'Сущности' : 'Entities'}: ${escapeHtml(entities)}</span>` : ''}
+                </div>
+                <pre class="graph-inspector-text">${escapeHtml(text)}</pre>
+            </div>
+        `;
+        inspector.querySelector('.graph-inspector-close').onclick = () => inspector.remove();
+        inspector.querySelector('.graph-inspector-header').onclick = () => inspector.remove();
+        canvasWrapper.appendChild(inspector);
+    }
+    
     let draggedNode = null;
     let hoveredNode = null;
+    let isPanning = false;
+    let panStartX = 0, panStartY = 0;
+    let mouseDownX = 0, mouseDownY = 0;
+    let mouseDownNode = null;
+    let mouseMovedSinceDown = false;
     
-    function getNodeAt(x, y) {
+    function getNodeAt(screenX, screenY) {
+        const worldX = (screenX - view.x) / view.scale;
+        const worldY = (screenY - view.y) / view.scale;
         return nodes.find(n => {
-            const dx = n.x - x;
-            const dy = n.y - y;
+            const dx = n.x - worldX;
+            const dy = n.y - worldY;
             return Math.sqrt(dx*dx + dy*dy) < n.radius + 5;
         });
     }
     
     function getMousePos(event) {
         const rect = canvas.getBoundingClientRect();
-        return {
-            x: event.clientX - rect.left,
-            y: event.clientY - rect.top
-        };
+        return { x: event.clientX - rect.left, y: event.clientY - rect.top };
     }
     
-    const onMouseDown = (event) => {
+    function onMouseDown(event) {
         const pos = getMousePos(event);
-        draggedNode = getNodeAt(pos.x, pos.y);
-    };
+        mouseDownX = pos.x;
+        mouseDownY = pos.y;
+        mouseMovedSinceDown = false;
+        const node = getNodeAt(pos.x, pos.y);
+        mouseDownNode = node;
+        
+        if (hoveredNode) {
+            hoveredNode = null;
+            updateTooltip(null);
+        }
+        
+        if (node) {
+            draggedNode = node;
+            warmUp();
+        } else {
+            isPanning = true;
+            panStartX = pos.x - view.x;
+            panStartY = pos.y - view.y;
+        }
+    }
     
-    const onMouseMove = (event) => {
+    function updateTooltip(node) {
+        if (node) {
+            const cssX = node.x * view.scale + view.x;
+            const cssY = node.y * view.scale + view.y;
+            tooltipEl.style.display = 'block';
+            tooltipEl.style.left = Math.min(cssX + 14, dims.width - 220) + 'px';
+            tooltipEl.style.top = Math.max(0, cssY - 10) + 'px';
+            let info = `<b>${escapeHtml(node.label)}</b>`;
+            info += `<br>${state.uiPrefs.language === 'ru' ? 'Тип' : 'Type'}: ${node.type}`;
+            if (node.chunk_index !== undefined) {
+                info += `, ${state.uiPrefs.language === 'ru' ? 'Индекс' : 'Index'}: ${node.chunk_index}`;
+            }
+            tooltipEl.innerHTML = info;
+        } else {
+            tooltipEl.style.display = 'none';
+        }
+    }
+    
+    function onMouseMove(event) {
         const pos = getMousePos(event);
+        
+        if (Math.abs(pos.x - mouseDownX) > 3 || Math.abs(pos.y - mouseDownY) > 3) {
+            mouseMovedSinceDown = true;
+        }
+        
         if (draggedNode) {
-            draggedNode.x = pos.x;
-            draggedNode.y = pos.y;
+            const worldX = (pos.x - view.x) / view.scale;
+            const worldY = (pos.y - view.y) / view.scale;
+            draggedNode.x = worldX;
+            draggedNode.y = worldY;
             draggedNode.vx = 0;
             draggedNode.vy = 0;
+        } else if (isPanning) {
+            view.x = pos.x - panStartX;
+            view.y = pos.y - panStartY;
         } else {
+            const prev = hoveredNode;
             hoveredNode = getNodeAt(pos.x, pos.y);
-            canvas.style.cursor = hoveredNode ? 'pointer' : 'default';
+            canvas.style.cursor = hoveredNode ? 'pointer' : 'grab';
+            if (hoveredNode !== prev) {
+                updateTooltip(hoveredNode);
+            }
         }
-    };
+    }
     
-    const stopDrag = () => {
-        draggedNode = null;
-    };
+    function onMouseUp() {
+        const wasDragged = draggedNode !== null;
+        if (draggedNode) draggedNode = null;
+        if (isPanning) isPanning = false;
+        if (hoveredNode) {
+            hoveredNode = null;
+            updateTooltip(null);
+        }
+        
+        if (wasDragged) {
+            warmUp();
+            return;
+        }
+        
+        if (!mouseMovedSinceDown && mouseDownNode) {
+            // Navigate to related document
+            if ((mouseDownNode.type === 'root' || mouseDownNode.type === 'doc') && mouseDownNode.id !== `doc:${activeDocUuid}`) {
+                const docUuid = mouseDownNode.id.replace(/^doc:/, '');
+                if (onNavigate) onNavigate(docUuid);
+                return;
+            }
+            // Show chunk content
+            if (['macro', 'medium', 'micro'].includes(mouseDownNode.type)) {
+                showChunkContent(mouseDownNode);
+                return;
+            }
+            // Search entity
+            if (mouseDownNode.type === 'entity') {
+                const searchInput = document.getElementById('library-search');
+                if (searchInput) {
+                    searchInput.value = mouseDownNode.label;
+                    searchInput.dispatchEvent(new Event('input'));
+                }
+                showNotice(
+                    state.uiPrefs.language === 'ru' ? 'Поиск сущности' : 'Search entity',
+                    state.uiPrefs.language === 'ru' ? `Поиск: ${mouseDownNode.label}` : `Searching: ${mouseDownNode.label}`,
+                    'info'
+                );
+                return;
+            }
+        }
+    }
     
-    const onClick = (event) => {
+    function onWheel(event) {
+        event.preventDefault();
         const pos = getMousePos(event);
-        const clickedNode = getNodeAt(pos.x, pos.y);
-        if (clickedNode && clickedNode.id !== activeDocUuid) {
-            selectDocument(clickedNode.id);
-        }
-    };
+        const worldX = (pos.x - view.x) / view.scale;
+        const worldY = (pos.y - view.y) / view.scale;
+        
+        const delta = event.deltaY > 0 ? 1 / 1.15 : 1.15;
+        const newScale = Math.max(0.1, Math.min(10, view.scale * delta));
+        view.x = pos.x - worldX * newScale;
+        view.y = pos.y - worldY * newScale;
+        view.scale = newScale;
+    }
     
     canvas.addEventListener('mousedown', onMouseDown);
     canvas.addEventListener('mousemove', onMouseMove);
-    canvas.addEventListener('click', onClick);
-    window.addEventListener('mouseup', stopDrag);
+    canvas.addEventListener('mouseup', onMouseUp);
+    canvas.addEventListener('mouseleave', onMouseUp);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
     
-    const repulsion = 400;
-    const attraction = 0.04;
-    const gravity = 0.02;
-    const damping = 0.85;
+    function onResize() {
+        dims = resizeCanvas();
+    }
+    window.addEventListener('resize', onResize);
     
     function tick() {
+        if (frozen) return;
+        
+        const width = dims.width;
+        const height = dims.height;
+        const dpr = dims.dpr;
+        
+        alpha -= alphaDecay;
+        if (alpha < 0) alpha = 0;
+        
+        tickCount++;
+        
         for (let i = 0; i < nodes.length; i++) {
             const n1 = nodes[i];
             for (let j = i + 1; j < nodes.length; j++) {
@@ -1163,18 +1565,12 @@ function initGraphSimulation(canvas, ctx, width, height, data, activeDocUuid) {
                 const distSq = dx*dx + dy*dy || 1;
                 const dist = Math.sqrt(distSq);
                 
-                const force = repulsion / distSq;
+                const force = repulsion / distSq * alpha;
                 const fx = (dx / dist) * force;
                 const fy = (dy / dist) * force;
                 
-                if (n1 !== draggedNode) {
-                    n1.vx -= fx;
-                    n1.vy -= fy;
-                }
-                if (n2 !== draggedNode) {
-                    n2.vx += fx;
-                    n2.vy += fy;
-                }
+                if (n1 !== draggedNode) { n1.vx -= fx; n1.vy -= fy; }
+                if (n2 !== draggedNode) { n2.vx += fx; n2.vy += fy; }
             }
         }
         
@@ -1186,40 +1582,40 @@ function initGraphSimulation(canvas, ctx, width, height, data, activeDocUuid) {
             const dist = Math.sqrt(dx*dx + dy*dy) || 1;
             
             const desiredDist = 120;
-            const force = (dist - desiredDist) * attraction;
+            const force = (dist - desiredDist) * attraction * alpha;
             const fx = (dx / dist) * force;
             const fy = (dy / dist) * force;
             
-            if (n1 !== draggedNode) {
-                n1.vx += fx;
-                n1.vy += fy;
-            }
-            if (n2 !== draggedNode) {
-                n2.vx -= fx;
-                n2.vy -= fy;
-            }
+            if (n1 !== draggedNode) { n1.vx += fx; n1.vy += fy; }
+            if (n2 !== draggedNode) { n2.vx -= fx; n2.vy -= fy; }
         });
         
         nodes.forEach(n => {
             if (n === draggedNode) return;
-            const dx = width / 2 - n.x;
-            const dy = height / 2 - n.y;
-            n.vx += dx * gravity;
-            n.vy += dy * gravity;
+            n.vx += (width / 2 - n.x) * gravity * alpha;
+            n.vy += (height / 2 - n.y) * gravity * alpha;
         });
         
+        let totalEnergy = 0;
         nodes.forEach(n => {
             if (n === draggedNode) return;
             n.vx *= damping;
             n.vy *= damping;
             n.x += n.vx;
             n.y += n.vy;
+            totalEnergy += n.vx * n.vx + n.vy * n.vy;
             
-            n.x = Math.max(n.radius, Math.min(width - n.radius, n.x));
-            n.y = Math.max(n.radius, Math.min(height - n.radius, n.y));
+            const margin = 200;
+            n.x = Math.max(-margin, Math.min(width + margin, n.x));
+            n.y = Math.max(-margin, Math.min(height + margin, n.y));
         });
         
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
+        
+        ctx.save();
+        ctx.translate(view.x, view.y);
+        ctx.scale(view.scale, view.scale);
         
         edges.forEach(edge => {
             ctx.beginPath();
@@ -1243,44 +1639,253 @@ function initGraphSimulation(canvas, ctx, width, height, data, activeDocUuid) {
             ctx.beginPath();
             ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
             
-            if (n.isActive) {
-                ctx.fillStyle = '#8b5cf6';
-                ctx.strokeStyle = '#c084fc';
-                ctx.lineWidth = 3;
-            } else if (n === hoveredNode) {
-                ctx.fillStyle = '#10b981';
-                ctx.strokeStyle = '#6ee7b7';
-                ctx.lineWidth = 2;
-            } else {
-                ctx.fillStyle = '#374151';
-                ctx.strokeStyle = '#6b7280';
-                ctx.lineWidth = 1.5;
+            if (n === hoveredNode) {
+                ctx.shadowColor = '#f3f4f6';
+                ctx.shadowBlur = 12;
+            } else if (n.isActive) {
+                ctx.shadowColor = '#8b5cf6';
+                ctx.shadowBlur = 15;
             }
-            ctx.fill();
-            ctx.stroke();
             
+            ctx.fillStyle = getNodeColor(n);
+            ctx.fill();
+            ctx.strokeStyle = getNodeStrokeColor(n);
+            ctx.lineWidth = n.isActive ? 3 : (n.type === 'entity' ? 1 : 1.5);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            
+            const fontSize = Math.max(9, Math.min(14, 12 / view.scale));
             ctx.fillStyle = '#f3f4f6';
-            ctx.font = n.isActive ? 'bold 11px sans-serif' : '10px sans-serif';
+            ctx.font = (n.isActive ? 'bold ' : '') + fontSize + 'px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
             
             let label = n.label;
-            if (label.length > 15) {
-                label = label.slice(0, 12) + '...';
+            const maxChars = Math.max(8, Math.round(20 / view.scale));
+            if (label.length > maxChars) {
+                label = label.slice(0, maxChars - 3) + '...';
             }
             
+            // Label background for readability
+            const metrics = ctx.measureText(label);
+            const pad = 3;
+            ctx.fillStyle = 'rgba(0,0,0,0.65)';
+            const bgX = n.x - metrics.width / 2 - pad;
+            const bgY = n.y + n.radius + 4 - pad;
+            const bgW = metrics.width + pad * 2;
+            const bgH = fontSize + pad * 2;
+            ctx.beginPath();
+            ctx.roundRect(bgX, bgY, bgW, bgH, 3);
+            ctx.fill();
+            
+            ctx.fillStyle = '#f3f4f6';
             ctx.fillText(label, n.x, n.y + n.radius + 4);
         });
+        
+        ctx.restore();
+        
+        if (alpha <= alphaMin || totalEnergy < energyThreshold) {
+            frozen = true;
+            return;
+        }
         
         graphAnimationId = requestAnimationFrame(tick);
     }
     
     tick();
     
-    canvas.cleanupGraph = () => {
-        canvas.removeEventListener('mousedown', onMouseDown);
-        canvas.removeEventListener('mousemove', onMouseMove);
-        canvas.removeEventListener('click', onClick);
-        window.removeEventListener('mouseup', stopDrag);
+    function resetView() {
+        if (nodes.length === 0) return;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        nodes.forEach(n => {
+            if (n.x < minX) minX = n.x;
+            if (n.x > maxX) maxX = n.x;
+            if (n.y < minY) minY = n.y;
+            if (n.y > maxY) maxY = n.y;
+        });
+        
+        if (maxX - minX < 10 || maxY - minY < 10) {
+            view.x = 0; view.y = 0; view.scale = 1;
+            return;
+        }
+        
+        const pad = 80;
+        const worldW = (maxX - minX) + pad * 2;
+        const worldH = (maxY - minY) + pad * 2;
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        
+        const scaleX = dims.width / worldW;
+        const scaleY = dims.height / worldH;
+        view.scale = Math.min(1, Math.min(scaleX, scaleY));
+        view.x = dims.width / 2 - centerX * view.scale;
+        view.y = dims.height / 2 - centerY * view.scale;
+    }
+    
+    function zoomIn() {
+        const cx = dims.width / 2;
+        const cy = dims.height / 2;
+        const worldX = (cx - view.x) / view.scale;
+        const worldY = (cy - view.y) / view.scale;
+        view.scale = Math.min(10, view.scale * 1.3);
+        view.x = cx - worldX * view.scale;
+        view.y = cy - worldY * view.scale;
+    }
+    
+    function zoomOut() {
+        const cx = dims.width / 2;
+        const cy = dims.height / 2;
+        const worldX = (cx - view.x) / view.scale;
+        const worldY = (cy - view.y) / view.scale;
+        view.scale = Math.max(0.1, view.scale * 0.7);
+        view.x = cx - worldX * view.scale;
+        view.y = cy - worldY * view.scale;
+    }
+    
+    setTimeout(resetView, 600);
+    
+    return {
+        stop() {
+            if (graphAnimationId) {
+                cancelAnimationFrame(graphAnimationId);
+                graphAnimationId = null;
+            }
+            canvas.removeEventListener('mousedown', onMouseDown);
+            canvas.removeEventListener('mousemove', onMouseMove);
+            canvas.removeEventListener('mouseup', onMouseUp);
+            canvas.removeEventListener('mouseleave', onMouseUp);
+            canvas.removeEventListener('wheel', onWheel);
+            window.removeEventListener('resize', onResize);
+        },
+        resetView,
+        zoomIn,
+        zoomOut,
     };
+}
+
+function wireGraphZoomButtons(sim) {
+    document.querySelectorAll('.graph-zoom-btn').forEach(btn => {
+        const zoomAction = btn.getAttribute('data-zoom');
+        btn.onclick = () => {
+            if (zoomAction === 'in') sim.zoomIn();
+            else if (zoomAction === 'out') sim.zoomOut();
+            else if (zoomAction === 'fit') sim.resetView();
+        };
+    });
+}
+
+function openGraphFullscreen() {
+    const modal = document.getElementById('graph-modal');
+    if (!modal || !state.selectedDocUuid) return;
+    
+    const existingSim = modal._graphSim;
+    if (existingSim) {
+        existingSim.stop();
+        modal._graphSim = null;
+    }
+    
+    modal.style.display = 'flex';
+    
+    const canvas = document.getElementById('graph-modal-canvas');
+    const container = document.getElementById('graph-modal-container');
+    const statsEl = document.getElementById('graph-modal-stats');
+    const legendEl = document.getElementById('graph-modal-legend');
+    const emptyOverlay = document.getElementById('graph-modal-empty-overlay');
+    if (!canvas || !container) return;
+    
+    if (emptyOverlay) emptyOverlay.style.display = 'none';
+    
+    const rect = container.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = (rect.width || 800) * dpr;
+    canvas.height = (rect.height || 600) * dpr;
+    canvas.style.width = (rect.width || 800) + 'px';
+    canvas.style.height = (rect.height || 600) + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    
+    const width = rect.width || 800;
+    const height = rect.height || 600;
+    
+    const details = state.selectedDocDetails;
+    if (!details || !Array.isArray(details.chunks) || details.chunks.length === 0) {
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(state.uiPrefs.language === 'ru' ? 'Загрузка данных документа...' : 'Loading document data...', width / 2, height / 2);
+        const check = () => {
+            if (state.selectedDocDetails && Array.isArray(state.selectedDocDetails.chunks) && state.selectedDocDetails.chunks.length > 0) {
+                openGraphFullscreen();
+            } else {
+                setTimeout(check, 300);
+            }
+        };
+        setTimeout(check, 300);
+        return;
+    }
+    
+    const graphData = buildDocumentGraphData(details, state.selectedDocUuid);
+    const hasEdges = (graphData.edges || []).length > 0;
+    if (!hasEdges && emptyOverlay) {
+        emptyOverlay.style.display = 'flex';
+        ctx.clearRect(0, 0, width, height);
+        return;
+    }
+    
+    const sim = createGraphSimulation(canvas, graphData, state.selectedDocUuid, {
+        statsEl,
+        legendEl,
+        onNavigate: (nodeId) => {
+            closeGraphFullscreen();
+            selectDocument(nodeId);
+        }
+    });
+    modal._graphSim = sim;
+    wireGraphZoomButtons(sim);
+}
+
+function closeGraphFullscreen() {
+    const modal = document.getElementById('graph-modal');
+    if (!modal) return;
+    const sim = modal._graphSim;
+    if (sim) {
+        sim.stop();
+        modal._graphSim = null;
+    }
+    modal.style.display = 'none';
+}
+
+async function runAutoLink() {
+    const btn = document.querySelector('#btn-auto-link-graph, #btn-auto-link-graph-controls, .graph-modal-auto-link-btn');
+    if (btn) btn.disabled = true;
+    
+    try {
+        const result = await fetchJson('/documents/auto-link?threshold=3', { method: 'POST' });
+        const count = result.edges_created || 0;
+        if (count > 0) {
+            showNotice(
+                t('graph_auto_link_complete_title'),
+                t('graph_auto_link_complete_msg', { count: String(count) }),
+                'success'
+            );
+            if (state.selectedDocUuid) {
+                setTimeout(() => renderDocumentGraph(null, state.selectedDocUuid), 500);
+            }
+        } else {
+            showNotice(
+                t('graph_auto_link_none_title'),
+                t('graph_auto_link_none_msg'),
+                'info'
+            );
+        }
+    } catch (err) {
+        console.error("Auto-link failed:", err);
+        showNotice(
+            t('graph_auto_link_failed_title'),
+            err.message || String(err),
+            'danger'
+        );
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }
