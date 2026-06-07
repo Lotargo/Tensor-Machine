@@ -1049,8 +1049,11 @@ function renderEntities(container, chunks) {
 }
 
 let currentGraphSim = null;
+let graphRenderRequestId = 0;
+let graphModalRenderRequestId = 0;
 
 function cleanupGraphRenderer() {
+    graphRenderRequestId++;
     if (currentGraphSim) {
         currentGraphSim.stop();
         currentGraphSim = null;
@@ -1061,10 +1064,11 @@ function cleanupGraphRenderer() {
     }
 }
 
-function renderDocumentGraph(container, docUuid) {
+async function renderDocumentGraph(container, docUuid) {
     cleanupGraphRenderer();
+    const requestId = graphRenderRequestId;
 
-    const canvas = document.getElementById('graph-canvas');
+    let canvas = document.getElementById('graph-canvas');
     const canvasWrapper = document.getElementById('graph-canvas-wrapper');
     const statsEl = document.getElementById('graph-stats');
     const legendEl = document.getElementById('graph-legend');
@@ -1073,24 +1077,16 @@ function renderDocumentGraph(container, docUuid) {
 
     const rect = canvasWrapper.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
+    canvas = resetGraphCanvasElement(canvas);
     canvas.width = (rect.width || 600) * dpr;
     canvas.height = (rect.height || 450) * dpr;
     canvas.style.width = (rect.width || 600) + 'px';
     canvas.style.height = (rect.height || 450) + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    
-    const width = rect.width || 600;
-    const height = rect.height || 450;
     
     if (emptyOverlay) emptyOverlay.style.display = 'none';
 
     const details = state.selectedDocDetails;
     if (!details || !Array.isArray(details.chunks) || details.chunks.length === 0) {
-        ctx.fillStyle = '#9ca3af';
-        ctx.font = '14px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(state.uiPrefs.language === 'ru' ? 'Загрузка данных документа...' : 'Loading document data...', width / 2, height / 2);
         // Retry when details arrive
         const check = () => {
             if (state.selectedDocDetails && Array.isArray(state.selectedDocDetails.chunks) && state.selectedDocDetails.chunks.length > 0) {
@@ -1107,18 +1103,54 @@ function renderDocumentGraph(container, docUuid) {
     const hasEdges = (graphData.edges || []).length > 0;
     if (!hasEdges && emptyOverlay) {
         emptyOverlay.style.display = 'flex';
-        ctx.clearRect(0, 0, width, height);
         return;
     }
 
-    currentGraphSim = createGraphSimulation(canvas, graphData, docUuid, {
+    const sim = await startGraphRenderer(canvas, graphData, docUuid, {
         statsEl,
         legendEl,
+        chunks: details.chunks || [],
+        language: state.uiPrefs.language,
         onNavigate: (nodeId) => {
             selectDocument(nodeId);
-        }
+        },
+        onEntitySearch: handleGraphEntitySearch,
     });
+    if (requestId !== graphRenderRequestId || state.activeTab !== 'graph') {
+        sim.stop();
+        return;
+    }
+    currentGraphSim = sim;
     wireGraphZoomButtons(currentGraphSim);
+}
+
+function resetGraphCanvasElement(canvas) {
+    const freshCanvas = canvas.cloneNode(false);
+    canvas.replaceWith(freshCanvas);
+    return freshCanvas;
+}
+
+async function startGraphRenderer(canvas, graphData, docUuid, options) {
+    try {
+        const { createGraph3dRenderer } = await import('./graph3d.js?v=3d-local-20260607');
+        return await createGraph3dRenderer(canvas, graphData, docUuid, options);
+    } catch (error) {
+        console.warn('3D graph renderer unavailable, falling back to 2D canvas renderer:', error);
+        return createGraphSimulation(canvas, graphData, docUuid, options);
+    }
+}
+
+function handleGraphEntitySearch(entityLabel) {
+    const searchInput = document.getElementById('library-search');
+    if (searchInput) {
+        searchInput.value = entityLabel;
+        searchInput.dispatchEvent(new Event('input'));
+    }
+    showNotice(
+        state.uiPrefs.language === 'ru' ? 'Поиск сущности' : 'Search entity',
+        state.uiPrefs.language === 'ru' ? `Поиск: ${entityLabel}` : `Searching: ${entityLabel}`,
+        'info'
+    );
 }
 
 function buildDocumentGraphData(details, activeDocUuid) {
@@ -1126,12 +1158,13 @@ function buildDocumentGraphData(details, activeDocUuid) {
     const edges = details.edges || [];
     const doc = state.documentList.find(d => d.doc_uuid === activeDocUuid);
     const docLabel = doc?.filename || 'Document';
-    const MAX_ENTITIES = 80;
+    const MAX_ENTITIES = 60;
+    const MAX_MEDIUM_NODES = 180;
+    const MAX_ENTITY_EDGES = 520;
     
     const nodes = [];
     const edgeSet = [];
     const entityCount = {};
-    const chunkHierarchy = {};
     
     // Root node
     nodes.push({
@@ -1157,16 +1190,41 @@ function buildDocumentGraphData(details, activeDocUuid) {
         .slice(0, MAX_ENTITIES)
         .map(([name, count]) => name);
     const entitySet = new Set(topEntities);
+    const entityRank = new Map(topEntities.map((name, index) => [name, index]));
+    const includedChunkIndexes = new Set();
+    const mediumChunks = [];
     
-    // Build nodes for chunks and entities
+    chunks.forEach(ch => {
+        const level = (ch.chunk_level || 'micro').toLowerCase();
+        if (level === 'macro') {
+            includedChunkIndexes.add(ch.chunk_index);
+        } else if (level === 'medium') {
+            mediumChunks.push(ch);
+        }
+    });
+
+    mediumChunks
+        .map((ch) => ({
+            chunk: ch,
+            score: (Array.isArray(ch.entities) ? ch.entities : [])
+                .filter((entity) => entitySet.has((entity || '').trim()))
+                .length,
+        }))
+        .sort((a, b) => (b.score - a.score) || ((a.chunk.chunk_index ?? 0) - (b.chunk.chunk_index ?? 0)))
+        .slice(0, MAX_MEDIUM_NODES)
+        .forEach(({ chunk }) => includedChunkIndexes.add(chunk.chunk_index));
+
+    // Build overview nodes for document sections and top entities. Micro chunks are intentionally
+    // omitted from this overview graph; they should be loaded later through focus-neighborhood APIs.
     chunks.forEach(ch => {
         const idx = ch.chunk_index;
         const level = (ch.chunk_level || 'micro').toLowerCase();
+        if (!includedChunkIndexes.has(idx)) return;
+
         const chunkId = `chunk:${idx}`;
         
-        let radius = 10;
-        if (level === 'macro') radius = 16;
-        else if (level === 'medium') radius = 13;
+        let radius = 13;
+        if (level === 'macro') radius = 17;
         
         const header = Array.isArray(ch.header_chain) ? ch.header_chain : [];
         const label = header.length > 0 ? header[header.length - 1] : `${level} ${idx}`;
@@ -1180,24 +1238,16 @@ function buildDocumentGraphData(details, activeDocUuid) {
             radius,
             isActive: false,
         });
-        
-        chunkHierarchy[idx] = { id: chunkId, level, parent: ch.parent_chunk_index };
-        
-        // Edge: root → macro, parent → child
+
+        // Edge: root -> macro, parent -> child. If the parent is not part of the overview,
+        // attach to the document so the node remains navigable without drawing hidden branches.
         if (level === 'macro') {
             edgeSet.push({ source: `doc:${activeDocUuid}`, target: chunkId, type: 'contains' });
-        } else if (ch.parent_chunk_index != null) {
+        } else if (ch.parent_chunk_index != null && includedChunkIndexes.has(ch.parent_chunk_index)) {
             edgeSet.push({ source: `chunk:${ch.parent_chunk_index}`, target: chunkId, type: 'contains' });
+        } else {
+            edgeSet.push({ source: `doc:${activeDocUuid}`, target: chunkId, type: 'contains' });
         }
-        
-        // Entity edges
-        const ents = Array.isArray(ch.entities) ? ch.entities : [];
-        ents.forEach(e => {
-            const name = (e || '').trim();
-            if (name && entitySet.has(name)) {
-                edgeSet.push({ source: chunkId, target: `entity:${name}`, type: 'has_entity' });
-            }
-        });
     });
     
     // Entity nodes
@@ -1208,6 +1258,23 @@ function buildDocumentGraphData(details, activeDocUuid) {
             type: 'entity',
             radius: 7,
             isActive: false,
+        });
+    });
+
+    let entityEdgeCount = 0;
+    chunks.forEach(ch => {
+        if (entityEdgeCount >= MAX_ENTITY_EDGES || !includedChunkIndexes.has(ch.chunk_index)) return;
+        const chunkId = `chunk:${ch.chunk_index}`;
+        const rankedEntities = Array.from(new Set((Array.isArray(ch.entities) ? ch.entities : [])
+            .map((entity) => (entity || '').trim())
+            .filter((entity) => entitySet.has(entity))))
+            .sort((a, b) => (entityRank.get(a) ?? Infinity) - (entityRank.get(b) ?? Infinity))
+            .slice(0, 3);
+
+        rankedEntities.forEach(name => {
+            if (entityEdgeCount >= MAX_ENTITY_EDGES) return;
+            edgeSet.push({ source: chunkId, target: `entity:${name}`, type: 'has_entity' });
+            entityEdgeCount++;
         });
     });
     
@@ -1777,9 +1844,12 @@ function wireGraphZoomButtons(sim) {
     });
 }
 
-function openGraphFullscreen() {
+async function openGraphFullscreen() {
     const modal = document.getElementById('graph-modal');
     if (!modal || !state.selectedDocUuid) return;
+    graphModalRenderRequestId++;
+    const requestId = graphModalRenderRequestId;
+    cleanupGraphRenderer();
     
     const existingSim = modal._graphSim;
     if (existingSim) {
@@ -1789,7 +1859,7 @@ function openGraphFullscreen() {
     
     modal.style.display = 'flex';
     
-    const canvas = document.getElementById('graph-modal-canvas');
+    let canvas = document.getElementById('graph-modal-canvas');
     const container = document.getElementById('graph-modal-container');
     const statsEl = document.getElementById('graph-modal-stats');
     const legendEl = document.getElementById('graph-modal-legend');
@@ -1800,22 +1870,14 @@ function openGraphFullscreen() {
     
     const rect = container.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
+    canvas = resetGraphCanvasElement(canvas);
     canvas.width = (rect.width || 800) * dpr;
     canvas.height = (rect.height || 600) * dpr;
     canvas.style.width = (rect.width || 800) + 'px';
     canvas.style.height = (rect.height || 600) + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    
-    const width = rect.width || 800;
-    const height = rect.height || 600;
     
     const details = state.selectedDocDetails;
     if (!details || !Array.isArray(details.chunks) || details.chunks.length === 0) {
-        ctx.fillStyle = '#9ca3af';
-        ctx.font = '14px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(state.uiPrefs.language === 'ru' ? 'Загрузка данных документа...' : 'Loading document data...', width / 2, height / 2);
         const check = () => {
             if (state.selectedDocDetails && Array.isArray(state.selectedDocDetails.chunks) && state.selectedDocDetails.chunks.length > 0) {
                 openGraphFullscreen();
@@ -1831,31 +1893,41 @@ function openGraphFullscreen() {
     const hasEdges = (graphData.edges || []).length > 0;
     if (!hasEdges && emptyOverlay) {
         emptyOverlay.style.display = 'flex';
-        ctx.clearRect(0, 0, width, height);
         return;
     }
     
-    const sim = createGraphSimulation(canvas, graphData, state.selectedDocUuid, {
+    const sim = await startGraphRenderer(canvas, graphData, state.selectedDocUuid, {
         statsEl,
         legendEl,
+        chunks: details.chunks || [],
+        language: state.uiPrefs.language,
         onNavigate: (nodeId) => {
-            closeGraphFullscreen();
+            closeGraphFullscreen(false);
             selectDocument(nodeId);
-        }
+        },
+        onEntitySearch: handleGraphEntitySearch,
     });
+    if (requestId !== graphModalRenderRequestId || modal.style.display === 'none') {
+        sim.stop();
+        return;
+    }
     modal._graphSim = sim;
     wireGraphZoomButtons(sim);
 }
 
-function closeGraphFullscreen() {
+function closeGraphFullscreen(restoreInlineGraph = true) {
     const modal = document.getElementById('graph-modal');
     if (!modal) return;
+    graphModalRenderRequestId++;
     const sim = modal._graphSim;
     if (sim) {
         sim.stop();
         modal._graphSim = null;
     }
     modal.style.display = 'none';
+    if (restoreInlineGraph && state.activeTab === 'graph' && state.selectedDocUuid) {
+        renderDocumentGraph(null, state.selectedDocUuid);
+    }
 }
 
 async function runAutoLink() {

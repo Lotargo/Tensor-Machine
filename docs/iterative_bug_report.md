@@ -424,6 +424,13 @@ Follow-up work:
 - `fixed` Node labels now dynamically truncate based on zoom level.
 - `fixed` Added empty-graph overlay with auto-link prompt when no edges exist.
 - `fixed` Added "Авто-линковка" button in graph controls and empty overlay, calling `POST /documents/auto-link?threshold=3`.
+- `in_progress` Added a separate Three.js/WebGL 3D graph renderer prototype with fallback to the existing 2D canvas renderer.
+- `in_progress` Vendored Three.js locally under `static/vendor/three/` so the 3D graph no longer depends on CDN availability.
+- `fixed` Added backend static routing for `/vendor/*path`, so the locally vendored Three.js module is served by the Rust UI server instead of returning 404.
+- `fixed` Prevented the old 2D canvas context from blocking WebGL creation by replacing graph canvas elements before starting the 3D renderer.
+- `in_progress` Changed the graph payload used by the UI toward an Obsidian/NotebookLM-style overview: document node, macro sections, a capped set of medium sections, top entities, capped entity edges, and no micro nodes in the default overview.
+- `fixed` Fullscreen graph now stops the inline preview renderer before starting the modal renderer, avoiding doubled rendering load.
+- `in_progress` Added basic 3D graph interactions: wheel zoom, scene rotation, node selection, chunk inspector, related-document navigation, entity search, stats, and legend.
 - Verify graph data population against real documents in the running app.
 - Add auto-link trigger from UI (call `POST /documents/auto-link`).
 - Audit the existing graph implementation and decide whether to keep any reusable pieces or start a new visualization module from a minimal interface.

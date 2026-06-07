@@ -520,6 +520,7 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/app.js", axum::routing::get(serve_js))
         .route("/app/*path", axum::routing::get(serve_app_asset))
         .route("/assets/*path", axum::routing::get(serve_static_asset))
+        .route("/vendor/*path", axum::routing::get(serve_vendor_asset))
         .route("/marked.min.js", axum::routing::get(serve_marked))
         .route("/katex.min.js", axum::routing::get(serve_katex_js))
         .route("/katex.min.css", axum::routing::get(serve_katex_css))
@@ -1513,6 +1514,12 @@ async fn serve_static_asset(
     AxumPath(path): AxumPath<String>,
 ) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
     serve_static_file("assets", path).await
+}
+
+async fn serve_vendor_asset(
+    AxumPath(path): AxumPath<String>,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    serve_static_file("vendor", path).await
 }
 
 async fn serve_static_file(
