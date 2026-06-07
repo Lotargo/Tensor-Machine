@@ -1,16 +1,27 @@
 # Knowledge Graph Visual Design Notes
 
 Date: 2026-06-07
+Last updated: 2026-06-08
 
 This document tracks the intended visual direction for the knowledge graph UI. It is separate from the iterative bug report because these notes describe target design and interaction principles, not only defects.
 
-Last updated: 2026-06-08, after reviewing the old RAG3 graph visualizer reference.
+## Status Convention
 
-## Goal
+Throughout this document, the following markers track implementation progress:
+
+| Marker | Meaning |
+|--------|---------|
+| `[x]` | Done |
+| `[-]` | Partial / in progress |
+| `[ ]` | Planned / not started |
+
+These markers appear at section headings and individual checklist items. They reflect the state of the codebase, not ambition.
+
+## [x] Goal (unchanging)
 
 Make the graph feel like a readable knowledge map, not a dense hierarchy preview. The user should be able to understand document structure, entity relationships, and local neighborhoods without fighting visual noise or animation freezes.
 
-## References And Direction
+## [x] References And Direction
 
 - Obsidian graph view: sparse constellation feel, focus around selected nodes, readable local neighborhoods.
 - NotebookLM style: knowledge exploration rather than raw data dump, clean highlights, low-friction navigation.
@@ -27,7 +38,7 @@ The product should not choose between 2D and 3D permanently. The intended direct
 - 2D map mode for precise MVP work: fast overview, readable neighborhoods, stable labels, search-oriented inspection.
 - 3D flight mode for immersive exploration: a navigable document universe where the user can fly through clusters and feel spatial structure.
 
-## Visual Problems To Avoid
+## [x] Visual Problems To Avoid
 
 - Concentric ring or "donut" layouts that look decorative but do not explain relationships.
 - Too many visible labels at once.
@@ -36,40 +47,42 @@ The product should not choose between 2D and 3D permanently. The intended direct
 - Duplicate rendering in inline and fullscreen modes.
 - Floating controls that look detached from the graph surface.
 
-## Layout Model
+## [-] Layout Model
 
-Current implemented baseline:
+### Implemented baseline
 
-- The graph now uses a local Three.js renderer loaded from `/vendor/three/three.module.js`.
-- Inline and fullscreen renderers are isolated so fullscreen no longer keeps the inline WebGL scene rendering behind it.
-- Overview layout is no longer a pure concentric ring/donut layout; it uses radial branches grouped by semantic cluster when cluster ids are available, otherwise by macro/parent structure.
-- A static collision-relaxation pass separates node spheres after layout to reduce overlap without adding a per-frame physics simulation cost.
-- Fullscreen uses expanded graph caps, while inline mode keeps smaller caps to protect the main UI.
+- `[x]` The graph uses a local Three.js renderer loaded from `/vendor/three/three.module.js`.
+- `[x]` Inline and fullscreen renderers are isolated so fullscreen no longer keeps the inline WebGL scene rendering behind it.
+- `[x]` Overview layout uses radial branches grouped by semantic cluster when cluster ids are available, otherwise by macro/parent structure (no longer a pure concentric ring/donut).
+- `[x]` A static collision-relaxation pass separates node spheres after layout to reduce overlap without a per-frame physics simulation cost.
+- `[x]` Fullscreen uses expanded graph caps; inline mode keeps smaller caps.
 
-Default overview:
+### Overview layout rules (current)
 
-- Document node near the center.
-- Macro sections arranged as primary clusters around the document.
-- Medium and micro chunks placed near their parent section, not in separate global rings.
-- Entity nodes placed near the chunks they connect to.
-- Related documents placed on the outer context layer.
+- `[x]` Document node near the center.
+- `[x]` Macro sections as primary clusters around the document.
+- `[-]` Medium and micro chunks near their parent section — implemented, but layout is still crowded on dense documents.
+- `[-]` Entity nodes near the chunks they connect to — implemented, but placement is manual (entity adjacency, not semantic).
+- `[ ]` Related documents on the outer context layer — not yet implemented; only the active document is rendered.
 
-Focus mode:
+### Focus mode (click-to-center)
 
-- Clicking a node rebuilds the graph around that node.
-- The selected node becomes the local center.
-- Direct neighbors and connecting edges are emphasized.
-- Parents, children, siblings, and shared entities are shown with strict limits.
-- Distant context remains hidden or visually subdued.
-- Clicking the selected node again, or the root document, returns to overview.
+- `[x]` Clicking a node rebuilds the graph around it.
+- `[x]` The selected node becomes the local center.
+- `[-]` Direct neighbors and edges are emphasized — partially: halos and active edges exist, but no smooth fly-to animation.
+- `[x]` Parents, children, siblings, shared entities shown with strict caps.
+- `[x]` Distant context hidden or subdued.
+- `[ ]` Clicking selected node again or root returns to overview — not implemented; requires a dedicated "back to overview" action.
 
-Current gap:
+### Known gaps
 
-- Focus mode exists, but it is still mostly a filtered hierarchy/entity neighborhood, not a truly semantic graph dependency view.
-- The layout still needs more "air" for dense documents and better cluster separation after real UMAP coordinates are available.
-- Some segment visibility is controlled by graph caps; fullscreen caps were increased, but huge documents still need progressive loading or renderer-level virtualization.
+- `[-]` Focus mode is still a filtered hierarchy/entity neighborhood, not a truly semantic graph dependency view.
+- `[-]` Layout needs more "air" for dense documents and better cluster separation after real UMAP coordinates.
+- `[-]` Graph caps help, but huge documents still need progressive loading or renderer-level virtualization.
 
-## 3D Style
+## [-] 3D Style
+
+### Design principles
 
 - Use matte spheres or low-gloss points instead of shiny balls.
 - Keep node geometry small and readable.
@@ -79,14 +92,23 @@ Current gap:
 - Show labels for the selected node, important section nodes, and hovered nodes only.
 - Avoid permanent labels for dense medium/micro/entity sets.
 
-Recent implementation notes:
+### Implementation status
 
-- Current renderer uses matte spheres, reduced permanent labels, fog, low-opacity edges, and selected-node halos.
-- Click selection in fullscreen opens a non-blocking side inspector with selected chunk text.
-- Hover still uses a compact tooltip.
-- Next visual pass should improve depth ordering, active-neighbor highlighting, and selected cluster emphasis.
+- `[x]` Matte spheres with `roughness: 0.78`, zero `metalness`.
+- `[x]` Fog enabled (`FogExp2`, color matches dark theme background).
+- `[x]` Low-opacity default edges (0.16–0.26), higher for active edges (0.6).
+- `[x]` Reduced permanent labels; most shown only on hover or selection.
+- `[x]` Selected-node halo (18% opacity, 1.85× radius).
+- `[x]` Click in fullscreen opens non-blocking side inspector with chunk text.
+- `[x]` Hover tooltip with node label and type.
+- `[-]` Active-neighbor highlighting — halos exist for selected node, but neighbor edges are only subtly brighter.
+- `[-]` Depth ordering / cluster emphasis — needs improvement.
+- `[ ]` Smooth fly-to animation on node selection.
+- `[ ]` Edge/label fading by camera distance.
 
-Target 3D flight mode:
+### Target 3D flight mode
+
+Long-term vision, not yet implemented:
 
 - Fullscreen-first experience, not a small embedded preview.
 - Mouse-driven navigation should feel like flying through a document universe, not just rotating an object on a table.
@@ -97,218 +119,279 @@ Target 3D flight mode:
 - A selected node should become a navigation anchor: center/fly to it, open inspector, and highlight local neighborhood.
 - This mode is allowed to be expressive, but it must remain useful: every visual effect should support orientation, selection, or comprehension.
 
-3D risks to solve before it becomes default:
+### Risks (to solve before flight mode becomes default)
 
 - Large graphs can overwhelm WebGL if every edge and label is rendered at once.
 - Free-flight navigation needs stronger orientation aids: minimap, breadcrumbs, reset, and selected-node trail.
 - Physics/layout should be prepared outside the render loop where possible.
 - The current manual layout is not good enough for the target; it needs real semantic coordinates plus force/collision relaxation.
 
-## Color Palette
+## [-] Color Palette
 
-The palette should be theme-aware and calmer than the current saturated graph colors.
+The palette MUST be theme-aware. Node colors are defined as CSS custom properties in `style.css` and consumed by the renderer. Hardcoded hex values in JS files (`graph3d.js`) are a known divergence to be fixed.
 
-- Background: deep green graphite, close to the app surface.
-- Document: muted mint `#68b8b1`.
-- Macro section: soft blue `#5b8def`.
-- Medium subsection: cyan teal `#27b7c6`.
-- Micro chunk: slate `#7c8a93`.
-- Entity: warm amber `#d99a2b`.
-- Selected node: pale aqua or off-white halo `#d9fff7`.
-- Default edge: low-opacity neutral `rgba(190, 210, 205, 0.16)`.
-- Active edge: mint accent `rgba(104, 184, 177, 0.55)`.
+### Approach
 
-Light theme should use the same semantic colors with reduced saturation and darker edge contrast.
+- Each node type gets a semantic CSS variable (e.g. `--graph-node-doc`, `--graph-node-macro`).
+- Variables are set per theme (light/dark) in `style.css` alongside `--color-primary`, `--color-success`, etc.
+- The Three.js renderer reads these via `getComputedStyle` or receives theme-resolved colors through the graph data pipeline.
+- Edge opacity and halo intensity also use CSS variables so theme switching does not require a re-render.
 
-## Controls
+### Theme variable candidates (not yet in style.css)
+
+| Token | Dark theme | Light theme | Role |
+|-------|-----------|-------------|------|
+| `--graph-node-doc` | muted mint `#68b8b1` (reuse `--color-primary`) | `--color-primary` | Document root node |
+| `--graph-node-macro` | soft blue `#5b8def` | desaturated blue | Section header |
+| `--graph-node-medium` | cyan teal `#27b7c6` | muted teal | Subsection chunk |
+| `--graph-node-micro` | slate `#7c8a93` | gray-blue | Fine chunk |
+| `--graph-node-entity` | warm amber `#d99a2b` | softened amber | Named entity |
+| `--graph-node-related` | low-saturation purple | muted purple | Related document |
+| `--graph-node-active` | pale aqua / off-white `#d9fff7` | deep aqua | Selected node |
+| `--graph-edge-default` | `rgba(190, 210, 205, 0.16)` | `rgba(60, 80, 75, 0.2)` | Non-active edges |
+| `--graph-edge-active` | `rgba(104, 184, 177, 0.55)` | `rgba(47, 119, 117, 0.5)` | Active/neighbor edges |
+| `--graph-edge-hierarchy` | soft purple `rgba(180, 140, 220, 0.25)` | muted purple `rgba(100, 70, 140, 0.3)` | Contains edges |
+
+### Current state in code
+
+- `[ ]` CSS variables for graph node colors do not exist yet.
+- `[ ]` The renderer does not read theme variables — it uses hardcoded hex values in `graph3d.js:3-10` (pink/purple/cyan tones) that do not match the intended palette.
+- `[x]` The app already has robust light/dark theming via `style.css` `:root` / `[data-theme="dark"]` blocks — graph colors should follow the same pattern.
+- `[ ]` Theme switching does not trigger a graph re-color.
+- `[-]` Edge colors are partially controlled (default/hierarchy/active), but still hardcoded in JS.
+
+### Migration plan
+
+1. Add `--graph-node-*` and `--graph-edge-*` to `style.css` for both themes.
+2. Create a small JS helper (`getGraphThemeColors()`) that reads these from `getComputedStyle(document.documentElement)`.
+3. Update `graph3d.js` to call this helper on init and on theme change.
+4. Remove hardcoded `NODE_COLORS` and `EDGE_COLORS` objects from `graph3d.js`.
+5. Verify both themes render correctly without a full re-render.
+
+## [-] Controls
 
 Graph controls should become a compact toolbar rather than detached buttons.
 
-- One consistent toolbar for inline and fullscreen modes.
-- Right-bottom placement with safe spacing from the graph border.
-- Stable square icon buttons, around 32-36 px.
-- Same visual language as the app: subtle panel background, restrained border, clear hover state.
-- Controls expected in the first pass: zoom in, zoom out, fit/reset view, fullscreen, refresh.
-- Later controls: 2D/3D switch, labels toggle, edge filter, layout mode.
+- `[ ]` One consistent toolbar for inline and fullscreen modes.
+- `[x]` Right-bottom placement with safe spacing from the graph border.
+- `[x]` Stable square icon buttons, around 32-36 px.
+- `[x]` Same visual language as the app: subtle panel background, restrained border, clear hover state.
+- `[x]` First-pass controls: zoom in, zoom out, fit/reset view, fullscreen, refresh.
+- `[ ]` Later controls: 2D/3D switch, labels toggle, edge filter, layout mode.
+- `[-]` Inline and modal zoom controls both exist (`#graph-zoom-controls` and `#graph-modal-zoom-controls`) with consistent styling.
 
-Current status:
+### Current state
 
-- Zoom controls have been visually centered inside stable square buttons.
-- Controls are still separate from a full graph toolbar model; the 2D/3D switch, label toggle, edge filters, and layout mode remain open.
+- `[x]` Zoom controls are styled as stable square buttons with backdrop blur.
+- `[x]` Controls use `color-mix` for theme-aware backgrounds (`var(--bg-card)` with transparency).
+- `[-]` Controls are still separate from a unified graph toolbar model.
+- `[ ]` 2D/3D switch, label toggle, edge filters, and layout mode remain unimplemented.
+- `[ ]` Controls are hardcoded in HTML — should be dynamically built by a `GraphToolbar` module.
 
-## 2D And 3D Combined Architecture
+## [-] 2D And 3D Combined Architecture
 
-The desired long-term architecture is a shared graph model with interchangeable renderers.
+The long-term architecture is a shared graph model with interchangeable renderers. This section distinguishes between the **target design** (described below) and the **current implementation** (marked with status).
 
-- Graphology can become the canonical graph data/model layer.
-- Sigma can render the fast 2D view for large graphs and overview/focus work.
-- Three.js can render the 3D view using the same filtered graph data.
-- Both renderers should consume the same normalized graph view: nodes, edges, focus state, selection, color tokens, and layout hints.
-- Backend or worker-side preprocessing should prepare graph neighborhoods before the frontend renders them.
+### Target design (long-term)
 
-This lets 2D stay practical for huge graphs while 3D becomes a richer exploration mode instead of the only way to inspect the graph.
+- Graphology as the canonical graph data/model layer.
+- Sigma for fast 2D view (large graphs, overview/focus work).
+- Three.js for 3D view (same filtered graph data).
+- Both renderers consume the same normalized `GraphViewModel`: nodes, edges, focus state, selection, color tokens, layout hints.
+- Backend or worker-side preprocessing prepares graph neighborhoods.
 
-Lessons from the old RAG3 visualizer:
+### Current implementation
 
-- Use a force-directed layout model instead of hand-authored rings for the working graph.
-- Use per-type physics: root/document has stronger repulsion and longer links, sections have medium repulsion, chunks/entities have shorter local distances.
-- Use semantic zoom: labels are hidden by default and appear for important nodes or when zoomed in.
-- Use click-to-center: selecting a node should smoothly center/zoom/fly to that node.
-- Use a persistent side inspector instead of making the graph itself carry all text.
-- Use `ResizeObserver` and explicit renderer resize behavior so fullscreen/sidebar changes do not distort the graph.
-- Keep stats and legend lightweight, overlayed, and non-interactive.
+- `[-]` Graph data is built on the frontend in `library.js::buildDocumentGraphData()` — no shared `GraphViewModel` abstraction exists.
+- `[-]` `graph3d.js` consumes graph data directly, mixing layout and rendering concerns.
+- `[x]` Three.js is vendored locally (`/vendor/three/three.module.js`), no CDN dependency.
+- `[ ]` No Graphology or Sigma dependency; 2D fallback is a simple canvas simulation in `library.js::createGraphSimulation()`.
+- `[ ]` No `GraphViewModel`, `Graph2DRenderer`, `GraphInspector`, or `GraphToolbar` modules exist as reusable abstractions.
+- `[ ]` The 2D canvas fallback has been preserved but is not actively maintained as a product surface.
 
-Renderer strategy:
+### Renderer strategy (target)
 
-- `GraphViewModel`: one normalized payload for all renderers.
-- `Graph2DRenderer`: MVP working mode, based on Graphology/Sigma or a local force-graph-compatible renderer.
-- `Graph3DRenderer`: immersive mode, based on Three.js, consuming the same graph model and semantic layout hints.
-- `GraphInspector`: shared side panel for selected node/chunk/entity details.
-- `GraphToolbar`: shared controls for mode, labels, filters, reset, fullscreen, profiling/debug toggles.
+| Module | Status | Notes |
+|--------|--------|-------|
+| `GraphViewModel` | `[ ]` | Normalized payload for all renderers |
+| `Graph2DRenderer` | `[ ]` | Sigma/Graphology-based MVP mode |
+| `Graph3DRenderer` | `[-]` | Exists as `graph3d.js` but tightly coupled to data pipeline |
+| `GraphInspector` | `[-]` | Side panel exists inside graph3d.js, not extracted as shared module |
+| `GraphToolbar` | `[ ]` | Controls still in HTML, not dynamically built |
 
-Backend lessons from the old RAG3 `VisualizationService`:
+### Lessons from the old RAG3 visualizer (reference)
 
-- Use a dedicated visualization endpoint rather than overloading document details.
-- Build graph payloads on the backend: root/document node, structure nodes, chunk nodes, entity nodes, and links.
-- Include node payload fields directly needed by renderers and inspector: `id`, `label`, `type`, `val/weight`, `content`, `count`, `hits`, and graph-specific metadata.
-- Include usage heatmap data when available; old RAG3 used chunk hit counts to size/color chunks.
-- Aggregate entity counts server-side so renderers do not need to scan all chunks.
-- Keep ownership/access checks in the graph endpoint, not only in document endpoints.
-- Treat missing heatmap/stats as non-fatal; graph should still render.
-- Add tests for node/link construction, especially entity links and structural links.
+- `[-]` Force-directed layout — not yet; current layout is radial-branch + collision relaxation.
+- `[ ]` Per-type physics weights — not implemented.
+- `[-]` Semantic zoom — partial: labels show on hover/selection, no distance-based reveal.
+- `[-]` Click-to-center — implemented but without smooth fly-to animation.
+- `[-]` Persistent side inspector — exists inside fullscreen, not in inline mode.
+- `[-]` `ResizeObserver` behavior — graph canvas uses wrapper resize, but fullscreen/sidebar layout shifts can distort.
+- `[x]` Stats and legend — lightweight, overlaid, non-interactive.
 
-Adaptation for this Rust project:
+### Backend: current vs target
 
-- Create a Rust `graph_view` or `visualization` module that returns typed structs instead of `serde_json::Value` maps.
-- Add a dedicated endpoint such as `/documents/:doc_uuid/graph-view`.
-- Support query params: `mode=overview|focus`, `renderer=2d|3d`, `focus=<node_id>`, `semantic=true|false`, and caps.
-- Use PostgreSQL chunks/edges plus Qdrant semantic layout data, not Mongo/Weaviate.
-- Map our chunk levels to graph types: `root`, `macro`, `medium`, `micro`, `entity`, `related_document`, and later `cluster`.
-- Return both `nodes/links` and renderer hints: physics weights, semantic coordinates, visibility caps, label priority, and inspector payload.
-- Keep `/documents/:uuid/details` focused on document text/details; graph payload should become separate.
+| Aspect | Current | Target |
+|--------|---------|--------|
+| Graph endpoint | `GET /documents/:doc_uuid/graph?depth=N` returns raw neighborhood | Dedicated `/documents/:doc_uuid/graph-view` with mode, focus, caps params |
+| Graph data source | Frontend derives nodes/links from document details + edges | Backend builds typed nodes/links payload |
+| Semantic data | `GET /documents/:uuid/details?semantic=true` (lazy, overloaded) | Separate endpoint or field in graph-view |
+| Payload structure | `serde_json::Value` in `graph.rs` | Typed Rust structs (`GraphView`, `GraphNode`, `GraphEdge`) |
+| Chunk level mapping | `root`, `doc`, `macro`, `medium`, `micro`, `entity` | Same, plus `related_document`, `cluster` |
+| Entity aggregation | Frontend scans chunks (`collectGraphEntities`) | Backend aggregates entity counts |
+| Heatmap / stats | Not supported | Backend includes hit counts when available |
+| Tests | `graph_test.rs` (237 lines, integration) | Add unit tests for node/link construction |
 
-## Semantic Clustering Layer
+### Rust adaptation tasks
+
+- `[-]` `graph.rs` exists but returns `serde_json::Value`, not typed structs.
+- `[-]` `GET /documents/:doc_uuid/graph` exists but is a raw neighborhood dump, not a graph-view payload.
+- `[ ]` Need `mode=overview|focus`, `focus=<node_id>`, `renderer=2d|3d`, `semantic=true|false`, cap params.
+- `[x]` PostgreSQL chunks/edges + Qdrant semantic data (no Mongo/Weaviate).
+- `[x]` Chunk levels mapped: `root`, `macro`, `medium`, `micro`, `entity`.
+- `[ ]` Node payload fields: `id`, `label`, `type`, `val/weight`, `content`, `count`, `hits`, graph metadata.
+- `[ ]` `/documents/:uuid/details` should stay focused on text/details; graph belongs elsewhere.
+
+## [-] Semantic Clustering Layer
 
 UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a visual layout trick.
 
-Current state:
+### Current state
 
-- The Rust codebase has clustering traits, fallback implementations, and an `HdbscanClusterer`.
-- The search VM now uses `HdbscanClusterer` for the RSF cluster diversity channel, with fallback behavior for insufficient/invalid vectors.
-- Document details can expose `cluster_id`, `cluster_distance`, and `layout_hint` for chunks when graph semantic details are requested.
-- Semantic cluster data is now lazy-loaded for graph rendering through `/documents/:uuid/details?semantic=true`, so ordinary document opening does not pay the Qdrant + clustering cost.
-- The current layout projection is still a normalized-prefix/simple projection used as a temporary layout hint.
-- UMAP has not been implemented yet.
+- `[x]` Clustering traits (`DimensionReducer`, `Clusterer`) and `HdbscanClusterer` exist in `clustering.rs`.
+- `[x]` `PcaFallbackReducer` exists as a simple dimension reduction fallback (truncates to `components`).
+- `[x]` Search VM uses `HdbscanClusterer` for RSF cluster diversity channel, with fallback for insufficient/invalid vectors.
+- `[x]` Document details expose `cluster_id`, `cluster_distance`, `layout_hint` for chunks when `?semantic=true`.
+- `[x]` Semantic cluster data is lazy-loaded (`/documents/:uuid/details?semantic=true`) so ordinary document opening does not pay Qdrant + clustering cost.
+- `[-]` Layout projection is still normalized-prefix / simple projection — a temporary layout hint, not real semantic coordinates.
+- `[ ]` UMAP not implemented yet.
+- `[-]` `SemanticClusterLayout`, `SemanticClusterPoint`, `SemanticClusterSummary` structs exist and are serializable.
 
-Target direction:
+### Target direction
 
 - Use embeddings to build semantic neighborhoods for chunks, anchors, entities, and optionally document-level summaries.
 - Reduce high-dimensional vectors into a layout-friendly manifold with UMAP or an equivalent reducer.
 - Cluster the reduced vectors with HDBSCAN or a compatible density-based method.
-- Store cluster ids, outlier/noise labels, representative chunks, centroid/medoid references, and confidence metadata.
-- Reuse the same semantic clusters for graph visualization, search diversity, query expansion, and document/topic navigation.
+- Store cluster ids, outlier/noise labels, representative chunks, centroid/medoid references, confidence metadata.
+- Reuse same clusters for graph visualization, search diversity, query expansion, document/topic navigation.
 
-Expected wins:
+### Expected wins
 
 - Graph layout gets real semantic structure instead of artificial rings or hand-made clusters.
 - Search can diversify results by topic cluster instead of returning many near-duplicate chunks.
-- The UI can show cluster-level summaries before expanding into individual nodes.
-- Backend can precompute cluster payloads and keep the frontend focused on rendering and interaction.
+- UI can show cluster-level summaries before expanding into individual nodes.
+- Backend can precompute cluster payloads and keep frontend focused on rendering and interaction.
 
-Implementation options to evaluate:
+### Implementation options
 
-- Pure Rust path: keep clustering inside `tensor-rag`, using Rust crates where mature enough.
-- Python/service path: run UMAP/HDBSCAN in a local analysis worker if Rust libraries are not mature enough for production.
-- Hybrid path: start with Rust DBSCAN/HDBSCAN-compatible clustering and add UMAP later once graph/search contracts are stable.
+| Path | Approach | Status |
+|------|----------|--------|
+| Pure Rust | Keep clustering inside `tensor-rag` | `[-]` HDBSCAN done, UMAP crates not evaluated |
+| Python/service | Run UMAP/HDBSCAN in a local analysis worker | `[ ]` Feasibility not reviewed |
+| Hybrid | Rust HDBSCAN + deferred UMAP | `[-]` Current approach; working but limited |
 
-UMAP-specific remaining work:
+### UMAP-specific remaining work
 
-- Choose implementation path: Rust crate, local Python worker, or a small local analysis service.
-- Define deterministic reducer parameters for document-level graph layouts: neighbors, min distance, metric, random seed, and output dimensions.
-- Decide whether UMAP runs per document, per focus neighborhood, per library, or as a cached multi-level embedding.
-- Add cache invalidation for reindex, delete, document replacement, embedding model changes, and chunking schema changes.
-- Store reducer metadata alongside cluster metadata so old layouts can be recognized and rebuilt safely.
-- Use UMAP coordinates as the primary layout signal, then apply lightweight collision/label separation in the renderer.
+- `[ ]` Choose implementation path (Rust crate, local Python worker, local analysis service).
+- `[ ]` Define deterministic reducer parameters for document-level layouts: neighbors, min distance, metric, random seed, output dims.
+- `[ ]` Decide scope: per document, per focus neighborhood, per library, or cached multi-level embedding.
+- `[ ]` Cache invalidation for reindex, delete, replacement, embedding model change, chunking schema change.
+- `[ ]` Store reducer metadata alongside cluster metadata so old layouts can be recognized and rebuilt safely.
+- `[ ]` Use UMAP coordinates as primary layout signal, then apply lightweight collision/label separation in renderer.
 
-Open design questions:
+### Open design questions
 
-- Should cluster ids be persisted per document version, per library, or per query result set?
-- Should graph layout use global library clusters or local per-document/per-focus clusters?
-- How often should clusters be recomputed after ingestion, delete, reindex, or entity enrichment?
-- What metrics should decide whether a cluster is good enough to influence search ranking?
+- `[?]` Should cluster ids be persisted per document version, per library, or per query result set?
+- `[?]` Should graph layout use global library clusters or local per-document/per-focus clusters?
+- `[?]` How often should clusters be recomputed after ingestion, delete, reindex, or entity enrichment?
+- `[?]` What metrics decide whether a cluster is good enough to influence search ranking?
 
 ## Implementation Plan
 
-1. Done: fix first-pass visual regressions in the current graph surface: toolbar centering, spacing, labels, palette direction, isolated fullscreen render, and click inspector.
-2. Done partially: define and expose a semantic clustering payload for graph/search use (`cluster_id`, `cluster_distance`, `layout_hint`, `semantic_clusters`).
-3. Done partially: add HDBSCAN-backed clustering in Rust with fallback behavior.
-4. Done partially: lazy-load graph semantic details so normal document viewing is not slowed by clustering.
-5. Next: formalize `GraphViewModel` so both 2D map mode and 3D flight mode consume the same nodes, edges, types, clusters, selection, and caps.
-6. Next: extract shared `GraphInspector` and `GraphToolbar` from renderer-specific code.
-7. Next: implement MVP 2D map mode inspired by the old RAG3 visualizer: force layout, semantic zoom, click-to-center, stable side inspector, local library only.
-8. Next: keep 3D available but relabel it as experimental flight/immersive mode until layout and performance are strong enough.
-9. Next: add profiling with Selenium/CDP before moving more graph computation to backend.
-10. Next: prototype UMAP or equivalent manifold reduction on stored embeddings.
-11. Next: persist cluster/reducer metadata and expose it through a dedicated graph/BFF endpoint instead of overloading document details.
-12. Next: replace temporary frontend layout hints with backend-prepared UMAP/cluster-aware layout coordinates.
-13. Next: move heavy graph filtering/layout preparation to backend or worker after metrics show the true bottlenecks.
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Fix first-pass visual regressions: toolbar centering, spacing, labels, palette direction, isolated fullscreen render, click inspector | `[x]` | Applied in early graph3d commits |
+| 2 | Define and expose semantic clustering payload (`cluster_id`, `cluster_distance`, `layout_hint`, `semantic_clusters`) | `[x]` | `SemanticClusterLayout`, `SemanticClusterPoint` structs exist |
+| 3 | HDBSCAN-backed clustering in Rust with fallback | `[x]` | `HdbscanClusterer` + `PcaFallbackReducer` in `clustering.rs` |
+| 4 | Lazy-load graph semantic details so normal doc viewing is not slowed | `[x]` | Via `?semantic=true` query param |
+| 5 | Formalize `GraphViewModel` for shared 2D/3D consumption | `[ ]` | Graph data built ad-hoc in `library.js` |
+| 6 | Extract shared `GraphInspector` and `GraphToolbar` from renderer code | `[ ]` | Inspector embedded in `graph3d.js` |
+| 7 | Implement MVP 2D map mode (force layout, semantic zoom, click-to-center, side inspector) | `[ ]` | 2D fallback is simple canvas, not product-grade |
+| 8 | Keep 3D available but relabel as experimental flight mode | `[-]` | 3D is default; no mode switch exists |
+| 9 | Add profiling with Selenium/CDP before moving computation to backend | `[ ]` | Not started |
+| 10 | Prototype UMAP or equivalent manifold reduction on stored embeddings | `[ ]` | Not started |
+| 11 | Persist cluster/reducer metadata, expose through dedicated graph/BFF endpoint | `[ ]` | Not started |
+| 12 | Replace frontend layout hints with backend-prepared UMAP/cluster coordinates | `[ ]` | Not started |
+| 13 | Move heavy graph filtering/layout to backend or worker after metrics | `[ ]` | Not started |
 
 ## Phased Renderer Plan
 
-Phase 1: stabilize the graph product surface.
+### Phase 1: stabilize the graph product surface `[-]`
 
-- Keep the current graph tab and fullscreen modal, but introduce renderer mode state: `2d-map` and `3d-flight`.
-- Make 2D map the default MVP mode once implemented.
-- Keep 3D flight accessible as an experimental mode, not removed.
-- Move inspector, toolbar, stats, legend, and selected-node state out of renderer-specific code.
+| Item | Status | Notes |
+|------|--------|-------|
+| Keep current graph tab + fullscreen modal, introduce renderer mode state | `[-]` | Tab and modal exist, no `2d-map`/`3d-flight` toggle |
+| Make 2D map the default MVP mode once implemented | `[ ]` | 2D fallback exists but is not MVP-grade |
+| Keep 3D flight as experimental mode | `[ ]` | No mode switch at all |
+| Move inspector, toolbar, stats, legend, selection state out of renderer code | `[-]` | Stats/legend partially extracted, inspector and toolbar are not |
 
-Phase 2: build the 2D map mode.
+### Phase 2: build the 2D map mode `[ ]`
 
-- Add a local graph rendering dependency or vendor bundle; no CDN.
-- Use force-directed layout with per-type charge and link distance.
-- Add semantic zoom labels: root/macro labels always allowed, medium/micro/entity labels only on zoom/hover/selection.
-- Add click-to-center and click-to-open-inspector behavior.
-- Support caps and focus neighborhoods so the graph does not dump every segment at once.
-- Use the app palette, not the old RAG3 saturated colors.
+| Item | Status | Notes |
+|------|--------|-------|
+| Local graph rendering dependency (no CDN) | `[ ]` | Not evaluated |
+| Force-directed layout with per-type charge and link distance | `[ ]` | Not implemented |
+| Semantic zoom labels (root/macro always, others on zoom/hover/select) | `[-]` | Partial in 3D; not in 2D |
+| Click-to-center and click-to-open-inspector | `[-]` | Exists in 3D only |
+| Caps and focus neighborhoods | `[x]` | Implemented in `library.js::buildDocumentGraphData` |
+| App palette (not old RAG3 saturated colors) | `[-]` | Documented target; graph3d.js still uses hardcoded pink/purple |
 
-Phase 3: rebuild the 3D flight mode around the same model.
+### Phase 3: rebuild the 3D flight mode around the same model `[ ]`
 
-- Replace manual ring/branch layout with backend/worker layout coordinates plus local collision relaxation.
-- Add fly-to-node, orbit/free-flight toggle, reset, and orientation helpers.
-- Add distance-based label and edge fading.
-- Render edges/labels progressively based on camera distance and selected neighborhood.
-- Keep the "document universe" feeling from the screenshots: clusters as constellations, entities as bridges, selected focus as an anchor.
+| Item | Status | Notes |
+|------|--------|-------|
+| Backend/worker layout coordinates + local collision relaxation | `[-]` | Collision relaxation exists; coordinates are frontend-only |
+| Fly-to-node, orbit/free-flight toggle, reset, orientation helpers | `[-]` | Orbit via drag exists; no fly-to, no free-flight, no reset button |
+| Distance-based label and edge fading | `[ ]` | Not implemented |
+| Progressive edge/label rendering by camera distance | `[ ]` | Not implemented |
+| "Document universe" feel | `[-]` | Partial: clusters as radial groups, but no constellations/filaments |
 
-Phase 4: backend graph payload and semantic layout.
+### Phase 4: backend graph payload and semantic layout `[ ]`
 
-- Add a dedicated graph endpoint for overview/focus payloads.
-- Compute graph caps, neighborhoods, cluster summaries, and layout hints server-side or in a worker.
-- Add UMAP or equivalent reducer; HDBSCAN alone is not enough for the target layout.
-- Persist reducer/cluster metadata with invalidation on reindex, delete, embedding model changes, and chunking schema changes.
-- Use the old RAG3 visualization service as a conceptual template, but implement typed Rust structs and our PostgreSQL/Qdrant-backed graph model.
+All items are not started:
 
-Phase 5: measurement and acceptance.
+- `[ ]` Dedicated graph endpoint for overview/focus payloads.
+- `[ ]` Compute caps, neighborhoods, cluster summaries, layout hints server-side.
+- `[ ]` Add UMAP or equivalent reducer.
+- `[ ]` Persist reducer/cluster metadata with invalidation.
+- `[ ]` Typed Rust structs for graph payload (not `serde_json::Value`).
 
-- Profile first render, fullscreen open, node click, zoom/rotate/fly, side inspector open, and large-document caps.
-- Capture metrics before/after 2D mode and before/after 3D flight rebuild.
-- Use screenshots and interaction traces as acceptance artifacts, not only unit tests.
+### Phase 5: measurement and acceptance `[ ]`
+
+- `[ ]` Profile first render, fullscreen open, node click, zoom/rotate/fly, inspector open, large-doc caps.
+- `[ ]` Capture metrics before/after 2D mode and before/after 3D flight rebuild.
+- `[ ]` Use screenshots + interaction traces as acceptance artifacts.
 
 ## MVP Acceptance Criteria
 
-- Default graph overview is readable without fullscreen.
-- Focus mode clearly shows why the selected node matters.
-- Fullscreen mode does not render a duplicate inline graph behind it.
-- Graph stays smooth enough for large documents after caps and focus filtering.
-- Colors feel native to both app themes.
-- Controls look like part of the product UI, not a debug overlay.
+- `[-]` Default graph overview is readable without fullscreen — partially: works for small documents, dense docs still crowded.
+- `[-]` Focus mode shows why the selected node matters — partially: highlights neighbors, but no semantic explanation.
+- `[x]` Fullscreen does not render duplicate inline graph behind it.
+- `[-]` Graph stays smooth for large documents after caps — mostly, but no progressive loading for very large docs.
+- `[ ]` Colors feel native to both app themes — currently hardcoded pink/purple in JS, not theme-aware.
+- `[-]` Controls look like part of the product UI — styling is consistent, but no unified toolbar.
 
 ## Remaining MVP Work
 
-- Run Selenium/CDP profiling on current 3D graph interactions: first render, fullscreen open, node click/focus, zoom, rotate, and large document caps.
-- Verify graph behavior after a full server restart and document reindex, especially documents indexed before semantic cluster metadata existed.
-- Implement UMAP or equivalent reducer; current HDBSCAN is useful, but layout coordinates are still temporary.
-- Add a dedicated graph payload endpoint that can return overview, focus neighborhood, semantic clusters, and renderer caps without refetching full document details.
-- Decide renderer split: 2D map as the MVP working default, Three.js 3D as immersive flight mode, both sharing the same normalized graph model.
-- Add progressive loading/virtualized graph levels for very large documents so "all segments" can be explored without dumping every node at once.
-- Improve fullscreen side inspector: entity detail mode, neighbor list, jump-to-text action, and close behavior that does not disrupt graph selection.
-- Clean up the old 2D fallback code path and duplicate inspector/legend logic after the new renderer boundary is stable.
+| # | Task | Priority | Status |
+|---|------|----------|--------|
+| 1 | Run Selenium/CDP profiling on current 3D graph interactions | high | `[ ]` |
+| 2 | Verify graph behavior after full server restart + reindex | high | `[ ]` |
+| 3 | Implement UMAP or equivalent reducer | high | `[ ]` |
+| 4 | Add dedicated graph payload endpoint (overview, focus, clusters, caps) | high | `[ ]` |
+| 5 | Decide renderer split: 2D map as MVP default, 3D as experimental flight | medium | `[ ]` |
+| 6 | Add progressive loading / virtualized graph levels for large docs | medium | `[ ]` |
+| 7 | Improve fullscreen side inspector: entity detail, neighbor list, jump-to-text | medium | `[-]` |
+| 8 | Clean up old 2D fallback code path and duplicate inspector/legend logic | low | `[ ]` |
+| 9 | **Migrate graph colors from hardcoded JS hex to CSS theme variables** | high | `[ ]` |
+| 10 | **Extract shared `GraphInspector` and `GraphToolbar` from `graph3d.js`** | medium | `[ ]` |
