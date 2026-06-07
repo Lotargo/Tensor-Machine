@@ -94,15 +94,55 @@ The desired long-term architecture is a shared graph model with interchangeable 
 
 This lets 2D stay practical for huge graphs while 3D becomes a richer exploration mode instead of the only way to inspect the graph.
 
+## Semantic Clustering Layer
+
+UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a visual layout trick.
+
+Current state:
+
+- The Rust codebase has clustering traits and fallback implementations.
+- `PcaFallbackReducer` is only a simple dimensionality fallback.
+- `RadiusClusterer` is only a lightweight similarity-threshold clusterer.
+- The current search VM can use cluster diversity as an RSF channel, but it does not yet use full manifold reduction or density clustering.
+
+Target direction:
+
+- Use embeddings to build semantic neighborhoods for chunks, anchors, entities, and optionally document-level summaries.
+- Reduce high-dimensional vectors into a layout-friendly manifold with UMAP or an equivalent reducer.
+- Cluster the reduced vectors with HDBSCAN or a compatible density-based method.
+- Store cluster ids, outlier/noise labels, representative chunks, centroid/medoid references, and confidence metadata.
+- Reuse the same semantic clusters for graph visualization, search diversity, query expansion, and document/topic navigation.
+
+Expected wins:
+
+- Graph layout gets real semantic structure instead of artificial rings or hand-made clusters.
+- Search can diversify results by topic cluster instead of returning many near-duplicate chunks.
+- The UI can show cluster-level summaries before expanding into individual nodes.
+- Backend can precompute cluster payloads and keep the frontend focused on rendering and interaction.
+
+Implementation options to evaluate:
+
+- Pure Rust path: keep clustering inside `tensor-rag`, using Rust crates where mature enough.
+- Python/service path: run UMAP/HDBSCAN in a local analysis worker if Rust libraries are not mature enough for production.
+- Hybrid path: start with Rust DBSCAN/HDBSCAN-compatible clustering and add UMAP later once graph/search contracts are stable.
+
+Open design questions:
+
+- Should cluster ids be persisted per document version, per library, or per query result set?
+- Should graph layout use global library clusters or local per-document/per-focus clusters?
+- How often should clusters be recomputed after ingestion, delete, reindex, or entity enrichment?
+- What metrics should decide whether a cluster is good enough to influence search ranking?
+
 ## Implementation Plan
 
-1. Replace ring placement with clustered layout in the current Three.js renderer.
-2. Update materials: matte nodes, softer lights, lower edge opacity, optional fog.
-3. Rework labels: selected, hovered, and important section labels only.
-4. Restyle graph toolbar and fix right-side button spacing.
-5. Add explicit 2D/3D renderer boundary before introducing Graphology/Sigma.
-6. Add profiling with Selenium/CDP before moving more graph computation to backend.
-7. Move heavy graph filtering/layout preparation to backend or worker after metrics show the true bottlenecks.
+1. Fix immediate visual regressions in the current graph surface: toolbar centering, spacing, labels, and palette.
+2. Add profiling with Selenium/CDP before moving more graph computation to backend.
+3. Define a semantic clustering contract for graph/search payloads.
+4. Prototype UMAP/HDBSCAN or an equivalent density-clustering path on stored embeddings.
+5. Persist cluster metadata and expose it through backend/BFF graph endpoints.
+6. Replace artificial frontend layout hints with cluster-aware layout hints from backend.
+7. Add explicit 2D/3D renderer boundary before introducing Graphology/Sigma.
+8. Move heavy graph filtering/layout preparation to backend or worker after metrics show the true bottlenecks.
 
 ## MVP Acceptance Criteria
 

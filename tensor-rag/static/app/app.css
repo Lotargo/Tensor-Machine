@@ -92,6 +92,9 @@
     overflow: hidden;
     cursor: grab;
     min-height: 200px;
+    background:
+        radial-gradient(circle at 50% 45%, rgba(104, 184, 177, 0.08), transparent 38%),
+        linear-gradient(180deg, rgba(10, 18, 16, 0.06), rgba(10, 18, 16, 0.14));
 }
 
 #graph-canvas-wrapper:active {
@@ -106,19 +109,22 @@
 
 #graph-legend {
     position: absolute;
-    left: 8px;
-    bottom: 8px;
-    background: rgba(0, 0, 0, 0.75);
-    border-radius: 6px;
-    padding: 6px 10px;
+    left: 12px;
+    bottom: 12px;
+    background: color-mix(in srgb, var(--bg-card) 86%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+    border-radius: 8px;
+    padding: 8px 10px;
     font-size: 10px;
-    color: #ccc;
+    color: var(--text-secondary);
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
     pointer-events: none;
     line-height: 1.5;
-    z-index: 1;
+    z-index: 3;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(10px);
 }
 
 #graph-legend span {
@@ -127,14 +133,21 @@
     gap: 4px;
 }
 
-#graph-zoom-controls {
+#graph-zoom-controls,
+#graph-modal-zoom-controls {
     position: absolute;
-    right: 8px;
-    bottom: 8px;
+    right: 12px;
+    bottom: 12px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    z-index: 1;
+    gap: 6px;
+    z-index: 4;
+    padding: 6px;
+    background: color-mix(in srgb, var(--bg-card) 82%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(10px);
 }
 
 #graph-controls {
@@ -197,13 +210,16 @@
     width: 100%;
     height: 100%;
     position: relative;
+    background:
+        radial-gradient(circle at 50% 48%, rgba(104, 184, 177, 0.1), transparent 40%),
+        linear-gradient(180deg, rgba(10, 18, 16, 0.08), rgba(10, 18, 16, 0.18));
 }
 
 #graph-modal-canvas {
     display: block;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.05);
+    background: transparent;
     position: absolute;
     top: 0;
     left: 0;
@@ -235,33 +251,26 @@
     position: absolute;
     left: 12px;
     bottom: 12px;
-    background: rgba(0, 0, 0, 0.75);
-    border-radius: 6px;
+    background: color-mix(in srgb, var(--bg-card) 86%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+    border-radius: 8px;
     padding: 8px 12px;
     font-size: 11px;
-    color: #ccc;
+    color: var(--text-secondary);
     display: flex;
     flex-direction: column;
     gap: 3px;
     pointer-events: none;
     line-height: 1.5;
-    z-index: 1;
+    z-index: 3;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(10px);
 }
 
 #graph-modal-legend span {
     display: flex;
     align-items: center;
     gap: 4px;
-}
-
-#graph-modal-zoom-controls {
-    position: absolute;
-    right: 12px;
-    bottom: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    z-index: 1;
 }
 
 /* Graph empty overlay */
@@ -318,22 +327,34 @@
     border-radius: 50%;
     display: inline-block;
     flex: 0 0 auto;
+    box-shadow: 0 0 8px currentColor;
 }
 
 .graph-legend-line {
     width: 12px;
     height: 0;
-    border-top: 2px dashed rgba(139, 92, 246, 0.5);
+    border-top: 2px solid rgba(104, 184, 177, 0.5);
     display: inline-block;
     flex: 0 0 auto;
 }
 
 .graph-zoom-btn {
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     padding: 0;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
+    border-radius: 8px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.graph-zoom-btn:hover {
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+    border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
 }
 
 /* Graph node tooltip */
@@ -341,20 +362,20 @@
     position: absolute;
     z-index: 10;
     pointer-events: none;
-    background: rgba(17, 24, 39, 0.92);
-    color: #e5e7eb;
-    padding: 5px 10px;
-    border-radius: 6px;
+    background: color-mix(in srgb, var(--bg-card-strong) 92%, transparent);
+    color: var(--text-primary);
+    padding: 7px 10px;
+    border-radius: 8px;
     font-size: 11px;
     line-height: 1.5;
     max-width: 220px;
     backdrop-filter: blur(4px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent);
     white-space: nowrap;
 }
 
 .graph-tooltip b {
-    color: #f3f4f6;
+    color: var(--text-primary);
 }
 
 /* Graph chunk inspector */

@@ -3,10 +3,17 @@ const THREE_MODULE_URL = '/vendor/three/three.module.js';
 const NODE_COLORS = {
     root: 0x68b8b1,
     doc: 0x8b95a1,
-    macro: 0x3b82f6,
-    medium: 0x06b6d4,
-    micro: 0x64748b,
-    entity: 0xf59e0b,
+    macro: 0x5b8def,
+    medium: 0x27b7c6,
+    micro: 0x7c8a93,
+    entity: 0xd99a2b,
+};
+
+const EDGE_COLORS = {
+    default: 0xbed2cd,
+    hierarchy: 0x68b8b1,
+    active: 0xd9fff7,
+    relation: 0x8aa2b3,
 };
 
 export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, options = {}) {
@@ -22,14 +29,17 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
     renderer.setClearColor(0x000000, 0);
 
     const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x111a17, 0.00072);
     const camera = new THREE.PerspectiveCamera(50, 1, 1, 5000);
     const graphGroup = new THREE.Group();
     scene.add(graphGroup);
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.72);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.88);
-    keyLight.position.set(160, 240, 360);
-    scene.add(ambientLight, keyLight);
+    const ambientLight = new THREE.AmbientLight(0xdcefe9, 0.68);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.78);
+    const fillLight = new THREE.DirectionalLight(0x68b8b1, 0.24);
+    keyLight.position.set(180, 260, 360);
+    fillLight.position.set(-280, -120, 180);
+    scene.add(ambientLight, keyLight, fillLight);
 
     const tooltipEl = createTooltip(canvasWrapper);
     const raycaster = new THREE.Raycaster();
@@ -40,20 +50,26 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
     const edges = graphData.edges || [];
 
     nodes.forEach((node) => nodeById.set(node.id, node));
-    layoutNodes(nodes);
+    layoutNodes(nodes, edges);
     renderStats(nodes, edges, options.statsEl, options.language);
     renderLegend(options.legendEl, options.language);
 
-    const edgeMaterial = new THREE.LineBasicMaterial({
-        color: 0x9ca3af,
-        transparent: true,
-        opacity: 0.28,
-    });
-    const relationMaterial = new THREE.LineBasicMaterial({
-        color: 0x68b8b1,
-        transparent: true,
-        opacity: 0.46,
-    });
+    const activeNodeIds = new Set(nodes.filter((node) => node.isActive).map((node) => node.id));
+    const edgeMaterials = new Map();
+    const getEdgeMaterial = (edge) => {
+        const isActiveEdge = activeNodeIds.has(edge.source) || activeNodeIds.has(edge.target);
+        const isHierarchy = edge.type === 'contains';
+        const key = isActiveEdge ? 'active' : edge.type || 'default';
+        if (!edgeMaterials.has(key)) {
+            edgeMaterials.set(key, new THREE.LineBasicMaterial({
+                color: isActiveEdge ? EDGE_COLORS.active : (isHierarchy ? EDGE_COLORS.hierarchy : EDGE_COLORS.relation),
+                transparent: true,
+                opacity: isActiveEdge ? 0.52 : (isHierarchy ? 0.2 : 0.14),
+                depthWrite: false,
+            }));
+        }
+        return edgeMaterials.get(key);
+    };
 
     edges.forEach((edge) => {
         const source = nodeById.get(edge.source);
@@ -64,26 +80,26 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
             new THREE.Vector3(source.x, source.y, source.z),
             new THREE.Vector3(target.x, target.y, target.z),
         ]);
-        const line = new THREE.Line(geometry, edge.type === 'shares_entities' ? relationMaterial : edgeMaterial);
+        const line = new THREE.Line(geometry, getEdgeMaterial(edge));
         graphGroup.add(line);
     });
 
     const geometries = new Map();
     nodes.forEach((node) => {
-        const radius = Math.max(5, node.radius || 9);
+        const radius = getVisualRadius(node);
         const geometryKey = Math.round(radius);
         let geometry = geometries.get(geometryKey);
         if (!geometry) {
-            geometry = new THREE.SphereGeometry(radius, 18, 14);
+            geometry = new THREE.SphereGeometry(radius, 16, 12);
             geometries.set(geometryKey, geometry);
         }
 
         const material = new THREE.MeshStandardMaterial({
             color: NODE_COLORS[node.type] || NODE_COLORS.doc,
-            roughness: 0.52,
-            metalness: node.isActive ? 0.12 : 0.02,
+            roughness: 0.86,
+            metalness: 0.0,
             emissive: NODE_COLORS[node.type] || NODE_COLORS.doc,
-            emissiveIntensity: node.isActive ? 0.28 : 0.06,
+            emissiveIntensity: node.isActive ? 0.22 : 0.035,
         });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.set(node.x, node.y, node.z);
@@ -91,12 +107,27 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
         graphGroup.add(mesh);
         nodeMeshes.push(mesh);
 
+        if (node.isActive) {
+            const haloGeometry = new THREE.SphereGeometry(radius * 1.85, 24, 16);
+            const haloMaterial = new THREE.MeshBasicMaterial({
+                color: 0xd9fff7,
+                transparent: true,
+                opacity: 0.12,
+                depthWrite: false,
+            });
+            const halo = new THREE.Mesh(haloGeometry, haloMaterial);
+            halo.position.copy(mesh.position);
+            graphGroup.add(halo);
+        }
+
         if (shouldShowLabel(node)) {
             const label = createLabelSprite(THREE, node.label, node.isActive);
-            label.position.set(node.x, node.y + radius + 12, node.z);
+            label.position.set(node.x, node.y + radius + 14, node.z);
             graphGroup.add(label);
         }
     });
+
+    const defaultZoom = computeCameraDistance(nodes);
 
     const state = {
         animationId: null,
@@ -110,8 +141,8 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
         rotationY: 0.36,
         targetRotationX: -0.28,
         targetRotationY: 0.36,
-        zoom: 720,
-        targetZoom: 720,
+        zoom: defaultZoom,
+        targetZoom: defaultZoom,
     };
 
     function resize() {
@@ -251,7 +282,7 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
         resetView() {
             state.targetRotationX = -0.28;
             state.targetRotationY = 0.36;
-            state.targetZoom = 720;
+            state.targetZoom = defaultZoom;
         },
         zoomIn() {
             state.targetZoom = Math.max(220, state.targetZoom * 0.78);
@@ -266,70 +297,190 @@ function normalizeNodes(nodes) {
     return nodes.map((node) => ({ ...node, type: node.type || 'doc' }));
 }
 
-function layoutNodes(nodes) {
-    const groups = groupBy(nodes, (node) => node.type);
-    placeGroup(groups.root || [], 0, 0, 0, 0);
-    placeGroup(groups.doc || [], 150, 70, -120, 0.4);
-    placeGroup(groups.macro || [], 180, 0, -40, 0);
-    placeGroup(groups.medium || [], 260, -30, -95, 0.32);
-    placeGroup(groups.micro || [], 340, -70, -150, 0.6);
-    placeGroup(groups.entity || [], 260, 110, 130, 0.12);
+function layoutNodes(nodes, edges) {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const connectedChunksByEntity = new Map();
+    const roots = nodes.filter((node) => node.type === 'root');
+    const docs = nodes.filter((node) => node.type === 'doc');
+    const macros = nodes.filter((node) => node.type === 'macro');
+    const mediums = nodes.filter((node) => node.type === 'medium');
+    const micros = nodes.filter((node) => node.type === 'micro');
+    const entities = nodes.filter((node) => node.type === 'entity');
+
+    roots.forEach((node) => setPosition(node, 0, 0, 0));
+    placePrimaryClusters(macros, 210, -10, -20);
+    placeRelatedDocuments(docs);
+
+    const macroByChunkIndex = new Map(macros.map((node) => [node.chunk_index, node]));
+    const mediumByChunkIndex = new Map(mediums.map((node) => [node.chunk_index, node]));
+
+    const orphanMediums = [];
+    mediums.forEach((node) => {
+        const parent = macroByChunkIndex.get(node.parent_chunk_index);
+        if (!parent) {
+            orphanMediums.push(node);
+            return;
+        }
+        placeChildNearParent(node, parent, node.chunk_index, 58, 26, -18);
+    });
+    placePrimaryClusters(orphanMediums, 260, -34, -60, 0.42);
+
+    const orphanMicros = [];
+    micros.forEach((node) => {
+        const parent = mediumByChunkIndex.get(node.parent_chunk_index) || macroByChunkIndex.get(node.parent_chunk_index);
+        if (!parent) {
+            orphanMicros.push(node);
+            return;
+        }
+        placeChildNearParent(node, parent, node.chunk_index, 44, 20, -30);
+    });
+    placePrimaryClusters(orphanMicros, 300, -70, -100, 0.68);
+
+    edges.forEach((edge) => {
+        const source = byId.get(edge.source);
+        const target = byId.get(edge.target);
+        if (!source || !target) return;
+        const entity = source.type === 'entity' ? source : (target.type === 'entity' ? target : null);
+        const chunk = source.type !== 'entity' && source.type !== 'doc' && source.type !== 'root'
+            ? source
+            : (target.type !== 'entity' && target.type !== 'doc' && target.type !== 'root' ? target : null);
+        if (!entity || !chunk) return;
+        const list = connectedChunksByEntity.get(entity.id) || [];
+        list.push(chunk);
+        connectedChunksByEntity.set(entity.id, list);
+    });
+
+    const looseEntities = [];
+    entities.forEach((node, index) => {
+        const chunks = connectedChunksByEntity.get(node.id) || [];
+        if (chunks.length === 0) {
+            looseEntities.push(node);
+            return;
+        }
+        const anchor = averagePosition(chunks);
+        const angle = seededAngle(node.id);
+        const lift = 42 + (index % 5) * 10;
+        setPosition(
+            node,
+            anchor.x + Math.cos(angle) * (54 + (index % 4) * 12),
+            anchor.y + lift,
+            anchor.z + Math.sin(angle) * (50 + (index % 3) * 14),
+        );
+    });
+    placePrimaryClusters(looseEntities, 310, 96, 70, 0.18);
 }
 
-function groupBy(items, getKey) {
-    return items.reduce((acc, item) => {
-        const key = getKey(item);
-        acc[key] = acc[key] || [];
-        acc[key].push(item);
-        return acc;
-    }, {});
+function setPosition(node, x, y, z) {
+    node.x = x;
+    node.y = y;
+    node.z = z;
 }
 
-function placeGroup(nodes, radius, yOffset, zOffset, phase) {
+function placePrimaryClusters(nodes, radius, yOffset, zOffset, phase = 0) {
     if (nodes.length === 0) return;
-    if (radius === 0) {
-        nodes.forEach((node) => {
-            node.x = 0;
-            node.y = yOffset;
-            node.z = zOffset;
-        });
-        return;
-    }
 
     nodes.forEach((node, index) => {
-        const angle = (index / nodes.length) * Math.PI * 2 + phase;
-        const layer = index % 3;
-        node.x = Math.cos(angle) * (radius + layer * 26);
-        node.y = yOffset + (layer - 1) * 34;
-        node.z = Math.sin(angle) * radius + zOffset;
+        const angle = goldenAngle(index) + phase;
+        const band = Math.sqrt(index + 1) / Math.sqrt(nodes.length + 1);
+        const jitter = seededUnit(node.id) * 28;
+        setPosition(
+            node,
+            Math.cos(angle) * (radius * band + jitter),
+            yOffset + ((index % 5) - 2) * 16,
+            Math.sin(angle) * (radius * 0.72 * band + jitter) + zOffset,
+        );
     });
 }
 
+function placeRelatedDocuments(nodes) {
+    nodes.forEach((node, index) => {
+        const angle = goldenAngle(index) + 0.9;
+        setPosition(node, Math.cos(angle) * 360, 78 + (index % 3) * 18, Math.sin(angle) * 210 - 150);
+    });
+}
+
+function placeChildNearParent(node, parent, seed, radius, yStep, zOffset) {
+    const angle = seededAngle(`${node.id}:${seed}`);
+    const distance = radius + (seed % 7) * 7;
+    setPosition(
+        node,
+        parent.x + Math.cos(angle) * distance,
+        parent.y - yStep + ((seed % 5) - 2) * 7,
+        parent.z + Math.sin(angle) * distance * 0.72 + zOffset,
+    );
+}
+
+function averagePosition(nodes) {
+    const total = nodes.reduce((acc, node) => ({
+        x: acc.x + node.x,
+        y: acc.y + node.y,
+        z: acc.z + node.z,
+    }), { x: 0, y: 0, z: 0 });
+    const count = Math.max(1, nodes.length);
+    return { x: total.x / count, y: total.y / count, z: total.z / count };
+}
+
+function goldenAngle(index) {
+    return index * 2.399963229728653;
+}
+
+function seededAngle(value) {
+    return seededUnit(value) * Math.PI * 2;
+}
+
+function seededUnit(value) {
+    let hash = 2166136261;
+    const text = String(value);
+    for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return ((hash >>> 0) % 10000) / 10000;
+}
+
+function getVisualRadius(node) {
+    if (node.isActive) return Math.max(11, Math.min(18, (node.radius || 10) * 0.72));
+    if (node.type === 'root') return 14;
+    if (node.type === 'macro') return 10;
+    if (node.type === 'medium') return 7.5;
+    if (node.type === 'micro') return 5.2;
+    if (node.type === 'entity') return 5.8;
+    return 8;
+}
+
 function shouldShowLabel(node) {
-    return node.isActive || node.type === 'root' || node.type === 'macro';
+    return node.isActive || node.type === 'root' || (node.type === 'macro' && node.radius >= 16);
 }
 
 function createLabelSprite(THREE, text, isActive) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const label = truncate(String(text || ''), isActive ? 34 : 24);
-    ctx.font = isActive ? '700 24px sans-serif' : '600 20px sans-serif';
+    ctx.font = isActive ? '700 22px sans-serif' : '600 18px sans-serif';
     const width = Math.ceil(ctx.measureText(label).width + 28);
     canvas.width = Math.max(96, width);
-    canvas.height = 40;
-    ctx.font = isActive ? '700 24px sans-serif' : '600 20px sans-serif';
-    ctx.fillStyle = 'rgba(10, 16, 18, 0.72)';
+    canvas.height = 38;
+    ctx.font = isActive ? '700 22px sans-serif' : '600 18px sans-serif';
+    ctx.fillStyle = isActive ? 'rgba(10, 22, 20, 0.82)' : 'rgba(10, 16, 18, 0.56)';
     roundRect(ctx, 0, 0, canvas.width, canvas.height, 8);
     ctx.fill();
-    ctx.fillStyle = '#eef4f1';
+    ctx.fillStyle = isActive ? '#f3fffb' : '#dce9e5';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, canvas.width / 2, canvas.height / 2);
     const texture = new THREE.CanvasTexture(canvas);
     const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
     const sprite = new THREE.Sprite(material);
-    sprite.scale.set(canvas.width * 0.45, canvas.height * 0.45, 1);
+    sprite.scale.set(canvas.width * 0.38, canvas.height * 0.38, 1);
     return sprite;
+}
+
+function computeCameraDistance(nodes) {
+    const maxRadius = nodes.reduce((max, node) => {
+        const distance = Math.sqrt((node.x || 0) ** 2 + (node.y || 0) ** 2 + (node.z || 0) ** 2);
+        return Math.max(max, distance);
+    }, 280);
+    return Math.max(420, Math.min(1250, maxRadius * 2.35));
 }
 
 function renderStats(nodes, edges, statsEl, language) {
