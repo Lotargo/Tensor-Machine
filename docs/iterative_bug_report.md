@@ -279,8 +279,23 @@ Current status:
 
 Remaining hypotheses:
 - Qdrant/dense retrieval is not suitable as the only mechanism for precise chapter, heading, line, or paragraph lookup; PostgreSQL-backed lexical/structured search should be expanded for exact navigation and extraction tasks.
+- Short queries (< 5 words) suffer from weak dense and BM25 signals because fewer terms = less matching surface area. The fixed RSF weights (dense 0.30, bm25 0.35) were tuned for medium/long queries and underperform on short factual questions.
 
 Follow-up work:
+- `fixed` Adaptive RSF weights based on query length.
+  - Short queries (<= 5 words) now get boosted dense weight (+0.15) and reduced BM25 weight (-0.10) so semantic similarity can compensate for weak lexical signal.
+  - Long queries (>= 6 words) keep the default balanced weights.
+  - Implemented via `adaptive_config()` in `rsf.rs` and `compute_rsf_with_query()`.
+- `fixed` Lowered entity search threshold from `>= 2` to `>= 1` entities.
+  - Single-entity queries like "как звали мать Арсения?" now trigger entity co-occurrence search.
+  - Previously blocked because only one entity ("Арсения") was extracted.
+- `fixed` Increased keyword fallback limit for short queries.
+  - Queries with <= 4 words now get 2x the base fallback limit (up to 60 candidates).
+  - Compensates for weaker BM25 ranking on short queries by casting a wider net.
+- `fixed` Added RSF channel debug logging in VM.
+  - Logs per-candidate channel max scores, weights, and top-3 fusion results.
+  - Enables diagnosis of retrieval quality issues per query.
+- Remaining: validate these fixes against the War and Peace regression set and "как звали мать Арсения?" test case.
 - `fixed` Re-check exact-match retrieval path — root cause identified: default `RerankStrategy::SemanticOnly` skipped BM25/exact-match scoring entirely.
   - `fixed` Changed default strategy from `SemanticOnly` to `Hybrid { semantic_weight: 0.7, bm25_weight: 0.3 }` in `ir.rs` and `dsl.rs`.
   - `fixed` Increased exact-match boost in `fetch_bm25_scores()` from 5.0 to 10.0.

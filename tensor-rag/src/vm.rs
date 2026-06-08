@@ -707,7 +707,7 @@ impl VM {
                     scores,
                 }));
             }
-            OpCode::Rsf(config) => {
+            OpCode::Rsf(config, query) => {
                 let entity = self.stack.pop().ok_or("Stack underflow")?;
                 let bm25 = self.stack.pop().ok_or("Stack underflow")?;
                 let dense = self.stack.pop().ok_or("Stack underflow")?;
@@ -715,6 +715,23 @@ impl VM {
                 let bm25_scores = scores_from_value(bm25)?;
                 let entity_scores = scores_from_value(entity)?;
                 let ids: Vec<usize> = (0..dense_scores.len()).collect();
+
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    let dense_max = dense_scores.iter().copied().fold(0.0f32, f32::max);
+                    let bm25_max = bm25_scores.iter().copied().fold(0.0f32, f32::max);
+                    let entity_max = entity_scores.iter().copied().fold(0.0f32, f32::max);
+                    tracing::debug!(
+                        rsf_candidates = ids.len(),
+                        dense_max = %dense_max,
+                        bm25_max = %bm25_max,
+                        entity_max = %entity_max,
+                        dense_weight = %config.dense_weight,
+                        bm25_weight = %config.bm25_weight,
+                        entity_weight = %config.entity_weight,
+                        cluster_weight = %config.cluster_weight,
+                        "RSF fusion input"
+                    );
+                }
 
                 let mut channels = vec![
                     (crate::rsf::RsfChannel::Dense, dense_scores),
@@ -733,7 +750,17 @@ impl VM {
                     channels.push((crate::rsf::RsfChannel::Cluster, cluster_scores));
                 }
 
-                let fused = crate::rsf::compute_rsf(&ids, &channels, config);
+                let fused = crate::rsf::compute_rsf_with_query(&ids, &channels, config, Some(query));
+
+                if tracing::enabled!(tracing::Level::DEBUG) && !fused.is_empty() {
+                    let top3: Vec<_> = fused.iter().take(3).collect();
+                    tracing::debug!(
+                        top3_ids = ?top3.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                        top3_scores = ?top3.iter().map(|(_, s)| format!("{:.4}", s)).collect::<Vec<_>>(),
+                        "RSF fusion top3"
+                    );
+                }
+
                 let indices: Vec<usize> = fused.iter().map(|(idx, _)| *idx).collect();
                 let scores: Vec<f32> = fused.iter().map(|(_, score)| *score).collect();
                 self.stack.push(Value::Result(TopKResult {
@@ -1377,7 +1404,7 @@ mod additional_tests {
         vm.stack.push(Value::Tensor1D(Array1::from(vec![0.5, 0.5]))); // entity
 
         let mut program = Program::new();
-        program.push(OpCode::Rsf(crate::rsf::RsfConfig::default()));
+        program.push(OpCode::Rsf(crate::rsf::RsfConfig::default(), "test query".to_string()));
         program.push(OpCode::Emit);
 
         let res = vm.run(program, &mut 0, 100_000).unwrap().unwrap();

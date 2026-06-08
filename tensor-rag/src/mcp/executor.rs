@@ -83,7 +83,13 @@ pub fn execute_program<'a>(
                         })
                     });
 
-                    let fallback_limit = ((*top_k + 4) / 5).clamp(10, 30);
+                    let query_wc = query.split_whitespace().count();
+                    let base_limit = ((*top_k + 4) / 5).clamp(10, 30);
+                    let fallback_limit = if query_wc <= 4 {
+                        (base_limit * 2).min(60)
+                    } else {
+                        base_limit
+                    };
                     let mut pg_ids = db_pools
                         .search_keyword_candidate_ids(
                             query,
@@ -188,7 +194,7 @@ pub fn execute_program<'a>(
                     }
 
                     let query_entities = crate::entity::extract_query_entities(query);
-                    if query_entities.len() >= 2 {
+                    if query_entities.len() >= 1 {
                         let doc_uuid_filter = filters_opt.as_ref().and_then(|f_list| {
                             f_list.iter().find_map(|filter| {
                                 if filter.field == "doc_uuid"

@@ -158,7 +158,7 @@ pub enum OpCode {
     /// Reciprocal Rank Fusion
     Rrf(usize),
     /// Reciprocal Score Fusion over dense/BM25/entity channels
-    Rsf(crate::rsf::RsfConfig),
+    Rsf(crate::rsf::RsfConfig, String),
     /// Fetch entity co-occurrence scores for current candidates
     RetrieveEntityScores {
         query: String,
@@ -361,11 +361,14 @@ impl Planner {
                             program.push(OpCode::RetrieveEntityScores {
                                 query: request.query.clone(),
                             });
-                            program.push(OpCode::Rsf(make_rsf_config(
-                                dense_weight,
-                                bm25_weight,
-                                entity_weight,
-                            )));
+                            program.push(OpCode::Rsf(
+                                make_rsf_config(
+                                    dense_weight,
+                                    bm25_weight,
+                                    entity_weight,
+                                ),
+                                request.query.clone(),
+                            ));
                             program.push(OpCode::TopK(final_top_k));
                         }
                         RerankStrategy::Dynamic { name, args } => {
@@ -487,11 +490,14 @@ impl Planner {
                             program.push(OpCode::RetrieveEntityScores {
                                 query: request.query.clone(),
                             });
-                            program.push(OpCode::Rsf(make_rsf_config(
-                                dense_weight,
-                                bm25_weight,
-                                entity_weight,
-                            )));
+                            program.push(OpCode::Rsf(
+                                make_rsf_config(
+                                    dense_weight,
+                                    bm25_weight,
+                                    entity_weight,
+                                ),
+                                request.query.clone(),
+                            ));
                             if let Some(ref meta_filters) = request.metadata_filters {
                                 if !meta_filters.is_empty() {
                                     program.push(OpCode::FilterByMetadata {
@@ -728,7 +734,7 @@ mod tests {
             program.instructions[3].op,
             OpCode::RetrieveEntityScores { .. }
         ));
-        assert!(matches!(program.instructions[4].op, OpCode::Rsf(_)));
+        assert!(matches!(program.instructions[4].op, OpCode::Rsf(..)));
         assert_eq!(program.instructions[5].op, OpCode::TopK(4));
     }
 

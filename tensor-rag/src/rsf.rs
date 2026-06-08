@@ -57,10 +57,21 @@ pub fn compute_rsf(
     channels: &[(RsfChannel, Vec<f32>)],
     config: &RsfConfig,
 ) -> Vec<(usize, f32)> {
+    compute_rsf_with_query(ids, channels, config, None)
+}
+
+pub fn compute_rsf_with_query(
+    ids: &[usize],
+    channels: &[(RsfChannel, Vec<f32>)],
+    config: &RsfConfig,
+    query: Option<&str>,
+) -> Vec<(usize, f32)> {
+    let adjusted = query.map(|q| adaptive_config(config, q)).unwrap_or_else(|| config.clone());
+
     let mut scores = vec![0.0f32; ids.len()];
     for (channel, raw_scores) in channels {
         let normalized = minmax(raw_scores);
-        let weight = channel_weight(*channel, config);
+        let weight = channel_weight(*channel, &adjusted);
         for (idx, score) in normalized.into_iter().enumerate().take(scores.len()) {
             scores[idx] += weight * score;
         }
@@ -69,6 +80,39 @@ pub fn compute_rsf(
     let mut fused: Vec<(usize, f32)> = ids.iter().copied().zip(scores).collect();
     fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     fused
+}
+
+fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+fn adaptive_config(config: &RsfConfig, query: &str) -> RsfConfig {
+    let wc = word_count(query);
+    if wc >= 6 {
+        return config.clone();
+    }
+
+    let short_factor = (wc as f32 / 6.0).clamp(0.0, 1.0);
+
+    let dense_boost = 0.15 * (1.0 - short_factor);
+    let bm25_penalty = 0.10 * (1.0 - short_factor);
+
+    let new_dense = (config.dense_weight + dense_boost).min(0.60);
+    let new_bm25 = (config.bm25_weight - bm25_penalty).max(0.15);
+
+    let scale = (config.dense_weight + config.bm25_weight + config.entity_weight
+        + config.structural_weight + config.recency_weight + config.cluster_weight)
+        / (new_dense + new_bm25 + config.entity_weight
+            + config.structural_weight + config.recency_weight + config.cluster_weight);
+
+    RsfConfig {
+        dense_weight: new_dense,
+        bm25_weight: new_bm25,
+        entity_weight: config.entity_weight * scale,
+        structural_weight: config.structural_weight * scale,
+        recency_weight: config.recency_weight * scale,
+        cluster_weight: config.cluster_weight * scale,
+    }
 }
 
 pub fn reciprocal_rank_fusion(lists: &[Vec<usize>], k: usize) -> Vec<(usize, f32)> {
