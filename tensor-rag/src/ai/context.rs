@@ -130,15 +130,15 @@ fn agent_instruction(
     rag_top_k: usize,
 ) -> String {
     let mut lines = vec![
-        "You can decide whether to call local MCP-backed tools before answering.".to_string(),
-        "For questions about local documents or the document library, call search_text before answering.".to_string(),
-        "Only call a tool when it genuinely helps answer the user's request.".to_string(),
+        "For questions about local documents or the document library, search_text is mandatory before answering.".to_string(),
+        "The application may already inject mandatory search_text results into the conversation; treat those passages as the only evidence for local-document answers.".to_string(),
+        "For local-document questions, do not answer from pretrained knowledge, even if the work is famous or you know the answer.".to_string(),
         format!(
             "When using search_text, prefer concise keyword queries and keep final_top_k at or below {}.",
             rag_top_k
         ),
         "If retrieved tool results do not contain enough evidence, say that the local library context is insufficient instead of answering from memory.".to_string(),
-        "If no tool is needed for a non-library question, answer directly.".to_string(),
+        "For non-library questions, answer directly if no tool is needed.".to_string(),
     ];
 
     if scope_to_selected_document {

@@ -14,13 +14,17 @@ let graphAnimationId = null;
 let activeDocumentRequestId = 0;
 const ENTITY_RENDER_LIMIT = 200;
 const DISPLAY_LEVEL_ORDER = ['macro', 'medium', 'micro'];
-const UPLOAD_STEPS = ['step-upload', 'step-ocr', 'step-chunk', 'step-embedding', 'step-db'];
+const UPLOAD_STEPS = ['step-upload', 'step-ocr', 'step-chunk', 'step-embedding', 'step-db', 'step-clustering'];
 const STEP_ICONS = {
     pending: 'fa-circle',
     active: 'fa-spinner fa-spin',
     completed: 'fa-check',
     failed: 'fa-xmark',
 };
+let uploadEtaState = null;
+let uploadEtaTimer = null;
+let activeUploadId = null;
+let activeUploadCancelRequested = false;
 
 export function initLibrary() {
     document.getElementById('library-search').addEventListener('input', (event) => filterLibrary(event.target.value));
@@ -29,6 +33,7 @@ export function initLibrary() {
     document.getElementById('delete-doc-btn').addEventListener('click', deleteActiveDocument);
     document.getElementById('clear-db-btn').addEventListener('click', clearLibrary);
     document.getElementById('upload-document-btn').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('upload-cancel-btn')?.addEventListener('click', cancelActiveUpload);
 
     const miniPreview = document.getElementById('document-mini-preview');
     if (miniPreview) miniPreview.addEventListener('click', openDocPreviewModal);
@@ -455,11 +460,15 @@ async function handleFilesUpload(file) {
     const statusError = document.getElementById('status-error');
     const uploadId = createUploadId();
     let progressSource = null;
+    activeUploadId = uploadId;
+    activeUploadCancelRequested = false;
+    setUploadCancelButton('active');
     statusFilename.textContent = file.name;
     statusError.textContent = '';
     statusError.style.display = 'none';
     statusPanel.style.display = 'flex';
     resetSteps();
+    resetUploadEta();
     updateStep('step-upload', 'active');
     progressSource = subscribeUploadProgress(uploadId);
 
@@ -475,6 +484,8 @@ async function handleFilesUpload(file) {
 
         progressSource?.close();
         completePendingUploadSteps();
+        completeUploadEta();
+        setUploadCancelButton('completed');
         await fetchDocuments();
 
         const newDoc = state.documentList.find((doc) => doc.doc_uuid === result.doc_uuid);
@@ -482,9 +493,48 @@ async function handleFilesUpload(file) {
     } catch (error) {
         console.error('Upload failed:', error);
         progressSource?.close();
-        statusError.textContent = error.message;
+        statusError.textContent = activeUploadCancelRequested
+            ? 'Загрузка отменена. Частично созданные данные удалены.'
+            : error.message;
         statusError.style.display = 'block';
         failActiveUploadStep();
+        failUploadEta();
+        setUploadCancelButton('completed');
+    } finally {
+        activeUploadId = null;
+        activeUploadCancelRequested = false;
+    }
+}
+
+async function cancelActiveUpload() {
+    if (!activeUploadId || activeUploadCancelRequested) return;
+    activeUploadCancelRequested = true;
+    setUploadCancelButton('cancelling');
+    try {
+        await fetchJson(`/upload/cancel/${encodeURIComponent(activeUploadId)}`, {
+            method: 'POST',
+        });
+    } catch (error) {
+        console.warn('Failed to request upload cancellation:', error);
+    }
+}
+
+function setUploadCancelButton(stateName) {
+    const button = document.getElementById('upload-cancel-btn');
+    if (!button) return;
+    const label = button.querySelector('span');
+    if (stateName === 'active') {
+        button.disabled = false;
+        button.style.display = 'inline-flex';
+        if (label) label.textContent = 'Отмена';
+    } else if (stateName === 'cancelling') {
+        button.disabled = true;
+        button.style.display = 'inline-flex';
+        if (label) label.textContent = 'Отмена...';
+    } else {
+        button.disabled = true;
+        button.style.display = 'none';
+        if (label) label.textContent = 'Отмена';
     }
 }
 
@@ -512,6 +562,7 @@ function subscribeUploadProgress(uploadId) {
             const progress = JSON.parse(event.data);
             if (!progress.step || !progress.status) return;
             updateStep(progress.step, progress.status, progress.message, progress.current, progress.total);
+            updateUploadEta(progress);
         } catch (error) {
             console.error('Failed to parse upload progress event:', error);
         }
@@ -564,6 +615,119 @@ function completePendingUploadSteps() {
         if (!element || element.classList.contains('failed')) return;
         updateStep(stepId, 'completed');
     });
+}
+
+function resetUploadEta() {
+    uploadEtaState = {
+        startedAt: Date.now(),
+        estimatedEndAt: null,
+        lastProgressRatio: 0,
+        completed: false,
+        failed: false,
+    };
+    if (uploadEtaTimer) clearInterval(uploadEtaTimer);
+    uploadEtaTimer = setInterval(renderUploadEta, 1000);
+    renderUploadEta();
+}
+
+function updateUploadEta(progress) {
+    if (!uploadEtaState || uploadEtaState.completed || uploadEtaState.failed) return;
+
+    const ratio = calculateUploadProgressRatio(progress);
+    if (ratio <= 0 || ratio <= uploadEtaState.lastProgressRatio) {
+        renderUploadEta();
+        return;
+    }
+
+    const now = Date.now();
+    const elapsedMs = now - uploadEtaState.startedAt;
+    const boundedRatio = Math.min(Math.max(ratio, 0.02), 0.98);
+    const estimatedTotalMs = elapsedMs / boundedRatio;
+    const remainingMs = Math.max(0, estimatedTotalMs - elapsedMs);
+    uploadEtaState.lastProgressRatio = ratio;
+    uploadEtaState.estimatedEndAt = now + remainingMs;
+    renderUploadEta();
+}
+
+function calculateUploadProgressRatio(progress) {
+    const stepIndex = UPLOAD_STEPS.indexOf(progress.step);
+    if (stepIndex < 0) return uploadEtaState?.lastProgressRatio || 0;
+
+    let stepFraction = 0;
+    if (progress.status === 'completed') {
+        stepFraction = 1;
+    } else if (progress.status === 'active') {
+        const current = Number(progress.current);
+        const total = Number(progress.total);
+        if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+            stepFraction = Math.min(Math.max(current / total, 0), 0.95);
+        } else {
+            stepFraction = 0.15;
+        }
+    } else if (progress.status === 'failed') {
+        stepFraction = 1;
+    }
+
+    return (stepIndex + stepFraction) / UPLOAD_STEPS.length;
+}
+
+function renderUploadEta() {
+    const etaEl = document.getElementById('status-eta');
+    const textEl = document.getElementById('status-eta-text');
+    if (!etaEl || !textEl || !uploadEtaState) return;
+
+    etaEl.style.display = 'inline-flex';
+    if (uploadEtaState.failed) {
+        textEl.textContent = 'Обработка остановлена';
+        return;
+    }
+    if (uploadEtaState.completed) {
+        textEl.textContent = 'Готово';
+        return;
+    }
+    if (!uploadEtaState.estimatedEndAt || uploadEtaState.lastProgressRatio < 0.03) {
+        textEl.textContent = 'Расчет времени...';
+        return;
+    }
+
+    const remainingMs = Math.max(0, uploadEtaState.estimatedEndAt - Date.now());
+    textEl.textContent = `Осталось примерно: ${formatDuration(remainingMs)}`;
+}
+
+function completeUploadEta() {
+    if (!uploadEtaState) return;
+    uploadEtaState.completed = true;
+    uploadEtaState.estimatedEndAt = Date.now();
+    if (uploadEtaTimer) {
+        clearInterval(uploadEtaTimer);
+        uploadEtaTimer = null;
+    }
+    renderUploadEta();
+}
+
+function failUploadEta() {
+    if (!uploadEtaState) return;
+    uploadEtaState.failed = true;
+    if (uploadEtaTimer) {
+        clearInterval(uploadEtaTimer);
+        uploadEtaTimer = null;
+    }
+    renderUploadEta();
+}
+
+function formatDuration(ms) {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes >= 60) {
+        const hours = Math.floor(minutes / 60);
+        const restMinutes = minutes % 60;
+        return `${hours} ч ${restMinutes} мин`;
+    }
+    if (minutes > 0) {
+        return `${minutes} мин ${seconds.toString().padStart(2, '0')} сек`;
+    }
+    return `${seconds} сек`;
 }
 
 function getSelectedDocument() {

@@ -1,6 +1,8 @@
-use std::collections::HashMap;
 use ndarray::{Array1, Array2};
 use rand::SeedableRng;
+use std::collections::HashMap;
+
+const EXACT_SEMANTIC_LAYOUT_LIMIT: usize = 2_500;
 
 #[derive(Debug, Clone)]
 pub struct ClusterAssignment {
@@ -76,10 +78,16 @@ impl DimensionReducer for UmapReducer {
     fn reduce(&self, vectors: &[Vec<f32>]) -> Vec<Vec<f32>> {
         let n = vectors.len();
         if n < 2 || n <= self.n_neighbors {
-            return PcaFallbackReducer { components: self.n_components }.reduce(vectors);
+            return PcaFallbackReducer {
+                components: self.n_components,
+            }
+            .reduce(vectors);
         }
         if vectors.iter().any(|v| v.len() < 2) {
-            return PcaFallbackReducer { components: self.n_components }.reduce(vectors);
+            return PcaFallbackReducer {
+                components: self.n_components,
+            }
+            .reduce(vectors);
         }
 
         let min_dim = vectors.iter().map(|v| v.len()).min().unwrap_or(0);
@@ -105,7 +113,8 @@ impl DimensionReducer for UmapReducer {
 
         let n_neighbors = self.n_neighbors.min(n - 1);
 
-        let knn_data: Vec<Array1<f32>> = data_arr.rows()
+        let knn_data: Vec<Array1<f32>> = data_arr
+            .rows()
             .into_iter()
             .map(|row| row.to_owned())
             .collect();
@@ -145,14 +154,16 @@ impl DimensionReducer for UmapReducer {
         match result {
             Ok(fitted) => {
                 let embedding = fitted.into_embedding();
-                embedding.rows()
+                embedding
+                    .rows()
                     .into_iter()
                     .map(|row| row.to_vec())
                     .collect()
             }
-            Err(_) => {
-                PcaFallbackReducer { components: self.n_components }.reduce(vectors)
+            Err(_) => PcaFallbackReducer {
+                components: self.n_components,
             }
+            .reduce(vectors),
         }
     }
 }
@@ -163,7 +174,8 @@ fn compute_brute_force_knn(data: &[Array1<f32>], k: usize) -> (Array2<u32>, Arra
     let mut dists = Array2::zeros((n, k));
 
     for i in 0..n {
-        let mut pairs: Vec<(usize, f32)> = data.iter()
+        let mut pairs: Vec<(usize, f32)> = data
+            .iter()
             .enumerate()
             .map(|(j, v)| {
                 let d = (&data[i] - v).mapv(|x| x * x).sum().sqrt();
@@ -195,9 +207,7 @@ fn pca_init(data: &[Array1<f32>], n_components: usize, seed: u64) -> Array2<f32>
         sum / n as f32
     };
 
-    let centered: Vec<Array1<f32>> = data.iter()
-        .map(|v| v - &mean)
-        .collect();
+    let centered: Vec<Array1<f32>> = data.iter().map(|v| v - &mean).collect();
 
     let n_comp = n_components.min(dim).min(n);
 
@@ -211,19 +221,21 @@ fn pca_init(data: &[Array1<f32>], n_components: usize, seed: u64) -> Array2<f32>
         });
         let s: f32 = v.dot(&v);
         let norm = s.sqrt();
-        if norm > 0.0 { v /= norm; }
+        if norm > 0.0 {
+            v /= norm;
+        }
 
         for _ in 0..3 {
-            let v_dot_data: Vec<f32> = centered.iter()
-                .map(|x| v.dot(x))
-                .collect();
+            let v_dot_data: Vec<f32> = centered.iter().map(|x| v.dot(x)).collect();
             let mut new_v = Array1::zeros(dim);
             for (i, x) in centered.iter().enumerate() {
                 new_v = &new_v + &(x * v_dot_data[i]);
             }
             let ns: f32 = new_v.dot(&new_v);
             let new_norm = ns.sqrt();
-            if new_norm > 0.0 { new_v /= new_norm; }
+            if new_norm > 0.0 {
+                new_v /= new_norm;
+            }
             v = new_v;
         }
 
@@ -369,7 +381,10 @@ pub fn cluster_diversity_bonus(assignments: &[ClusterAssignment]) -> Vec<f32> {
         .collect()
 }
 
-pub fn build_semantic_cluster_layout(chunk_vectors: &[(i32, Vec<f32>)]) -> SemanticClusterLayout {
+pub fn build_semantic_cluster_layout(
+    chunk_vectors: &[(i32, Vec<f32>)],
+    umap_config: Option<UmapReducer>,
+) -> SemanticClusterLayout {
     let chunk_indexes = chunk_vectors
         .iter()
         .map(|(chunk_index, _)| *chunk_index)
@@ -378,10 +393,15 @@ pub fn build_semantic_cluster_layout(chunk_vectors: &[(i32, Vec<f32>)]) -> Seman
         .iter()
         .map(|(_, vector)| vector.clone())
         .collect::<Vec<_>>();
+    if vectors.len() > EXACT_SEMANTIC_LAYOUT_LIMIT {
+        return build_coarse_semantic_cluster_layout(&chunk_indexes, &vectors);
+    }
+
     let clusterer = HdbscanClusterer::default();
     let assignments = clusterer.cluster(&vectors);
 
-    let umap_coords = UmapReducer::default().reduce(&vectors);
+    let reducer = umap_config.unwrap_or_default();
+    let umap_coords = reducer.reduce(&vectors);
     let use_umap = umap_coords.len() == vectors.len() && !umap_coords.is_empty();
 
     let points = assignments
@@ -410,10 +430,70 @@ pub fn build_semantic_cluster_layout(chunk_vectors: &[(i32, Vec<f32>)]) -> Seman
 
     SemanticClusterLayout {
         algorithm: "hdbscan".to_string(),
-        projection: if use_umap { "umap-3d".to_string() } else { "normalized-prefix-projection".to_string() },
+        projection: if use_umap {
+            "umap-3d".to_string()
+        } else {
+            "normalized-prefix-projection".to_string()
+        },
         points,
         clusters,
     }
+}
+
+fn build_coarse_semantic_cluster_layout(
+    chunk_indexes: &[i32],
+    vectors: &[Vec<f32>],
+) -> SemanticClusterLayout {
+    let hints = vectors
+        .iter()
+        .map(|vector| vector_layout_hint(Some(vector)))
+        .collect::<Vec<_>>();
+    let mut bucket_counts: HashMap<(i32, i32, i32), usize> = HashMap::new();
+    for hint in &hints {
+        *bucket_counts.entry(layout_bucket(*hint)).or_insert(0) += 1;
+    }
+
+    let mut bucket_labels = HashMap::new();
+    let mut next_cluster_id = 0;
+    for (bucket, count) in &bucket_counts {
+        if *count >= 4 {
+            bucket_labels.insert(*bucket, next_cluster_id);
+            next_cluster_id += 1;
+        }
+    }
+
+    let points = hints
+        .into_iter()
+        .enumerate()
+        .map(|(idx, layout_hint)| {
+            let cluster_id = bucket_labels
+                .get(&layout_bucket(layout_hint))
+                .copied()
+                .unwrap_or(-1);
+            SemanticClusterPoint {
+                chunk_index: chunk_indexes[idx],
+                cluster_id,
+                distance_to_centroid: 0.0,
+                layout_hint,
+            }
+        })
+        .collect::<Vec<_>>();
+    let clusters = summarize_semantic_clusters(&points);
+
+    SemanticClusterLayout {
+        algorithm: "coarse-projection".to_string(),
+        projection: "normalized-prefix-projection".to_string(),
+        points,
+        clusters,
+    }
+}
+
+fn layout_bucket(layout_hint: [f32; 3]) -> (i32, i32, i32) {
+    (
+        (layout_hint[0] * 4.0).round() as i32,
+        (layout_hint[1] * 4.0).round() as i32,
+        (layout_hint[2] * 4.0).round() as i32,
+    )
 }
 
 fn prepare_density_vectors(vectors: &[Vec<f32>], components: usize) -> Vec<Vec<f32>> {
@@ -441,7 +521,7 @@ fn prepare_density_vectors(vectors: &[Vec<f32>], components: usize) -> Vec<Vec<f
         .collect()
 }
 
-fn summarize_semantic_clusters(points: &[SemanticClusterPoint]) -> Vec<SemanticClusterSummary> {
+pub fn summarize_semantic_clusters(points: &[SemanticClusterPoint]) -> Vec<SemanticClusterSummary> {
     let mut groups: HashMap<i32, Vec<&SemanticClusterPoint>> = HashMap::new();
     for point in points {
         if point.cluster_id < 0 {
@@ -589,7 +669,9 @@ mod tests {
         let vectors: Vec<Vec<f32>> = (0..50)
             .map(|i| {
                 let base = (i / 10) as f32;
-                (0..8).map(|j| base + (j as f32 * 0.1) + ((i % 10) as f32 * 0.01)).collect()
+                (0..8)
+                    .map(|j| base + (j as f32 * 0.1) + ((i % 10) as f32 * 0.01))
+                    .collect()
             })
             .collect();
 
@@ -606,10 +688,7 @@ mod tests {
 
     #[test]
     fn umap_reducer_few_points_falls_back() {
-        let vectors = vec![
-            vec![1.0, 2.0, 3.0],
-            vec![1.1, 2.0, 3.0],
-        ];
+        let vectors = vec![vec![1.0, 2.0, 3.0], vec![1.1, 2.0, 3.0]];
         let reducer = UmapReducer::default();
         let reduced = reducer.reduce(&vectors);
         assert_eq!(reduced.len(), 2);
@@ -618,9 +697,7 @@ mod tests {
 
     #[test]
     fn umap_reducer_small_vectors_falls_back() {
-        let vectors = vec![
-            vec![1.0],
-        ];
+        let vectors = vec![vec![1.0]];
         let reducer = UmapReducer::default();
         let reduced = reducer.reduce(&vectors);
         assert_eq!(reduced.len(), 1);

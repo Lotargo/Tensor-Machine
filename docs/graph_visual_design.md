@@ -262,7 +262,7 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 - `[x]` `PcaFallbackReducer` exists as a simple dimension reduction fallback (truncates to `components`).
 - `[x]` Search VM uses `HdbscanClusterer` for RSF cluster diversity channel, with fallback for insufficient/invalid vectors.
 - `[x]` Document details expose `cluster_id`, `cluster_distance`, `layout_hint` for chunks when `?semantic=true`.
-- `[x]` Semantic cluster data is lazy-loaded (`/documents/:uuid/details?semantic=true`) so ordinary document opening does not pay Qdrant + clustering cost.
+- `[x]` Semantic cluster data is computed during document upload/indexing and stored on document chunks; `/documents/:uuid/details?semantic=true` now reads persisted cluster fields instead of recomputing Qdrant + UMAP/HDBSCAN on graph open.
 - `[x]` Layout projection uses UMAP-based 3D coordinates via `UmapReducer` (umap-rs crate) — replaces the old normalized-prefix projection when sufficient data is available.
 - `[x]` UMAP implemented via `umap-rs` crate in `clustering.rs::UmapReducer` with brute-force KNN, power-iteration PCA init, and graceful fallback to PcaFallbackReducer.
 - `[-]` `SemanticClusterLayout`, `SemanticClusterPoint`, `SemanticClusterSummary` structs exist and are serializable.
@@ -294,10 +294,10 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 
 - `[x]` Choose implementation path: Rust crate (`umap-rs` v0.4.5, brute-force KNN for document-scale datasets).
 - `[x]` Define deterministic reducer parameters: `n_components=3`, `n_neighbors=15`, `min_dist=0.1`, `seed=42` — configurable via `UmapReducer` struct fields.
-- `[-]` Decide scope: currently per-call reduction per document; not cached or scoped to library level.
-- `[ ]` Cache invalidation for reindex, delete, replacement, embedding model change, chunking schema change.
+- `[x]` Decide scope: detailed UMAP + HDBSCAN runs per document during ingest; graph/details reads persisted per-chunk layout metadata.
+- `[-]` Cache invalidation for reindex, delete, replacement, embedding model change, chunking schema change — upload/index writes fresh layout; full reindex refresh still needs semantic layout rebuild.
 - `[ ]` Store reducer metadata alongside cluster metadata so old layouts can be recognized and rebuilt safely.
-- `[x]` UMAP coordinates used as primary layout signal in `build_semantic_cluster_layout`; collision relaxation still applied in renderer.
+- `[x]` UMAP coordinates used as primary layout signal in `build_semantic_cluster_layout`; collision relaxation still applied in renderer. Very large documents use a bounded coarse projection fallback instead of blocking graph/details requests.
 
 ### Open design questions
 
@@ -323,6 +323,7 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 | 11 | Persist cluster/reducer metadata, expose through dedicated graph/BFF endpoint | `[-]` | Reducer runs per-request; no persistence yet |
 | 12 | Replace frontend layout hints with backend-prepared UMAP/cluster coordinates | `[x]` | `build_semantic_cluster_layout` uses `UmapReducer` for 3D layout hints; projection field reports `umap-3d` |
 | 13 | Move heavy graph filtering/layout to backend or worker after metrics | `[ ]` | Not started |
+| 14 | Add manual library optimization / defragmentation task | `[ ]` | Settings action with progress modal, cancel support, consistency checks, and reclustering/backfill for existing documents |
 
 ## Phased Renderer Plan
 
@@ -370,6 +371,20 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 - `[ ]` Capture metrics before/after 2D mode and before/after 3D flight rebuild.
 - `[ ]` Use screenshots + interaction traces as acceptance artifacts.
 
+### Phase 6: library optimization / defragmentation `[ ]`
+
+Manual maintenance action in settings. This should not run implicitly during search or graph opening.
+
+- `[ ]` Add a settings action named "Optimize library" / "Оптимизация библиотеки".
+- `[ ]` Show a dedicated modal with stage indicator, progress bar, current document name, elapsed time, and cancel button.
+- `[ ]` Implement cancellable backend job state with SSE/progress events, similar to upload progress.
+- `[ ]` Check Postgres/Qdrant consistency: missing Qdrant points, orphan Qdrant points, document rows without embeddings, and documents without persisted semantic layout.
+- `[ ]` Recompute per-document semantic layout for existing indexed documents using stored Qdrant vectors and save `cluster_id`, `cluster_distance`, `layout_hint`, `clustering_algorithm`, and `clustering_projection` into Postgres.
+- `[ ]` Keep detailed clustering scoped per document (`UMAP + HDBSCAN`) so large libraries do not merge unrelated documents into one shared cluster space.
+- `[ ]` Later: build a separate global document-level UMAP projection from document centroids/summaries only, without HDBSCAN over all chunks.
+- `[ ]` Add optional Postgres maintenance (`ANALYZE`, and possibly guarded `VACUUM`) after data repair/reclustering.
+- `[ ]` Report a final summary: documents checked, documents reclustered, rows updated, missing/orphan vectors found, cancelled/completed status.
+
 ## MVP Acceptance Criteria
 
 - `[-]` Default graph overview is readable without fullscreen — partially: works for small documents, dense docs still crowded.
@@ -393,3 +408,4 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 | 8 | Clean up old 2D fallback code path and duplicate inspector/legend logic | low | `[ ]` |
 | 9 | **Migrate graph colors from hardcoded JS hex to CSS theme variables** | high | `[ ]` |
 | 10 | **Extract shared `GraphInspector` and `GraphToolbar` from `graph3d.js`** | medium | `[ ]` |
+| 11 | **Add manual library optimization / defragmentation workflow** | high | `[ ]` |

@@ -93,9 +93,19 @@
             <div id="status-panel" class="status-panel" style="display: none;">
                 <div class="status-header">
                     <h3 id="status-title">Обработка файла: <span id="status-filename">doc.txt</span></h3>
-                    <button class="close-status-btn" onclick="document.getElementById('status-panel').style.display='none'">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
+                    <div class="status-actions">
+                        <button class="cancel-upload-btn" id="upload-cancel-btn" type="button">
+                            <i class="fa-solid fa-ban"></i>
+                            <span>Отмена</span>
+                        </button>
+                        <button class="close-status-btn" onclick="document.getElementById('status-panel').style.display='none'">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="status-eta" class="status-eta" style="display: none;">
+                    <i class="fa-solid fa-clock"></i>
+                    <span id="status-eta-text">Расчет времени...</span>
                 </div>
                 <div id="status-error" class="status-error" style="display: none;"></div>
                 <div class="steps-container">
@@ -118,6 +128,10 @@
                     <div class="step" id="step-db">
                         <div class="step-icon"><i class="fa-solid fa-hourglass"></i></div>
                         <div class="step-label">Индексация в Qdrant и PostgreSQL</div>
+                    </div>
+                    <div class="step" id="step-clustering">
+                        <div class="step-icon"><i class="fa-solid fa-hourglass"></i></div>
+                        <div class="step-label">Семантическая кластеризация</div>
                     </div>
                 </div>
             </div>

@@ -226,6 +226,7 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
         let tsquery_or = build_tsquery_or(&lexical_terms);
         let phrase_query = precise_or_query_phrase(query);
         let phrase_pattern = format!("%{}%", escape_like_pattern(&phrase_query));
+        let opening_lookup = is_opening_lookup_query(query);
 
         let rows = if !tsquery_or.is_empty() || !phrase_query.is_empty() {
             sqlx::query(
@@ -245,6 +246,12 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
                             WHEN $4 <> '' THEN ts_rank_cd(to_tsvector('simple', text), to_tsquery('simple', $4))
                             ELSE 0.0
                         END
+                        + CASE
+                            WHEN $5 AND COALESCE(chunk_index, 999999) <= 2 THEN 25.0
+                            WHEN $5 AND COALESCE(chunk_index, 999999) <= 8 THEN 12.0
+                            WHEN $5 AND COALESCE(chunk_level, '') = 'macro' AND COALESCE(chunk_index, 999999) <= 20 THEN 8.0
+                            ELSE 0.0
+                        END
                     )::real AS rank
                 FROM documents
                 WHERE id = ANY($1)
@@ -254,6 +261,7 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
             .bind(&phrase_query)
             .bind(&phrase_pattern)
             .bind(&tsquery_or)
+            .bind(opening_lookup)
             .fetch_all(pool)
             .await
         } else {
@@ -284,6 +292,80 @@ pub async fn fetch_bm25_scores(pools: &DbPools, ids: &[usize], query: &str) -> V
         }
     }
     vec![0.0; ids.len()]
+}
+
+pub async fn search_opening_candidate_ids(
+    pools: &DbPools,
+    query: &str,
+    doc_uuid: Option<&str>,
+    limit: usize,
+) -> Vec<usize> {
+    if !is_opening_lookup_query(query) {
+        return Vec::new();
+    }
+
+    let Some(pool) = &pools.postgres else {
+        return Vec::new();
+    };
+
+    let mut builder = QueryBuilder::<Postgres>::new(
+        r#"
+        SELECT id
+        FROM documents
+        WHERE 1=1
+        "#,
+    );
+
+    if let Some(uuid) = doc_uuid {
+        builder.push(" AND doc_uuid = ").push_bind(uuid);
+    }
+
+    builder.push(
+        r#"
+        ORDER BY
+            chunk_index ASC,
+            CASE chunk_level
+                WHEN 'macro' THEN 0
+                WHEN 'medium' THEN 1
+                ELSE 2
+            END ASC
+        LIMIT "#,
+    );
+    builder.push_bind(limit as i64);
+
+    match builder.build().fetch_all(pool).await {
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|row| row.try_get::<i64, _>("id").ok())
+            .map(|id| id as usize)
+            .collect(),
+        Err(error) => {
+            tracing::warn!("Opening candidate search failed: {}", error);
+            Vec::new()
+        }
+    }
+}
+
+fn is_opening_lookup_query(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    let markers = [
+        "с чего начинается",
+        "начало романа",
+        "начинается роман",
+        "первые главы",
+        "первая глава",
+        "первой главе",
+        "первые страницы",
+        "первая страница",
+        "opening",
+        "opening scene",
+        "beginning",
+        "begins",
+        "first chapter",
+        "first pages",
+    ];
+
+    markers.iter().any(|marker| lower.contains(marker))
 }
 
 pub async fn fetch_document_chunk_vectors(

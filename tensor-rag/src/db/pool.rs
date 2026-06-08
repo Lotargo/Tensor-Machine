@@ -103,6 +103,26 @@ impl DbPools {
         )
         .execute(&pool)
         .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS cluster_id INTEGER;")
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS cluster_distance REAL;")
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS layout_hint JSONB;")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS clustering_algorithm TEXT;",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS clustering_projection TEXT;",
+        )
+        .execute(&pool)
+        .await;
         let _ = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_documents_group ON documents(doc_uuid, chunk_index);",
         )
@@ -113,6 +133,11 @@ impl DbPools {
             .await;
         let _ = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_documents_entities ON documents USING GIN (entities);",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_documents_cluster ON documents(doc_uuid, cluster_id);",
         )
         .execute(&pool)
         .await;
@@ -454,6 +479,14 @@ impl DbPools {
         super::document::insert_documents_enriched_batch(self, documents).await
     }
 
+    pub async fn update_document_semantic_layout(
+        &self,
+        doc_uuid: &str,
+        layout: &crate::clustering::SemanticClusterLayout,
+    ) -> Result<(), String> {
+        super::document::update_document_semantic_layout(self, doc_uuid, layout).await
+    }
+
     pub async fn delete_document(&self, doc_id: usize) -> Result<(), String> {
         super::document::delete_document(self, doc_id).await
     }
@@ -526,6 +559,15 @@ impl DbPools {
     ) -> Vec<usize> {
         super::search::search_structured_candidate_ids(self, query, doc_uuid, chapter_id, limit)
             .await
+    }
+
+    pub async fn search_opening_candidate_ids(
+        &self,
+        query: &str,
+        doc_uuid: Option<&str>,
+        limit: usize,
+    ) -> Vec<usize> {
+        super::search::search_opening_candidate_ids(self, query, doc_uuid, limit).await
     }
 
     pub async fn fetch_metadata(&self, ids: &[usize]) -> Vec<String> {

@@ -42,6 +42,8 @@ struct UploadProgressEvent {
 static UPLOAD_PROGRESS: once_cell::sync::Lazy<
     RwLock<HashMap<String, broadcast::Sender<UploadProgressEvent>>>,
 > = once_cell::sync::Lazy::new(|| RwLock::new(HashMap::new()));
+static UPLOAD_CANCEL: once_cell::sync::Lazy<RwLock<HashMap<String, CancellationToken>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(HashMap::new()));
 
 const AI_PROVIDER_OPTIONS: &[(&str, &str)] = &[
     ("openai", "OpenAI"),
@@ -558,6 +560,7 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/chat/stream", post(handle_chat_stream))
         .route("/mcp", post(handle_mcp))
         .route("/upload/progress/:upload_id", get(handle_upload_progress))
+        .route("/upload/cancel/:upload_id", post(handle_cancel_upload))
         .route(
             "/upload",
             post(handle_upload).layer(DefaultBodyLimit::max(crate::config::get_upload_max_bytes())),
@@ -827,23 +830,98 @@ fn close_upload_progress(upload_id: Option<&str>) {
         return;
     };
     UPLOAD_PROGRESS.write().unwrap().remove(upload_id);
+    UPLOAD_CANCEL.write().unwrap().remove(upload_id);
+}
+
+fn upload_cancel_token(upload_id: Option<&str>) -> Option<CancellationToken> {
+    let upload_id = upload_id.filter(|id| !id.is_empty())?;
+    let mut tokens = UPLOAD_CANCEL.write().unwrap();
+    Some(
+        tokens
+            .entry(upload_id.to_string())
+            .or_insert_with(CancellationToken::new)
+            .clone(),
+    )
+}
+
+fn is_upload_cancelled(cancel_token: Option<&CancellationToken>) -> bool {
+    cancel_token
+        .map(CancellationToken::is_cancelled)
+        .unwrap_or(false)
+}
+
+async fn handle_cancel_upload(
+    AxumPath(upload_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let token = {
+        let tokens = UPLOAD_CANCEL.read().unwrap();
+        tokens.get(&upload_id).cloned()
+    };
+
+    let Some(token) = token else {
+        return Err(json_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "Upload is not active or is already finished.",
+        ));
+    };
+
+    token.cancel();
+    Ok(Json(serde_json::json!({
+        "status": "cancel_requested"
+    })))
+}
+
+async fn cancel_upload_response(
+    state: &Arc<AppState>,
+    upload_id: Option<&str>,
+    doc_ids: &[usize],
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    if let Some(first_id) = doc_ids.first().copied() {
+        if let Err(error) = state.db_pools.delete_document(first_id).await {
+            error!("Failed to clean up cancelled upload data: {}", error);
+            emit_upload_progress(
+                upload_id,
+                "step-upload",
+                "failed",
+                format!("Upload cancelled, but cleanup failed: {}", error),
+                None,
+                None,
+            );
+            close_upload_progress(upload_id);
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "error": format!("Upload cancelled, but cleanup failed: {}", error)
+                })),
+            );
+        }
+    }
+
+    close_upload_progress(upload_id);
+    (
+        axum::http::StatusCode::from_u16(499)
+            .unwrap_or(axum::http::StatusCode::BAD_REQUEST),
+        Json(serde_json::json!({
+            "status": "cancelled",
+            "error": "Upload cancelled. Partial document data was removed."
+        })),
+    )
 }
 
 async fn handle_upload_progress(
     AxumPath(upload_id): AxumPath<String>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     let receiver = upload_progress_channel(&upload_id).subscribe();
-    let stream = BroadcastStream::new(receiver).filter_map(|message| {
-        match message {
-            Ok(progress) => {
-                let data = serde_json::to_string(&progress).unwrap_or_else(|_| "{}".to_string());
-                Some(Ok(Event::default().event("upload-progress").data(data)))
-            }
-            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
-                Some(Ok(Event::default().event("upload-lagged").data(
-                    serde_json::json!({ "skipped": skipped }).to_string(),
-                )))
-            }
+    let stream = BroadcastStream::new(receiver).filter_map(|message| match message {
+        Ok(progress) => {
+            let data = serde_json::to_string(&progress).unwrap_or_else(|_| "{}".to_string());
+            Some(Ok(Event::default().event("upload-progress").data(data)))
+        }
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
+            Some(Ok(Event::default()
+                .event("upload-lagged")
+                .data(serde_json::json!({ "skipped": skipped }).to_string())))
         }
     });
 
@@ -861,6 +939,7 @@ async fn handle_upload(
     mut multipart: Multipart,
 ) -> impl axum::response::IntoResponse {
     let upload_id = query.upload_id.as_deref();
+    let cancel_token = upload_cancel_token(upload_id);
     let mut file_data = Vec::new();
     let mut filename = String::new();
 
@@ -917,6 +996,10 @@ async fn handle_upload(
         }
     }
 
+    if is_upload_cancelled(cancel_token.as_ref()) {
+        return cancel_upload_response(&state, upload_id, &[]).await;
+    }
+
     if file_data.is_empty() {
         error!("No file data uploaded");
         emit_upload_progress(
@@ -944,6 +1027,10 @@ async fn handle_upload(
         Some(file_data.len()),
         None,
     );
+
+    if is_upload_cancelled(cancel_token.as_ref()) {
+        return cancel_upload_response(&state, upload_id, &[]).await;
+    }
 
     let filename_lower = filename.to_lowercase();
     let ocr_text = if filename_lower.ends_with(".txt") || filename_lower.ends_with(".md") {
@@ -1044,6 +1131,10 @@ async fn handle_upload(
         }
     };
 
+    if is_upload_cancelled(cancel_token.as_ref()) {
+        return cancel_upload_response(&state, upload_id, &[]).await;
+    }
+
     info!(
         "OCR phase complete for '{}'. Extracted {} characters. Next phase uses tokenizer '{}' for hierarchical chunking.",
         filename,
@@ -1074,6 +1165,7 @@ async fn handle_upload(
     info!("Split document into {} chunks.", chunks.len());
 
     let mut doc_ids = Vec::new();
+    let mut semantic_vectors: Vec<(i32, Vec<f32>)> = Vec::new();
     let doc_uuid = uuid::Uuid::new_v4().to_string();
     let total_chunks = chunks.len();
     let embedding_batch_size = crate::config::get_embedding_batch_size();
@@ -1083,6 +1175,10 @@ async fn handle_upload(
     );
     let total_batches = total_chunks.div_ceil(embedding_batch_size);
     for (batch_idx, batch) in chunks.chunks(embedding_batch_size).enumerate() {
+        if is_upload_cancelled(cancel_token.as_ref()) {
+            return cancel_upload_response(&state, upload_id, &doc_ids).await;
+        }
+
         let batch_start = batch_idx * embedding_batch_size;
         let batch_end = batch_start + batch.len();
         emit_upload_progress(
@@ -1132,6 +1228,17 @@ async fn handle_upload(
                 );
             }
         };
+
+        if is_upload_cancelled(cancel_token.as_ref()) {
+            return cancel_upload_response(&state, upload_id, &doc_ids).await;
+        }
+
+        semantic_vectors.extend(
+            batch
+                .iter()
+                .zip(vectors.iter())
+                .map(|(item, vector)| (item.chunk_index, vector.to_vec())),
+        );
 
         let documents: Vec<crate::db::EnrichedDocumentInsert<'_>> = batch
             .iter()
@@ -1203,6 +1310,10 @@ async fn handle_upload(
                 );
             }
         }
+
+        if is_upload_cancelled(cancel_token.as_ref()) {
+            return cancel_upload_response(&state, upload_id, &doc_ids).await;
+        }
     }
     emit_upload_progress(
         upload_id,
@@ -1221,6 +1332,77 @@ async fn handle_upload(
         Some(total_batches),
     );
 
+    emit_upload_progress(
+        upload_id,
+        "step-clustering",
+        "active",
+        "Building semantic cluster layout.",
+        None,
+        None,
+    );
+    if semantic_vectors.is_empty() {
+        emit_upload_progress(
+            upload_id,
+            "step-clustering",
+            "completed",
+            "No embeddings available for semantic clustering.",
+            None,
+            None,
+        );
+    } else {
+        if is_upload_cancelled(cancel_token.as_ref()) {
+            return cancel_upload_response(&state, upload_id, &doc_ids).await;
+        }
+
+        let layout = crate::clustering::build_semantic_cluster_layout(
+            &semantic_vectors,
+            Some(Default::default()),
+        );
+        match state
+            .db_pools
+            .update_document_semantic_layout(&doc_uuid, &layout)
+            .await
+        {
+            Ok(()) => {
+                emit_upload_progress(
+                    upload_id,
+                    "step-clustering",
+                    "completed",
+                    format!(
+                        "Clustered {} chunks into {} semantic clusters.",
+                        layout.points.len(),
+                        layout.clusters.len()
+                    ),
+                    Some(layout.points.len()),
+                    Some(layout.points.len()),
+                );
+            }
+            Err(e) => {
+                error!("Failed to store semantic cluster layout: {}", e);
+                emit_upload_progress(
+                    upload_id,
+                    "step-clustering",
+                    "failed",
+                    format!("Failed to store semantic cluster layout: {}", e),
+                    None,
+                    None,
+                );
+                close_upload_progress(upload_id);
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "error": format!("Failed to store semantic cluster layout: {}", e)
+                    })),
+                );
+            }
+        }
+    }
+
+    if is_upload_cancelled(cancel_token.as_ref()) {
+        return cancel_upload_response(&state, upload_id, &doc_ids).await;
+    }
+
     // Auto-extract anchors from headings in the OCR text
     info!("Starting anchor extraction for '{}'.", filename);
     let anchor_count = state
@@ -1229,6 +1411,11 @@ async fn handle_upload(
         .await
         .map(|ids| ids.len())
         .unwrap_or(0);
+
+    if is_upload_cancelled(cancel_token.as_ref()) {
+        return cancel_upload_response(&state, upload_id, &doc_ids).await;
+    }
+
     info!(
         "Upload pipeline complete for '{}'. Stored {} chunks and {} anchors.",
         filename,
@@ -1398,9 +1585,7 @@ async fn send_mistral_file_upload(
                 let detailed = describe_reqwest_error(&error);
                 warn!(
                     attempt,
-                    attempts,
-                    "Mistral file upload request failed: {}",
-                    detailed
+                    attempts, "Mistral file upload request failed: {}", detailed
                 );
                 last_error = Some(detailed);
                 if attempt < attempts {
@@ -1439,9 +1624,7 @@ async fn send_mistral_json_request(
                 let detailed = describe_reqwest_error(&error);
                 warn!(
                     attempt,
-                    attempts,
-                    "Mistral OCR request failed: {}",
-                    detailed
+                    attempts, "Mistral OCR request failed: {}", detailed
                 );
                 last_error = Some(detailed);
                 if attempt < attempts {
@@ -1617,7 +1800,12 @@ async fn handle_get_document_details(
 
     // 1. Fetch chunks
     let chunk_rows = sqlx::query(
-        "SELECT id, text, chunk_index, chunk_level, parent_chunk_index, macro_index, medium_index, header_chain, zone_keywords, entities FROM documents WHERE doc_uuid = $1 ORDER BY chunk_index ASC"
+        "SELECT id, text, chunk_index, chunk_level, parent_chunk_index, macro_index, medium_index,
+                header_chain, zone_keywords, entities, cluster_id, cluster_distance, layout_hint,
+                clustering_algorithm, clustering_projection
+         FROM documents
+         WHERE doc_uuid = $1
+         ORDER BY chunk_index ASC",
     )
     .bind(&doc_uuid)
     .fetch_all(pool)
@@ -1631,7 +1819,9 @@ async fn handle_get_document_details(
     })?;
 
     let mut chunks = Vec::new();
-    let mut chunk_id_to_index = std::collections::HashMap::new();
+    let mut semantic_points = Vec::new();
+    let mut clustering_algorithm: Option<String> = None;
+    let mut clustering_projection: Option<String> = None;
     for r in chunk_rows {
         let id: i64 = r.try_get("id").unwrap_or(0);
         let text: String = r.try_get("text").unwrap_or_default();
@@ -1645,7 +1835,30 @@ async fn handle_get_document_details(
         let zone_keywords: serde_json::Value =
             r.try_get("zone_keywords").unwrap_or(serde_json::json!([]));
         let entities: serde_json::Value = r.try_get("entities").unwrap_or(serde_json::json!([]));
-        chunk_id_to_index.insert(id as usize, chunk_index);
+        let cluster_id: Option<i32> = r.try_get("cluster_id").ok();
+        let cluster_distance: Option<f32> = r.try_get("cluster_distance").ok();
+        let layout_hint: Option<serde_json::Value> = r.try_get("layout_hint").ok();
+        let row_algorithm: Option<String> = r.try_get("clustering_algorithm").ok();
+        let row_projection: Option<String> = r.try_get("clustering_projection").ok();
+        if clustering_algorithm.is_none() {
+            clustering_algorithm = row_algorithm.clone();
+        }
+        if clustering_projection.is_none() {
+            clustering_projection = row_projection.clone();
+        }
+
+        if let (Some(cluster_id), Some(distance), Some(layout_value)) =
+            (cluster_id, cluster_distance, layout_hint.clone())
+        {
+            if let Ok(layout_hint) = serde_json::from_value::<[f32; 3]>(layout_value) {
+                semantic_points.push(crate::clustering::SemanticClusterPoint {
+                    chunk_index,
+                    cluster_id,
+                    distance_to_centroid: distance,
+                    layout_hint,
+                });
+            }
+        }
 
         chunks.push(serde_json::json!({
             "id": id,
@@ -1657,68 +1870,22 @@ async fn handle_get_document_details(
             "medium_index": medium_index,
             "header_chain": header_chain,
             "zone_keywords": zone_keywords,
-            "entities": entities
+            "entities": entities,
+            "cluster_id": cluster_id,
+            "cluster_distance": cluster_distance,
+            "layout_hint": layout_hint
         }));
     }
 
     let include_semantic_clusters = query.semantic.unwrap_or(false);
-    let semantic_clusters = if include_semantic_clusters {
-        match state
-            .db_pools
-            .fetch_document_chunk_vectors(&doc_uuid, chunks.len().max(1))
-            .await
-        {
-            Ok(chunk_vectors) if !chunk_vectors.is_empty() => {
-                let indexed_vectors = chunk_vectors
-                    .into_iter()
-                    .filter_map(|(id, vector)| {
-                        chunk_id_to_index
-                            .get(&id)
-                            .copied()
-                            .map(|chunk_index| (chunk_index, vector))
-                    })
-                    .collect::<Vec<_>>();
-                let layout = crate::clustering::build_semantic_cluster_layout(&indexed_vectors);
-                let point_by_chunk = layout
-                    .points
-                    .iter()
-                    .map(|point| (point.chunk_index, point))
-                    .collect::<std::collections::HashMap<_, _>>();
-                for chunk in chunks.iter_mut() {
-                    let Some(chunk_index) = chunk.get("chunk_index").and_then(|value| value.as_i64())
-                    else {
-                        continue;
-                    };
-                    let Some(point) = point_by_chunk.get(&(chunk_index as i32)) else {
-                        continue;
-                    };
-                    if let Some(object) = chunk.as_object_mut() {
-                        object.insert(
-                            "cluster_id".to_string(),
-                            serde_json::Value::Number(serde_json::Number::from(point.cluster_id)),
-                        );
-                        object.insert(
-                            "cluster_distance".to_string(),
-                            serde_json::json!(point.distance_to_centroid),
-                        );
-                        object.insert(
-                            "layout_hint".to_string(),
-                            serde_json::json!(point.layout_hint),
-                        );
-                    }
-                }
-                serde_json::to_value(layout).unwrap_or_else(|_| serde_json::json!(null))
-            }
-            Ok(_) => serde_json::json!(null),
-            Err(error) => {
-                tracing::warn!(
-                    "Failed to build semantic clusters for document {}: {}",
-                    doc_uuid,
-                    error
-                );
-                serde_json::json!(null)
-            }
-        }
+    let semantic_clusters = if include_semantic_clusters && !semantic_points.is_empty() {
+        let clusters = crate::clustering::summarize_semantic_clusters(&semantic_points);
+        serde_json::json!({
+            "algorithm": clustering_algorithm.unwrap_or_else(|| "hdbscan".to_string()),
+            "projection": clustering_projection.unwrap_or_else(|| "umap-3d".to_string()),
+            "points": semantic_points,
+            "clusters": clusters
+        })
     } else {
         serde_json::json!(null)
     };

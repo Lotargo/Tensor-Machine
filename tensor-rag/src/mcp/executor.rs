@@ -105,6 +105,18 @@ pub fn execute_program<'a>(
                             pg_ids.push(id);
                         }
                     }
+                    let opening_ids = db_pools
+                        .search_opening_candidate_ids(
+                            query,
+                            postgres_doc_uuid.as_deref(),
+                            fallback_limit,
+                        )
+                        .await;
+                    for id in opening_ids {
+                        if !pg_ids.contains(&id) {
+                            pg_ids.push(id);
+                        }
+                    }
 
                     if !pg_ids.is_empty() {
                         if let Some(client) = db_pools.qdrant_clients.get("default") {

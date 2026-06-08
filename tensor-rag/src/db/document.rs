@@ -1,11 +1,11 @@
+use super::DbPools;
+use super::types::{CollectionHealth, EnrichedDocumentInsert, StoredDocument};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     Filter as QFilter, PointId, PointStruct, PointsIdsList, PointsSelector, UpsertPoints,
-    points_selector::PointsSelectorOneOf, point_id::PointIdOptions,
+    point_id::PointIdOptions, points_selector::PointsSelectorOneOf,
 };
 use sqlx::{Postgres, QueryBuilder, Row};
-use super::DbPools;
-use super::types::{CollectionHealth, EnrichedDocumentInsert, StoredDocument};
 
 pub async fn recreate_default_collection(client: &Qdrant, collection: &str) -> Result<(), String> {
     client
@@ -298,6 +298,49 @@ pub async fn insert_documents_enriched_batch(
     }
 }
 
+pub async fn update_document_semantic_layout(
+    pools: &DbPools,
+    doc_uuid: &str,
+    layout: &crate::clustering::SemanticClusterLayout,
+) -> Result<(), String> {
+    let pool = pools
+        .postgres
+        .as_ref()
+        .ok_or("PostgreSQL pool not initialized")?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to start semantic layout transaction: {}", e))?;
+
+    for point in &layout.points {
+        sqlx::query(
+            "UPDATE documents
+             SET cluster_id = $1,
+                 cluster_distance = $2,
+                 layout_hint = $3,
+                 clustering_algorithm = $4,
+                 clustering_projection = $5
+             WHERE doc_uuid = $6 AND chunk_index = $7",
+        )
+        .bind(point.cluster_id)
+        .bind(point.distance_to_centroid)
+        .bind(serde_json::json!(point.layout_hint))
+        .bind(&layout.algorithm)
+        .bind(&layout.projection)
+        .bind(doc_uuid)
+        .bind(point.chunk_index)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update semantic layout: {}", e))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit semantic layout: {}", e))?;
+    Ok(())
+}
+
 pub async fn delete_document(pools: &DbPools, doc_id: usize) -> Result<(), String> {
     let pool = pools
         .postgres
@@ -381,11 +424,9 @@ pub async fn delete_document(pools: &DbPools, doc_id: usize) -> Result<(), Strin
             .delete_points(qdrant_client::qdrant::DeletePoints {
                 collection_name: collection.clone(),
                 points: Some(qdrant_client::qdrant::PointsSelector {
-                    points_selector_one_of: Some(
-                        PointsSelectorOneOf::Points(
-                            PointsIdsList { ids: points },
-                        ),
-                    ),
+                    points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
+                        ids: points,
+                    })),
                 }),
                 ..Default::default()
             })
@@ -404,11 +445,9 @@ pub async fn delete_document(pools: &DbPools, doc_id: usize) -> Result<(), Strin
                 .delete_points(qdrant_client::qdrant::DeletePoints {
                     collection_name: anchors_collection,
                     points: Some(qdrant_client::qdrant::PointsSelector {
-                        points_selector_one_of: Some(
-                            PointsSelectorOneOf::Points(
-                                PointsIdsList { ids: anchor_points },
-                            ),
-                        ),
+                        points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
+                            ids: anchor_points,
+                        })),
                     }),
                     ..Default::default()
                 })
@@ -436,11 +475,7 @@ pub async fn clear_documents(pools: &DbPools) -> Result<(), String> {
             .delete_points(qdrant_client::qdrant::DeletePoints {
                 collection_name: collection.clone(),
                 points: Some(PointsSelector {
-                    points_selector_one_of: Some(
-                        PointsSelectorOneOf::Filter(
-                            QFilter::default(),
-                        ),
-                    ),
+                    points_selector_one_of: Some(PointsSelectorOneOf::Filter(QFilter::default())),
                 }),
                 ..Default::default()
             })
@@ -449,11 +484,7 @@ pub async fn clear_documents(pools: &DbPools) -> Result<(), String> {
             .delete_points(qdrant_client::qdrant::DeletePoints {
                 collection_name: anchors_collection,
                 points: Some(PointsSelector {
-                    points_selector_one_of: Some(
-                        PointsSelectorOneOf::Filter(
-                            QFilter::default(),
-                        ),
-                    ),
+                    points_selector_one_of: Some(PointsSelectorOneOf::Filter(QFilter::default())),
                 }),
                 ..Default::default()
             })
@@ -489,11 +520,10 @@ pub async fn reindex_database(pools: &DbPools) -> Result<(), String> {
         .ok_or("PostgreSQL pool not initialized")?;
 
     // 1. Fetch all document chunks from PostgreSQL
-    let rows =
-        sqlx::query("SELECT id, text, filename, doc_uuid FROM documents ORDER BY id ASC")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| format!("Failed to fetch documents from PostgreSQL: {}", e))?;
+    let rows = sqlx::query("SELECT id, text, filename, doc_uuid FROM documents ORDER BY id ASC")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Failed to fetch documents from PostgreSQL: {}", e))?;
 
     if rows.is_empty() {
         return Err("No documents found in PostgreSQL to reindex.".to_string());
@@ -547,10 +577,7 @@ pub async fn get_collection_health(pools: &DbPools) -> CollectionHealth {
     if let Some(client) = pools.qdrant_clients.get("default") {
         match client.collection_info(&collection_name).await {
             Ok(info) => {
-                let actual_dim = info
-                    .result
-                    .as_ref()
-                    .and_then(|res| extract_vector_dim(res));
+                let actual_dim = info.result.as_ref().and_then(|res| extract_vector_dim(res));
                 let points_count = info
                     .result
                     .as_ref()

@@ -20,6 +20,17 @@ pub async fn run_agent_completion(
     let mut collected_sources = Vec::new();
 
     if use_tools {
+        preflight_search(
+            db_pools,
+            config,
+            &mut messages,
+            &mut collected_sources,
+            selected_doc_uuid,
+            scope_to_selected_document,
+            tx,
+        )
+        .await?;
+
         for _round in 0..config.agent_max_tool_rounds {
             let payload =
                 super::request_chat_payload(config, &messages, Some(tool_definitions()), false)
@@ -88,6 +99,25 @@ pub async fn stream_agent_completion(
     let mut collected_sources = Vec::new();
 
     if use_tools {
+        preflight_search(
+            db_pools,
+            config,
+            &mut messages,
+            &mut collected_sources,
+            selected_doc_uuid,
+            scope_to_selected_document,
+            Some(tx),
+        )
+        .await?;
+        if !collected_sources.is_empty() {
+            send_sse(
+                tx,
+                "sources",
+                &serde_json::to_value(&collected_sources).map_err(|e| e.to_string())?,
+            )
+            .await?;
+        }
+
         for _round in 0..config.agent_max_tool_rounds {
             let payload =
                 super::request_chat_payload(config, &messages, Some(tool_definitions()), false)
@@ -156,6 +186,73 @@ struct ToolCall {
     id: String,
     name: String,
     arguments: serde_json::Value,
+}
+
+async fn preflight_search(
+    db_pools: &crate::db::DbPools,
+    config: &AiConfig,
+    messages: &mut Vec<serde_json::Value>,
+    collected_sources: &mut Vec<ChatSource>,
+    selected_doc_uuid: Option<&str>,
+    scope_to_selected_document: bool,
+    tx: Option<&tokio::sync::mpsc::Sender<String>>,
+) -> Result<(), String> {
+    let Some(query) = latest_user_message(messages) else {
+        return Ok(());
+    };
+
+    if let Some(tx) = tx {
+        send_sse(
+            tx,
+            "tool",
+            &json!({
+                "name": "search_text",
+                "label": human_tool_label("search_text")
+            }),
+        )
+        .await?;
+    }
+
+    let mut args = json!({
+        "query": query,
+        "final_top_k": config.rag_top_k
+    });
+    if scope_to_selected_document {
+        if let Some(doc_uuid) = selected_doc_uuid {
+            args["doc_uuid"] = json!(doc_uuid);
+        }
+    }
+
+    let search_tool = SearchTextTool;
+    let bytes = search_tool.handle(args, db_pools, None).await?;
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let mut sources = parse_search_sources(&text)?;
+    collected_sources.append(&mut sources);
+
+    messages.push(json!({
+        "role": "system",
+        "content": build_preflight_sources_context(&text)
+    }));
+
+    Ok(())
+}
+
+fn latest_user_message(messages: &[serde_json::Value]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(|role| role.as_str()) == Some("user"))
+        .and_then(|message| message.get("content").and_then(|content| content.as_str()))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
+}
+
+fn build_preflight_sources_context(search_response_json: &str) -> String {
+    format!(
+        "Mandatory local RAG search was executed before answering. Use only the retrieved local-library passages below as evidence for document questions. If they do not contain enough evidence, say that the local library context is insufficient and do not answer from pretrained knowledge.\n\nRaw search_text response:\n{}",
+        search_response_json
+    )
 }
 
 fn extract_tool_calls(message: &serde_json::Value) -> Vec<ToolCall> {
