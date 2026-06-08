@@ -24,6 +24,8 @@ const PROVIDER_DEFAULTS = {
 let aiAutosaveTimer = null;
 let aiAutosaveInFlight = false;
 let aiAutosaveQueued = false;
+let optimizeJobId = null;
+let optimizeSource = null;
 
 export function initSettings() {
     const modal = document.getElementById('settings-modal');
@@ -36,6 +38,8 @@ export function initSettings() {
 
     document.getElementById('save-settings-btn').addEventListener('click', () => saveSettings({ scope: 'core', andRestart: false }));
     document.getElementById('save-restart-btn').addEventListener('click', () => saveSettings({ scope: 'core', andRestart: true }));
+    document.getElementById('optimize-library-btn').addEventListener('click', optimizeLibrary);
+    document.getElementById('cancel-optimize-btn').addEventListener('click', cancelOptimizeLibrary);
     document.getElementById('reindex-btn').addEventListener('click', reindexLibrary);
     document.getElementById('hard-reset-btn').addEventListener('click', hardReset);
 }
@@ -310,6 +314,121 @@ async function reindexLibrary() {
     } catch (error) {
         hideReconnectOverlay();
         await showNotice(t('reindex_failed_title'), t('reindex_failed_message', { message: error.message }), 'danger');
+    }
+}
+
+async function optimizeLibrary() {
+    const confirmed = await askConfirmation(
+        'Оптимизация библиотеки',
+        'Проверить документы, пересчитать сохранённую семантическую раскладку и обновить статистику PostgreSQL?',
+        'Оптимизировать',
+        t('dialog_cancel'),
+        'warning'
+    );
+    if (!confirmed) return;
+
+    try {
+        setOptimizeUiState('running');
+        const response = await fetchJson('/maintenance/optimize', { method: 'POST' });
+        optimizeJobId = response.job_id;
+        subscribeOptimizeProgress(optimizeJobId);
+    } catch (error) {
+        setOptimizeUiState('idle');
+        await showNotice('Оптимизация не запущена', error.message, 'danger');
+    }
+}
+
+async function cancelOptimizeLibrary() {
+    if (!optimizeJobId) return;
+    try {
+        document.getElementById('cancel-optimize-btn').disabled = true;
+        await fetchJson(`/maintenance/cancel/${encodeURIComponent(optimizeJobId)}`, { method: 'POST' });
+    } catch (error) {
+        await showNotice('Не удалось отменить', error.message, 'danger');
+    }
+}
+
+function subscribeOptimizeProgress(jobId) {
+    if (optimizeSource) optimizeSource.close();
+    optimizeSource = new EventSource(`/maintenance/progress/${encodeURIComponent(jobId)}`);
+    optimizeSource.addEventListener('maintenance-progress', async (event) => {
+        try {
+            const progress = JSON.parse(event.data);
+            renderOptimizeProgress(progress);
+            if (progress.status === 'completed' || progress.step === 'cancelled' || progress.status === 'failed') {
+                optimizeSource?.close();
+                optimizeSource = null;
+                optimizeJobId = null;
+                setOptimizeUiState('idle');
+                await fetchDocuments();
+                await loadSettings();
+                if (progress.status === 'completed') {
+                    await showNotice('Оптимизация завершена', progress.message || 'Библиотека обновлена.', 'success');
+                }
+            }
+        } catch (error) {
+            console.error('Failed to parse maintenance progress:', error);
+        }
+    });
+    optimizeSource.onerror = () => {
+        console.warn('Maintenance progress stream disconnected.');
+    };
+}
+
+function setOptimizeUiState(stateName) {
+    const startBtn = document.getElementById('optimize-library-btn');
+    const cancelBtn = document.getElementById('cancel-optimize-btn');
+    const progress = document.getElementById('optimize-progress');
+    if (!startBtn || !cancelBtn || !progress) return;
+
+    if (stateName === 'running') {
+        startBtn.disabled = true;
+        cancelBtn.disabled = false;
+        cancelBtn.style.display = 'inline-flex';
+        progress.style.display = 'flex';
+        renderOptimizeProgress({
+            step: 'prepare',
+            status: 'active',
+            message: 'Подготовка оптимизации...',
+            current: 0,
+            total: 0,
+            checked: 0,
+            reclustered: 0,
+            updated_rows: 0,
+            warnings: [],
+        });
+    } else {
+        startBtn.disabled = false;
+        cancelBtn.disabled = false;
+        cancelBtn.style.display = 'none';
+    }
+}
+
+function renderOptimizeProgress(progress) {
+    const panel = document.getElementById('optimize-progress');
+    const title = document.getElementById('optimize-progress-title');
+    const count = document.getElementById('optimize-progress-count');
+    const fill = document.getElementById('optimize-progress-fill');
+    const meta = document.getElementById('optimize-progress-meta');
+    const warnings = document.getElementById('optimize-progress-warnings');
+    if (!panel || !title || !count || !fill || !meta || !warnings) return;
+
+    panel.style.display = 'flex';
+    const current = Number(progress.current || 0);
+    const total = Number(progress.total || 0);
+    const ratio = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+    title.textContent = progress.message || 'Оптимизация библиотеки';
+    count.textContent = total > 0 ? `${current}/${total}` : '';
+    fill.style.width = `${ratio}%`;
+    meta.textContent = `Проверено: ${progress.checked || 0}. Пересчитано документов: ${progress.reclustered || 0}. Обновлено сегментов: ${progress.updated_rows || 0}.`;
+
+    const items = Array.isArray(progress.warnings) ? progress.warnings : [];
+    if (items.length) {
+        warnings.style.display = 'block';
+        warnings.innerHTML = items.slice(-6).map((item) => `<div>${escapeHtml(item)}</div>`).join('');
+    } else {
+        warnings.style.display = 'none';
+        warnings.innerHTML = '';
     }
 }
 

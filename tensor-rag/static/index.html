@@ -107,6 +107,7 @@
                     <i class="fa-solid fa-clock"></i>
                     <span id="status-eta-text">Расчет времени...</span>
                 </div>
+                <div id="status-current" class="status-current" style="display: none;"></div>
                 <div id="status-error" class="status-error" style="display: none;"></div>
                 <div class="steps-container">
                     <div class="step" id="step-upload">
@@ -186,6 +187,14 @@
                                 <button class="tab-btn" data-tab="graph">Граф связей</button>
                             </div>
                         </div>
+                            <div class="viewer-search">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                                <input id="viewer-search-input" type="search" placeholder="Найти в документе">
+                                <span id="viewer-search-count">0</span>
+                                <button class="btn btn-ghost viewer-search-btn" id="viewer-search-prev" title="Предыдущее совпадение"><i class="fa-solid fa-chevron-up"></i></button>
+                                <button class="btn btn-ghost viewer-search-btn" id="viewer-search-next" title="Следующее совпадение"><i class="fa-solid fa-chevron-down"></i></button>
+                                <button class="btn btn-ghost viewer-search-btn" id="viewer-search-clear" title="Очистить поиск"><i class="fa-solid fa-xmark"></i></button>
+                            </div>
                         <div id="tab-content-content" class="tab-content active">
                             <div id="rendered-content" class="markdown-body"></div>
                         </div>
@@ -365,6 +374,32 @@
                 <button class="btn btn-primary" id="save-restart-btn">
                     <i class="fa-solid fa-rotate-right"></i> Сохранить и перезапустить
                 </button>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-danger settings-maintenance" style="margin-bottom: 16px;">
+                <div>
+                    <strong id="optimize-title-text">Оптимизация библиотеки</strong>
+                    <p id="optimize-desc-text">Проверяет согласованность PostgreSQL/Qdrant и пересчитывает сохранённую семантическую раскладку для уже загруженных документов.</p>
+                    <div id="optimize-progress" class="maintenance-progress" style="display: none;">
+                        <div class="maintenance-progress-header">
+                            <span id="optimize-progress-title">Подготовка...</span>
+                            <span id="optimize-progress-count">0/0</span>
+                        </div>
+                        <div class="maintenance-progress-bar">
+                            <div id="optimize-progress-fill"></div>
+                        </div>
+                        <div id="optimize-progress-meta" class="maintenance-progress-meta"></div>
+                        <div id="optimize-progress-warnings" class="maintenance-progress-warnings"></div>
+                    </div>
+                </div>
+                <div class="maintenance-actions">
+                    <button class="btn btn-primary" id="optimize-library-btn">
+                        <i class="fa-solid fa-screwdriver-wrench"></i> Optimize
+                    </button>
+                    <button class="btn btn-ghost" id="cancel-optimize-btn" style="display: none;">
+                        <i class="fa-solid fa-ban"></i> Cancel
+                    </button>
+                </div>
             </div>
             <div class="settings-divider"></div>
             <div class="settings-danger" style="margin-bottom: 16px;">

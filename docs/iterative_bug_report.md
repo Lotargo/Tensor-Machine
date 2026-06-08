@@ -992,6 +992,33 @@ Notes:
 
 ## Proposed iterative order
 
+## 2026-06-08 UI/maintenance closure pass
+
+Status: `implemented_pending_manual_verification`
+
+Closed in this pass:
+- Upload/indexing UX now exposes the current backend stage as readable text in addition to the stepper, ETA, and cancel state.
+- Chat now preserves visible tool-call activity and warns when a RAG/search tool was used but no answer sources are displayed.
+- Source cards can send their excerpt to the document viewer search, making it possible to verify whether the cited fragment is present in the opened document.
+- Document viewer now has inline search with match count, next/previous navigation, clear action, and active-match highlighting.
+- Graph renderer now scales the 3D layout to the visible viewport, renders links with stronger visibility, and reports how many nodes/links were actually drawable.
+- Settings now include a manual library optimization workflow with backend SSE progress and cancellation. The job checks indexed documents, fetches existing Qdrant vectors, recomputes per-document semantic layout, updates Postgres layout fields, and runs `ANALYZE documents`.
+
+Manual verification required before marking as fully closed:
+- Upload 2-3 large documents after clearing/reindexing the DB and confirm the status indicator reaches upload, OCR, chunking, embedding, DB indexing, and semantic clustering without hanging.
+- Start upload cancellation during embedding/indexing and confirm partial vectors/rows for that document are removed.
+- Ask the War and Peace regression questions and confirm the chat shows tool activity, visible sources where RAG returns them, and a no-sources warning when the agent/tool path yields no displayed citations.
+- Click "Find in viewer" on at least three source cards and confirm the viewer finds/highlights the fragment in the selected document.
+- Open graph tab and fullscreen for a large document and confirm the stats line shows nonzero visible nodes/links when counters claim links exist.
+- Run Settings -> Optimize library, observe progress, cancel once, then run to completion; confirm documents checked/reclustered/rows updated summary is plausible and no server restart is required.
+
+Verification commands already run:
+- `node --check tensor-rag/static/app/library.js`
+- `node --check tensor-rag/static/app/chat.js`
+- `node --check tensor-rag/static/app/settings.js`
+- `node --check tensor-rag/static/app/graph3d.js`
+- `cargo check` from `tensor-rag/`
+
 ### Phase 1
 - Continue ingestion performance work:
   - batch vector writes

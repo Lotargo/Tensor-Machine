@@ -53,7 +53,16 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
     layoutNodes(nodes, edges);
     relaxNodeCollisions(nodes);
     recenterNodes(nodes);
-    renderStats(nodes, edges, options.statsEl, options.language);
+    scaleGraphToViewport(nodes);
+    const drawableEdges = edges.filter((edge) => {
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        return source && target && hasFinitePosition(source) && hasFinitePosition(target);
+    });
+    renderStats(nodes, edges, options.statsEl, options.language, {
+        renderedNodes: nodes.filter(hasFinitePosition).length,
+        renderedEdges: drawableEdges.length,
+    });
     renderLegend(options.legendEl, options.language);
 
     const activeNodeIds = new Set(nodes.filter((node) => node.isActive).map((node) => node.id));
@@ -66,18 +75,17 @@ export async function createGraph3dRenderer(canvas, graphData, activeDocUuid, op
             edgeMaterials.set(key, new THREE.LineBasicMaterial({
                 color: isActiveEdge ? EDGE_COLORS.active : (isHierarchy ? EDGE_COLORS.hierarchy : EDGE_COLORS.relation),
                 transparent: true,
-                opacity: isActiveEdge ? 0.6 : (isHierarchy ? 0.26 : 0.16),
+                opacity: isActiveEdge ? 0.74 : (isHierarchy ? 0.42 : 0.28),
                 depthWrite: false,
+                depthTest: false,
             }));
         }
         return edgeMaterials.get(key);
     };
 
-    edges.forEach((edge) => {
+    drawableEdges.forEach((edge) => {
         const source = nodeById.get(edge.source);
         const target = nodeById.get(edge.target);
-        if (!source || !target) return;
-        if (!hasFinitePosition(source) || !hasFinitePosition(target)) return;
 
         const geometry = new THREE.BufferGeometry().setFromPoints([
             new THREE.Vector3(source.x, source.y, source.z),
@@ -424,6 +432,43 @@ function recenterNodes(nodes) {
     });
 }
 
+function scaleGraphToViewport(nodes) {
+    const validNodes = nodes.filter(hasFinitePosition);
+    if (validNodes.length < 2) return;
+
+    const bounds = validNodes.reduce((acc, node) => ({
+        minX: Math.min(acc.minX, node.x),
+        maxX: Math.max(acc.maxX, node.x),
+        minY: Math.min(acc.minY, node.y),
+        maxY: Math.max(acc.maxY, node.y),
+        minZ: Math.min(acc.minZ, node.z),
+        maxZ: Math.max(acc.maxZ, node.z),
+    }), {
+        minX: Infinity,
+        maxX: -Infinity,
+        minY: Infinity,
+        maxY: -Infinity,
+        minZ: Infinity,
+        maxZ: -Infinity,
+    });
+    const span = Math.max(
+        bounds.maxX - bounds.minX,
+        bounds.maxY - bounds.minY,
+        bounds.maxZ - bounds.minZ,
+    );
+    if (!Number.isFinite(span) || span <= 0) return;
+
+    const targetSpan = 760;
+    const scale = Math.max(0.52, Math.min(1.36, targetSpan / span));
+    if (Math.abs(scale - 1) < 0.04) return;
+
+    validNodes.forEach((node) => {
+        node.x *= scale;
+        node.y *= scale;
+        node.z *= scale;
+    });
+}
+
 function placeRadialDocumentStructure(nodes) {
     if (nodes.length === 0) return;
 
@@ -633,27 +678,23 @@ function computeCameraDistance(nodes) {
     return Math.max(420, Math.min(1250, maxRadius * 2.35));
 }
 
-function renderStats(nodes, edges, statsEl, language) {
+function renderStats(nodes, edges, statsEl, language, diagnostics = {}) {
     if (!statsEl) return;
     const isRu = language === 'ru';
     const byType = {};
     nodes.forEach((node) => {
         byType[node.type] = (byType[node.type] || 0) + 1;
     });
+    const renderedNodes = diagnostics.renderedNodes ?? nodes.length;
+    const renderedEdges = diagnostics.renderedEdges ?? edges.length;
+    const renderedLabel = 'visible';
     statsEl.innerHTML = [
         `<span><i class="fa-solid fa-cube"></i> ${nodes.length}</span>`,
         `<span><i class="fa-solid fa-link"></i> ${edges.length}</span>`,
         byType.macro ? `<span style="color:#ffb3b8;">• ${byType.macro} ${isRu ? 'разделов' : 'sections'}</span>` : '',
         byType.medium ? `<span style="color:#76f4ff;">• ${byType.medium} ${isRu ? 'подразделов' : 'subsections'}</span>` : '',
         byType.entity ? `<span style="color:#ffc0c6;">• ${byType.entity} ${isRu ? 'сущностей' : 'entities'}</span>` : '',
-    ].filter(Boolean).join(' ');
-    return;
-    statsEl.innerHTML = [
-        `<span><i class="fa-solid fa-cube"></i> ${nodes.length}</span>`,
-        `<span><i class="fa-solid fa-link"></i> ${edges.length}</span>`,
-        byType.macro ? `<span style="color:#93c5fd;">● ${byType.macro} ${isRu ? 'разделов' : 'sections'}</span>` : '',
-        byType.medium ? `<span style="color:#67e8f9;">● ${byType.medium} ${isRu ? 'подразделов' : 'subsections'}</span>` : '',
-        byType.entity ? `<span style="color:#fbbf24;">● ${byType.entity} ${isRu ? 'сущностей' : 'entities'}</span>` : '',
+        `<span class="graph-render-diagnostic">${renderedLabel}: ${renderedNodes}/${nodes.length} nodes, ${renderedEdges}/${edges.length} links</span>`,
     ].filter(Boolean).join(' ');
 }
 

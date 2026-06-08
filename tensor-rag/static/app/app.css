@@ -86,6 +86,11 @@
     gap: 4px;
 }
 
+.graph-render-diagnostic {
+    color: var(--text-secondary);
+    opacity: 0.82;
+}
+
 #graph-canvas-wrapper {
     flex: 1 1 auto;
     position: relative;
@@ -781,6 +786,51 @@
     font-size: 12px;
     line-height: 1.5;
     color: var(--text-secondary);
+}
+
+.chat-source-jump {
+    margin-top: 8px;
+    height: 28px;
+    padding: 0 9px;
+    font-size: 11px;
+}
+
+.chat-tool-timeline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+}
+
+.chat-tool-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-muted) 72%, var(--bg-card) 28%);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.chat-tool-pill i {
+    color: var(--color-primary);
+}
+
+.chat-no-sources {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--color-warning) 38%, var(--border-color) 62%);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-warning-light) 68%, var(--bg-card) 32%);
+    color: color-mix(in srgb, var(--color-warning) 80%, var(--text-primary) 20%);
+    font-size: 12px;
+    line-height: 1.35;
 }
 
 .chat-composer {

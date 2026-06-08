@@ -25,6 +25,11 @@ let uploadEtaState = null;
 let uploadEtaTimer = null;
 let activeUploadId = null;
 let activeUploadCancelRequested = false;
+let viewerSearchState = {
+    query: '',
+    activeIndex: -1,
+    matches: [],
+};
 
 export function initLibrary() {
     document.getElementById('library-search').addEventListener('input', (event) => filterLibrary(event.target.value));
@@ -34,6 +39,7 @@ export function initLibrary() {
     document.getElementById('clear-db-btn').addEventListener('click', clearLibrary);
     document.getElementById('upload-document-btn').addEventListener('click', () => document.getElementById('file-input').click());
     document.getElementById('upload-cancel-btn')?.addEventListener('click', cancelActiveUpload);
+    initViewerSearch();
 
     const miniPreview = document.getElementById('document-mini-preview');
     if (miniPreview) miniPreview.addEventListener('click', openDocPreviewModal);
@@ -186,6 +192,7 @@ export function filterLibrary(query) {
 export function resetViewerState() {
     cleanupGraphRenderer();
     graphFocusNodeId = null;
+    clearViewerSearch(false);
     setSelectedDocUuid(null);
     state.selectedDocDetails = null;
     document.getElementById('viewer-section').style.display = 'none';
@@ -200,6 +207,7 @@ export async function selectDocument(docUuid) {
     if (!doc) return;
     if (state.selectedDocUuid !== docUuid) {
         graphFocusNodeId = null;
+        clearViewerSearch(true);
     }
     const requestId = ++activeDocumentRequestId;
 
@@ -458,6 +466,7 @@ async function handleFilesUpload(file) {
     const statusPanel = document.getElementById('status-panel');
     const statusFilename = document.getElementById('status-filename');
     const statusError = document.getElementById('status-error');
+    const statusCurrent = document.getElementById('status-current');
     const uploadId = createUploadId();
     let progressSource = null;
     activeUploadId = uploadId;
@@ -466,6 +475,10 @@ async function handleFilesUpload(file) {
     statusFilename.textContent = file.name;
     statusError.textContent = '';
     statusError.style.display = 'none';
+    if (statusCurrent) {
+        statusCurrent.textContent = 'Подготовка загрузки...';
+        statusCurrent.style.display = 'block';
+    }
     statusPanel.style.display = 'flex';
     resetSteps();
     resetUploadEta();
@@ -486,6 +499,10 @@ async function handleFilesUpload(file) {
         completePendingUploadSteps();
         completeUploadEta();
         setUploadCancelButton('completed');
+        if (statusCurrent) {
+            const count = Array.isArray(result.ids) ? result.ids.length : 0;
+            statusCurrent.textContent = `Готово: сохранено ${count} сегментов, anchors: ${result.anchors_extracted ?? 0}.`;
+        }
         await fetchDocuments();
 
         const newDoc = state.documentList.find((doc) => doc.doc_uuid === result.doc_uuid);
@@ -497,6 +514,11 @@ async function handleFilesUpload(file) {
             ? 'Загрузка отменена. Частично созданные данные удалены.'
             : error.message;
         statusError.style.display = 'block';
+        if (statusCurrent) {
+            statusCurrent.textContent = activeUploadCancelRequested
+                ? 'Отмена подтверждена, частичные данные удалены.'
+                : 'Обработка остановлена из-за ошибки.';
+        }
         failActiveUploadStep();
         failUploadEta();
         setUploadCancelButton('completed');
@@ -562,6 +584,7 @@ function subscribeUploadProgress(uploadId) {
             const progress = JSON.parse(event.data);
             if (!progress.step || !progress.status) return;
             updateStep(progress.step, progress.status, progress.message, progress.current, progress.total);
+            renderUploadStatusMessage(progress);
             updateUploadEta(progress);
         } catch (error) {
             console.error('Failed to parse upload progress event:', error);
@@ -574,6 +597,16 @@ function subscribeUploadProgress(uploadId) {
         ready,
         close: () => source.close(),
     };
+}
+
+function renderUploadStatusMessage(progress) {
+    const statusCurrent = document.getElementById('status-current');
+    if (!statusCurrent) return;
+    const progressSuffix = Number.isFinite(Number(progress.current)) && Number.isFinite(Number(progress.total)) && Number(progress.total) > 0
+        ? ` (${progress.current}/${progress.total})`
+        : '';
+    statusCurrent.textContent = `${progress.message || progress.step}${progressSuffix}`;
+    statusCurrent.style.display = 'block';
 }
 
 function updateStep(stepId, status, message = '', current = null, total = null) {
@@ -863,6 +896,7 @@ export function renderActiveTab() {
             if (container.dataset.renderKey !== renderKey) {
                 renderMarkdownInto(container, doc.text);
                 container.dataset.renderKey = renderKey;
+                applyViewerSearch(false);
             }
         }
         return;
@@ -887,6 +921,147 @@ export function renderActiveTab() {
     } else if (activeTab === 'graph') {
         renderDocumentGraph(null, state.selectedDocUuid);
     }
+}
+
+function initViewerSearch() {
+    const input = document.getElementById('viewer-search-input');
+    const prevBtn = document.getElementById('viewer-search-prev');
+    const nextBtn = document.getElementById('viewer-search-next');
+    const clearBtn = document.getElementById('viewer-search-clear');
+    if (!input) return;
+
+    input.addEventListener('input', () => {
+        viewerSearchState.query = input.value;
+        viewerSearchState.activeIndex = -1;
+        applyViewerSearch(true);
+    });
+    prevBtn?.addEventListener('click', () => moveViewerSearch(-1));
+    nextBtn?.addEventListener('click', () => moveViewerSearch(1));
+    clearBtn?.addEventListener('click', () => clearViewerSearch(true));
+
+    document.addEventListener('tensor-rag:viewer-search', (event) => {
+        const query = normalizeViewerSearchQuery(event.detail?.query || '');
+        if (!query) return;
+        input.value = query;
+        viewerSearchState.query = query;
+        viewerSearchState.activeIndex = -1;
+        switchTab('content');
+        applyViewerSearch(true);
+    });
+}
+
+function applyViewerSearch(jumpToFirst = false) {
+    const container = document.getElementById('rendered-content');
+    if (!container) return;
+    removeViewerHighlights(container);
+    viewerSearchState.matches = [];
+
+    const query = normalizeViewerSearchQuery(viewerSearchState.query);
+    if (!query) {
+        updateViewerSearchCount();
+        return;
+    }
+
+    const regex = new RegExp(escapeRegExp(query), 'gi');
+    wrapViewerMatches(container, regex);
+    viewerSearchState.matches = Array.from(container.querySelectorAll('.viewer-search-hit'));
+    if (viewerSearchState.matches.length === 0) {
+        viewerSearchState.activeIndex = -1;
+    } else if (jumpToFirst || viewerSearchState.activeIndex < 0 || viewerSearchState.activeIndex >= viewerSearchState.matches.length) {
+        viewerSearchState.activeIndex = 0;
+    }
+    activateViewerSearchMatch(Boolean(jumpToFirst));
+    updateViewerSearchCount();
+}
+
+function wrapViewerMatches(root, regex) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+            if (!node.nodeValue || !regex.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+            regex.lastIndex = 0;
+            const parent = node.parentElement;
+            if (!parent || ['SCRIPT', 'STYLE', 'TEXTAREA', 'PRE', 'CODE', 'MARK'].includes(parent.tagName)) {
+                return NodeFilter.FILTER_REJECT;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+        },
+    });
+
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    textNodes.forEach((node) => {
+        const wrapper = document.createElement('span');
+        wrapper.className = 'viewer-search-wrapper';
+        const text = node.nodeValue;
+        let lastIndex = 0;
+        regex.lastIndex = 0;
+        let match = regex.exec(text);
+        while (match) {
+            if (match.index > lastIndex) {
+                wrapper.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+            }
+            const mark = document.createElement('mark');
+            mark.className = 'viewer-search-hit';
+            mark.textContent = match[0];
+            wrapper.appendChild(mark);
+            lastIndex = match.index + match[0].length;
+            match = regex.exec(text);
+        }
+        if (lastIndex < text.length) {
+            wrapper.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }
+        node.parentNode.replaceChild(wrapper, node);
+    });
+}
+
+function moveViewerSearch(direction) {
+    if (!viewerSearchState.matches.length) return;
+    viewerSearchState.activeIndex = (
+        viewerSearchState.activeIndex + direction + viewerSearchState.matches.length
+    ) % viewerSearchState.matches.length;
+    activateViewerSearchMatch(true);
+    updateViewerSearchCount();
+}
+
+function activateViewerSearchMatch(scrollIntoView) {
+    viewerSearchState.matches.forEach((match, index) => {
+        match.classList.toggle('active', index === viewerSearchState.activeIndex);
+    });
+    const active = viewerSearchState.matches[viewerSearchState.activeIndex];
+    if (active && scrollIntoView) active.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function updateViewerSearchCount() {
+    const count = document.getElementById('viewer-search-count');
+    if (!count) return;
+    const total = viewerSearchState.matches.length;
+    count.textContent = total > 0 ? `${viewerSearchState.activeIndex + 1}/${total}` : '0';
+}
+
+function clearViewerSearch(updateInput = true) {
+    const container = document.getElementById('rendered-content');
+    if (container) removeViewerHighlights(container);
+    viewerSearchState = { query: '', activeIndex: -1, matches: [] };
+    if (updateInput) {
+        const input = document.getElementById('viewer-search-input');
+        if (input) input.value = '';
+    }
+    updateViewerSearchCount();
+}
+
+function removeViewerHighlights(container) {
+    container.querySelectorAll('.viewer-search-wrapper').forEach((wrapper) => {
+        wrapper.replaceWith(document.createTextNode(wrapper.textContent));
+    });
+    container.normalize();
+}
+
+function normalizeViewerSearchQuery(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+}
+
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function getDetailsRenderKey(details) {

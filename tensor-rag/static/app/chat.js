@@ -132,6 +132,12 @@ function renderMessagesInto(container) {
             const sources = renderSources(message.sources);
             if (sources) wrapper.appendChild(sources);
         }
+        if (message.toolEvents?.length) {
+            wrapper.appendChild(renderToolEvents(message.toolEvents));
+        }
+        if (!message.loading && !message.thinking && message.toolEvents?.length && !message.sources?.length) {
+            wrapper.appendChild(renderNoSourcesNotice());
+        }
 
         container.appendChild(wrapper);
     });
@@ -171,11 +177,49 @@ function renderSources(rawSources) {
         card.innerHTML = `
             <strong>${titleHtml}</strong>
             <p>${escapeHtml(source.excerpt || '')}</p>
+            <button class="btn btn-ghost chat-source-jump" type="button">
+                <i class="fa-solid fa-up-right-from-square"></i>
+                <span>Найти в viewer</span>
+            </button>
         `;
+        const jumpBtn = card.querySelector('.chat-source-jump');
+        jumpBtn?.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('tensor-rag:viewer-search', {
+                detail: { query: getSourceSearchQuery(source) },
+            }));
+        });
         list.appendChild(card);
     });
     details.appendChild(list);
     return details;
+}
+
+function getSourceSearchQuery(source) {
+    const excerpt = String(source.excerpt || '').replace(/\s+/g, ' ').trim();
+    if (excerpt.length <= 120) return excerpt;
+    return excerpt.slice(0, 120).replace(/\s+\S*$/, '').trim() || excerpt.slice(0, 120);
+}
+
+function renderToolEvents(events) {
+    const panel = document.createElement('div');
+    panel.className = 'chat-tool-timeline';
+    panel.innerHTML = events.map((event) => `
+        <span class="chat-tool-pill">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            ${escapeHtml(event.label || event.name || t('chat_thinking_tool'))}
+        </span>
+    `).join('');
+    return panel;
+}
+
+function renderNoSourcesNotice() {
+    const notice = document.createElement('div');
+    notice.className = 'chat-no-sources';
+    notice.innerHTML = `
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span>RAG-поиск был выполнен, но видимых источников для ответа не найдено.</span>
+    `;
+    return notice;
 }
 
 function renderAssistantContent(content) {
@@ -283,6 +327,7 @@ async function consumeSseResponse(response, outbound, userText) {
     let buffer = '';
     let accumulated = '';
     let collectedSources = [];
+    let toolEvents = [];
 
     while (true) {
         const { value, done } = await reader.read();
@@ -306,6 +351,7 @@ async function consumeSseResponse(response, outbound, userText) {
                     thinking: true,
                     thinkingLabel: phaseLabel,
                     sources: collectedSources,
+                    toolEvents,
                 });
             } else if (parsed.event === 'sources') {
                 collectedSources = Array.isArray(parsed.data) ? parsed.data : [];
@@ -315,14 +361,17 @@ async function consumeSseResponse(response, outbound, userText) {
                     thinking: true,
                     thinkingLabel: t('chat_thinking_reason'),
                     sources: collectedSources,
+                    toolEvents,
                 });
             } else if (parsed.event === 'tool') {
+                toolEvents = [...toolEvents, parsed.data || {}];
                 queueStreamingAssistantUpdate(outbound, userText, {
                     content: accumulated,
                     loading: true,
                     thinking: true,
                     thinkingLabel: t('chat_thinking_tool'),
                     sources: collectedSources,
+                    toolEvents,
                 });
             } else if (parsed.event === 'token') {
                 accumulated += parsed.data.delta || '';
@@ -332,6 +381,7 @@ async function consumeSseResponse(response, outbound, userText) {
                     thinking: false,
                     thinkingLabel: '',
                     sources: collectedSources,
+                    toolEvents,
                 });
             } else if (parsed.event === 'done') {
                 collectedSources = parsed.data.sources || collectedSources;
@@ -341,6 +391,7 @@ async function consumeSseResponse(response, outbound, userText) {
                     thinking: false,
                     thinkingLabel: '',
                     sources: collectedSources,
+                    toolEvents,
                 }, true);
             } else if (parsed.event === 'error') {
                 throw new Error(parsed.data.message || 'Streaming failed');
@@ -354,6 +405,7 @@ async function consumeSseResponse(response, outbound, userText) {
         thinking: false,
         thinkingLabel: '',
         sources: collectedSources,
+        toolEvents,
     }, true);
 }
 

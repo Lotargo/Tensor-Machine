@@ -45,6 +45,26 @@ static UPLOAD_PROGRESS: once_cell::sync::Lazy<
 static UPLOAD_CANCEL: once_cell::sync::Lazy<RwLock<HashMap<String, CancellationToken>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(HashMap::new()));
 
+#[derive(Clone, serde::Serialize)]
+struct MaintenanceProgressEvent {
+    job_id: String,
+    step: String,
+    status: String,
+    message: String,
+    current: Option<usize>,
+    total: Option<usize>,
+    checked: usize,
+    reclustered: usize,
+    updated_rows: usize,
+    warnings: Vec<String>,
+}
+
+static MAINTENANCE_PROGRESS: once_cell::sync::Lazy<
+    RwLock<HashMap<String, broadcast::Sender<MaintenanceProgressEvent>>>,
+> = once_cell::sync::Lazy::new(|| RwLock::new(HashMap::new()));
+static MAINTENANCE_CANCEL: once_cell::sync::Lazy<RwLock<HashMap<String, CancellationToken>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(HashMap::new()));
+
 const AI_PROVIDER_OPTIONS: &[(&str, &str)] = &[
     ("openai", "OpenAI"),
     ("gemini", "Gemini"),
@@ -556,6 +576,15 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
         .route("/settings/restart", post(handle_restart_server))
         .route("/hard-reset", post(handle_hard_reset_database))
         .route("/reindex", post(handle_reindex_database))
+        .route("/maintenance/optimize", post(handle_start_library_optimization))
+        .route(
+            "/maintenance/progress/:job_id",
+            get(handle_library_optimization_progress),
+        )
+        .route(
+            "/maintenance/cancel/:job_id",
+            post(handle_cancel_library_optimization),
+        )
         .route("/chat", post(handle_chat))
         .route("/chat/stream", post(handle_chat_stream))
         .route("/mcp", post(handle_mcp))
@@ -2213,6 +2242,316 @@ async fn handle_reindex_database(
         "status": "success",
         "message": "Reindexing complete. Qdrant collection was recreated and all existing document chunks were re-embedded."
     })))
+}
+
+fn maintenance_progress_channel(job_id: &str) -> broadcast::Sender<MaintenanceProgressEvent> {
+    {
+        let channels = MAINTENANCE_PROGRESS.read().unwrap();
+        if let Some(sender) = channels.get(job_id) {
+            return sender.clone();
+        }
+    }
+
+    let (sender, _) = broadcast::channel(128);
+    let mut channels = MAINTENANCE_PROGRESS.write().unwrap();
+    channels
+        .entry(job_id.to_string())
+        .or_insert_with(|| sender.clone())
+        .clone()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_maintenance_progress(
+    job_id: &str,
+    step: &str,
+    status: &str,
+    message: impl Into<String>,
+    current: Option<usize>,
+    total: Option<usize>,
+    checked: usize,
+    reclustered: usize,
+    updated_rows: usize,
+    warnings: &[String],
+) {
+    let event = MaintenanceProgressEvent {
+        job_id: job_id.to_string(),
+        step: step.to_string(),
+        status: status.to_string(),
+        message: message.into(),
+        current,
+        total,
+        checked,
+        reclustered,
+        updated_rows,
+        warnings: warnings.to_vec(),
+    };
+    let _ = maintenance_progress_channel(job_id).send(event);
+}
+
+async fn handle_start_library_optimization(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let cancel_token = CancellationToken::new();
+    MAINTENANCE_CANCEL
+        .write()
+        .unwrap()
+        .insert(job_id.clone(), cancel_token.clone());
+    let _ = maintenance_progress_channel(&job_id);
+
+    let state_for_job = state.clone();
+    let job_id_for_task = job_id.clone();
+    tokio::spawn(async move {
+        run_library_optimization_job(state_for_job, job_id_for_task, cancel_token).await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "status": "started",
+        "job_id": job_id
+    })))
+}
+
+async fn handle_library_optimization_progress(
+    AxumPath(job_id): AxumPath<String>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let receiver = maintenance_progress_channel(&job_id).subscribe();
+    let stream = BroadcastStream::new(receiver).filter_map(|message| match message {
+        Ok(progress) => {
+            let data = serde_json::to_string(&progress).unwrap_or_else(|_| "{}".to_string());
+            Some(Ok(Event::default().event("maintenance-progress").data(data)))
+        }
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
+            Some(Ok(Event::default()
+                .event("maintenance-lagged")
+                .data(serde_json::json!({ "skipped": skipped }).to_string())))
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn handle_cancel_library_optimization(
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let token = {
+        let tokens = MAINTENANCE_CANCEL.read().unwrap();
+        tokens.get(&job_id).cloned()
+    };
+
+    let Some(token) = token else {
+        return Err(json_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "Maintenance job is not active or is already finished.",
+        ));
+    };
+
+    token.cancel();
+    Ok(Json(serde_json::json!({
+        "status": "cancel_requested"
+    })))
+}
+
+async fn run_library_optimization_job(
+    state: Arc<AppState>,
+    job_id: String,
+    cancel_token: CancellationToken,
+) {
+    use sqlx::Row;
+
+    let mut checked = 0usize;
+    let mut reclustered = 0usize;
+    let mut updated_rows = 0usize;
+    let mut warnings = Vec::<String>::new();
+
+    let Some(pool) = state.db_pools.postgres.as_ref() else {
+        warnings.push("PostgreSQL is not connected.".to_string());
+        emit_maintenance_progress(
+            &job_id,
+            "check",
+            "failed",
+            "PostgreSQL is not connected.",
+            None,
+            None,
+            checked,
+            reclustered,
+            updated_rows,
+            &warnings,
+        );
+        MAINTENANCE_CANCEL.write().unwrap().remove(&job_id);
+        return;
+    };
+
+    emit_maintenance_progress(
+        &job_id,
+        "check",
+        "active",
+        "Scanning indexed documents.",
+        None,
+        None,
+        checked,
+        reclustered,
+        updated_rows,
+        &warnings,
+    );
+
+    let docs = match sqlx::query(
+        r#"
+        SELECT doc_uuid,
+               COALESCE(MAX(filename), 'Document') AS filename,
+               COUNT(*)::bigint AS chunk_count,
+               COUNT(*) FILTER (WHERE layout_hint IS NULL OR cluster_id IS NULL)::bigint AS missing_layout
+        FROM documents
+        WHERE COALESCE(doc_uuid, '') <> ''
+        GROUP BY doc_uuid
+        ORDER BY MAX(filename), doc_uuid
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            warnings.push(format!("Failed to scan documents: {}", error));
+            emit_maintenance_progress(
+                &job_id,
+                "check",
+                "failed",
+                "Failed to scan documents.",
+                None,
+                None,
+                checked,
+                reclustered,
+                updated_rows,
+                &warnings,
+            );
+            MAINTENANCE_CANCEL.write().unwrap().remove(&job_id);
+            return;
+        }
+    };
+
+    let total = docs.len();
+    for (idx, row) in docs.into_iter().enumerate() {
+        if cancel_token.is_cancelled() {
+            emit_maintenance_progress(
+                &job_id,
+                "cancelled",
+                "failed",
+                "Optimization cancelled by user.",
+                Some(idx),
+                Some(total),
+                checked,
+                reclustered,
+                updated_rows,
+                &warnings,
+            );
+            MAINTENANCE_CANCEL.write().unwrap().remove(&job_id);
+            return;
+        }
+
+        let doc_uuid: String = row.try_get("doc_uuid").unwrap_or_default();
+        let filename: String = row.try_get("filename").unwrap_or_else(|_| doc_uuid.clone());
+        let chunk_count: i64 = row.try_get("chunk_count").unwrap_or(0);
+        let missing_layout: i64 = row.try_get("missing_layout").unwrap_or(0);
+        checked += 1;
+
+        emit_maintenance_progress(
+            &job_id,
+            "cluster",
+            "active",
+            format!("Optimizing {}", filename),
+            Some(idx + 1),
+            Some(total),
+            checked,
+            reclustered,
+            updated_rows,
+            &warnings,
+        );
+
+        let id_rows = match sqlx::query(
+            "SELECT id, chunk_index FROM documents WHERE doc_uuid = $1 ORDER BY chunk_index ASC",
+        )
+        .bind(&doc_uuid)
+        .fetch_all(pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                warnings.push(format!("{}: failed to read chunk map: {}", filename, error));
+                continue;
+            }
+        };
+        let id_to_chunk = id_rows
+            .into_iter()
+            .filter_map(|row| {
+                let id: i64 = row.try_get("id").ok()?;
+                let chunk_index: i32 = row.try_get("chunk_index").ok()?;
+                Some((id as usize, chunk_index))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let vectors = match state
+            .db_pools
+            .fetch_document_chunk_vectors(&doc_uuid, chunk_count.max(1) as usize)
+            .await
+        {
+            Ok(vectors) => vectors,
+            Err(error) => {
+                warnings.push(format!("{}: failed to fetch Qdrant vectors: {}", filename, error));
+                continue;
+            }
+        };
+
+        if vectors.is_empty() {
+            warnings.push(format!("{}: no vectors found in Qdrant.", filename));
+            continue;
+        }
+
+        let indexed_vectors = vectors
+            .into_iter()
+            .filter_map(|(id, vector)| id_to_chunk.get(&id).copied().map(|idx| (idx, vector)))
+            .collect::<Vec<_>>();
+
+        if indexed_vectors.is_empty() {
+            warnings.push(format!("{}: vectors did not match PostgreSQL chunk ids.", filename));
+            continue;
+        }
+
+        if missing_layout == 0 && indexed_vectors.len() == chunk_count as usize {
+            // Recompute anyway: this is a manual optimization/defragmentation action.
+        }
+
+        let layout =
+            crate::clustering::build_semantic_cluster_layout(&indexed_vectors, Some(Default::default()));
+        match state
+            .db_pools
+            .update_document_semantic_layout(&doc_uuid, &layout)
+            .await
+        {
+            Ok(()) => {
+                reclustered += 1;
+                updated_rows += layout.points.len();
+            }
+            Err(error) => warnings.push(format!("{}: failed to save layout: {}", filename, error)),
+        }
+    }
+
+    if let Err(error) = sqlx::query("ANALYZE documents").execute(pool).await {
+        warnings.push(format!("PostgreSQL ANALYZE failed: {}", error));
+    }
+
+    emit_maintenance_progress(
+        &job_id,
+        "complete",
+        "completed",
+        "Library optimization complete.",
+        Some(total),
+        Some(total),
+        checked,
+        reclustered,
+        updated_rows,
+        &warnings,
+    );
+    MAINTENANCE_CANCEL.write().unwrap().remove(&job_id);
 }
 
 async fn handle_chat(

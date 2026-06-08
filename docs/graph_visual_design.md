@@ -323,7 +323,7 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 | 11 | Persist cluster/reducer metadata, expose through dedicated graph/BFF endpoint | `[-]` | Reducer runs per-request; no persistence yet |
 | 12 | Replace frontend layout hints with backend-prepared UMAP/cluster coordinates | `[x]` | `build_semantic_cluster_layout` uses `UmapReducer` for 3D layout hints; projection field reports `umap-3d` |
 | 13 | Move heavy graph filtering/layout to backend or worker after metrics | `[ ]` | Not started |
-| 14 | Add manual library optimization / defragmentation task | `[ ]` | Settings action with progress modal, cancel support, consistency checks, and reclustering/backfill for existing documents |
+| 14 | Add manual library optimization / defragmentation task | `[-]` | MVP settings action, SSE progress, cancel support, per-document reclustering/backfill, and `ANALYZE documents` are implemented; real-data verification still required |
 
 ## Phased Renderer Plan
 
@@ -371,7 +371,9 @@ UMAP + HDBSCAN should be treated as a backend/data-layer feature, not only as a 
 - `[ ]` Capture metrics before/after 2D mode and before/after 3D flight rebuild.
 - `[ ]` Use screenshots + interaction traces as acceptance artifacts.
 
-### Phase 6: library optimization / defragmentation `[ ]`
+### Phase 6: library optimization / defragmentation `[-]`
+
+2026-06-08 status note: the checklist below is the original scope. The implemented MVP status and required manual verification are recorded in the "graph and maintenance verification note" section below.
 
 Manual maintenance action in settings. This should not run implicitly during search or graph opening.
 
@@ -386,6 +388,16 @@ Manual maintenance action in settings. This should not run implicitly during sea
 - `[ ]` Report a final summary: documents checked, documents reclustered, rows updated, missing/orphan vectors found, cancelled/completed status.
 
 ## MVP Acceptance Criteria
+
+### 2026-06-08 graph and maintenance verification note
+
+- `[x]` 3D renderer rescales the generated layout to the viewport before drawing.
+- `[x]` Link materials are more visible and no longer fail depth testing behind nodes.
+- `[x]` Graph stats include a visible/rendered diagnostic for nodes and links so "links exist but nothing shows" is no longer silent.
+- `[-]` Manual library optimization exists in Settings with SSE progress, cancel support, per-document semantic layout recompute, warning summary, and `ANALYZE documents`.
+- `[ ]` Verify on two or three large documents after clean upload/reindex that graph tab and fullscreen show sections, subsections, entities, and links without only entities being visible.
+- `[ ]` Run Settings -> Optimize library once cancelled and once completed; confirm the summary matches expected documents checked/reclustered/rows updated.
+- `[ ]` Capture a screenshot when graph counters and visible diagnostics diverge; this should become the next graph bug fixture.
 
 - `[-]` Default graph overview is readable without fullscreen — partially: works for small documents, dense docs still crowded.
 - `[-]` Focus mode shows why the selected node matters — partially: highlights neighbors, but no semantic explanation.
@@ -408,4 +420,4 @@ Manual maintenance action in settings. This should not run implicitly during sea
 | 8 | Clean up old 2D fallback code path and duplicate inspector/legend logic | low | `[ ]` |
 | 9 | **Migrate graph colors from hardcoded JS hex to CSS theme variables** | high | `[ ]` |
 | 10 | **Extract shared `GraphInspector` and `GraphToolbar` from `graph3d.js`** | medium | `[ ]` |
-| 11 | **Add manual library optimization / defragmentation workflow** | high | `[ ]` |
+| 11 | **Add manual library optimization / defragmentation workflow** | high | `[-]` |
