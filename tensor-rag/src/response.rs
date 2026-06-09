@@ -76,6 +76,32 @@ pub async fn build_search_response(
     let original_details = details.clone();
     let original_ids: HashSet<usize> = original_details.iter().map(|detail| detail.id).collect();
     let mut seen_detail_ids: HashSet<usize> = original_ids.clone();
+
+    let max_neighbors = if explicit_structured_lookup {
+        0
+    } else {
+        indices.len().saturating_mul(2).clamp(2, 12)
+    };
+    let neighbor_details = db_pools
+        .fetch_neighbor_chunks(&original_details, max_neighbors)
+        .await?;
+
+    for detail in neighbor_details {
+        if !seen_detail_ids.insert(detail.id) {
+            continue;
+        }
+        let parent_score = original_details
+            .iter()
+            .find(|d| d.doc_uuid == detail.doc_uuid && (d.chunk_index - detail.chunk_index).abs() <= 1)
+            .and_then(|d| score_map.get(&d.id))
+            .copied()
+            .unwrap_or(0.0);
+        let inherited = parent_score * 0.8;
+        score_map.insert(detail.id, inherited);
+        rank_map.insert(detail.id, indices.len() + details.len());
+        details.push(detail);
+    }
+
     let max_span_chunks = if explicit_structured_lookup {
         indices.len().saturating_mul(4).clamp(8, 40)
     } else {

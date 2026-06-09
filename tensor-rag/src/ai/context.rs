@@ -139,6 +139,10 @@ fn agent_instruction(
         ),
         "If retrieved tool results do not contain enough evidence, say that the local library context is insufficient instead of answering from memory.".to_string(),
         "For non-library questions, answer directly if no tool is needed.".to_string(),
+        "When the user asks a general question that could apply to any of several documents (e.g. \"what was the mother's name?\", \"what happened at the beginning?\", \"describe the main character\"):".to_string(),
+        "1. Call list_documents to get the available documents.".to_string(),
+        "2. If the list has 2-4 documents, call search_text for each document separately using the document title or id as a scope, then combine results.".to_string(),
+        "3. If the list has more than 4 documents or they are clearly unrelated, present the list to the user and ask which document to search in.".to_string(),
     ];
 
     if scope_to_selected_document {

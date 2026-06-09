@@ -578,6 +578,14 @@ impl DbPools {
         super::search::fetch_chunk_details(self, ids).await
     }
 
+    pub async fn fetch_neighbor_chunks(
+        &self,
+        seed_details: &[ChunkDetail],
+        max_neighbors: usize,
+    ) -> Result<Vec<ChunkDetail>, String> {
+        super::search::fetch_neighbor_chunks(self, seed_details, max_neighbors).await
+    }
+
     pub async fn fetch_structured_span_details(
         &self,
         query: &str,

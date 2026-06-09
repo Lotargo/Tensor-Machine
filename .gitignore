@@ -3,3 +3,6 @@ target/
 venv/
 .env
 doc_for_tests*
+scripts/
+server*.log
+server*.txt

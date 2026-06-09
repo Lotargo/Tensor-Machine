@@ -675,6 +675,64 @@ pub async fn fetch_chunk_details(
     Ok(details)
 }
 
+pub async fn fetch_neighbor_chunks(
+    pools: &DbPools,
+    seed_details: &[ChunkDetail],
+    max_neighbors: usize,
+) -> Result<Vec<ChunkDetail>, String> {
+    let pool = pools
+        .postgres
+        .as_ref()
+        .ok_or("PostgreSQL pool not initialized")?;
+
+    if seed_details.is_empty() || max_neighbors == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut expanded = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    for detail in seed_details {
+        if expanded.len() >= max_neighbors {
+            break;
+        }
+
+        let indices: Vec<i32> = [detail.chunk_index - 1, detail.chunk_index + 1]
+            .into_iter()
+            .filter(|&i| i >= 0)
+            .collect();
+
+        if indices.is_empty() || detail.doc_uuid.is_empty() {
+            continue;
+        }
+
+        let sql = chunk_detail_select_sql(
+            "WHERE doc_uuid = $1 AND chunk_level = $2 AND chunk_index = ANY($3)
+             ORDER BY chunk_index ASC",
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(&detail.doc_uuid)
+            .bind(&detail.chunk_level)
+            .bind(&indices)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch neighbor chunks: {}", e))?;
+
+        for row in rows {
+            let neighbor = row_to_chunk_detail(row);
+            if seen_ids.insert(neighbor.id) && neighbor.id != detail.id {
+                expanded.push(neighbor);
+                if expanded.len() >= max_neighbors {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(expanded)
+}
+
 pub async fn fetch_structured_span_details(
     pools: &DbPools,
     query: &str,
