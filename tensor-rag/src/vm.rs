@@ -753,6 +753,15 @@ impl VM {
                 let fused = crate::rsf::compute_rsf_with_query(&ids, &channels, config, Some(query));
 
                 if tracing::enabled!(tracing::Level::DEBUG) && !fused.is_empty() {
+                    let adapted = crate::rsf::adaptive_config(config, query);
+                    tracing::debug!(
+                        original_dense = %config.dense_weight,
+                        original_bm25 = %config.bm25_weight,
+                        adapted_dense = %adapted.dense_weight,
+                        adapted_bm25 = %adapted.bm25_weight,
+                        query_words = query.split_whitespace().count(),
+                        "RSF adaptive weights applied"
+                    );
                     let top3: Vec<_> = fused.iter().take(3).collect();
                     tracing::debug!(
                         top3_ids = ?top3.iter().map(|(id, _)| *id).collect::<Vec<_>>(),

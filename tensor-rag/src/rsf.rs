@@ -86,7 +86,7 @@ fn word_count(text: &str) -> usize {
     text.split_whitespace().count()
 }
 
-fn adaptive_config(config: &RsfConfig, query: &str) -> RsfConfig {
+pub fn adaptive_config(config: &RsfConfig, query: &str) -> RsfConfig {
     let wc = word_count(query);
     if wc >= 6 {
         return config.clone();

@@ -126,12 +126,32 @@ fn dictionary() -> &'static SynonymDictionary {
 }
 
 fn load_dictionary() -> SynonymDictionary {
-    let groups = crate::config::get_query_expansion_dictionary_paths()
+    let paths = crate::config::get_query_expansion_dictionary_paths();
+    tracing::info!(paths = ?paths, "Loading query expansion dictionary");
+    let mut total_groups = 0usize;
+    let mut total_terms = 0usize;
+    let groups: Vec<Vec<String>> = paths
         .into_iter()
-        .filter_map(|path| std::fs::read_to_string(&path).ok())
-        .flat_map(|content| parse_synonym_dictionary(&content).groups)
-        .collect::<Vec<_>>();
-    SynonymDictionary::from_groups(groups)
+        .filter_map(|path| {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let parsed = parse_synonym_dictionary(&content);
+                    total_groups += parsed.groups.len();
+                    total_terms += parsed.term_to_group_indices.len();
+                    tracing::info!(path = %path, groups = parsed.groups.len(), terms = parsed.term_to_group_indices.len(), "Loaded dictionary file");
+                    Some(parsed.groups)
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path, error = %e, "Failed to load dictionary file");
+                    None
+                }
+            }
+        })
+        .flatten()
+        .collect();
+    let dict = SynonymDictionary::from_groups(groups);
+    tracing::info!(groups = total_groups, unique_terms = total_terms, "Query expansion dictionary loaded");
+    dict
 }
 
 fn parse_json_dictionary(value: serde_json::Value) -> SynonymDictionary {
