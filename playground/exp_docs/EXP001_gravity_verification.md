@@ -2,14 +2,14 @@
 
 > **Дата**: 2026-06-11
 > **Статус**: COMPLETED — все проверки пройдены
-> **Участники**: APL-π-φ Bridge Layer (formulas.py + TCBP + Prolog censor)
+> **Участники**: APL-RAG Verifier Bridge Layer (formulas.py + TCBP + Prolog censor)
 > **Цель**: Доказать работоспособность цепочки формула → протокол → верификация
 
 ---
 
 ## Abstract
 
-We present the first end-to-end verification of the APL-π-φ tensor retrieval architecture
+We present the first end-to-end verification of the APL-RAG Verifier tensor retrieval architecture
 using a classical physics computation as a proving ground. The experiment computes the
 acceleration due to gravity *g* at a given height *h* above Earth's surface using Newton's
 law of universal gravitation, then passes the result through the full processing pipeline:
@@ -26,7 +26,7 @@ All steps pass. The pipeline is validated and ready for tensor retrieval workloa
 
 ### 1.1. Motivation
 
-The APL-π-φ RFC defines a unified tensor-relational VM with a symbolic verification
+The APL-RAG Verifier RFC defines a unified tensor-relational VM with a symbolic verification
 layer (§25), a quantum probability formalism (§27), and a dimension-mutation engine
 (§22). However, no end-to-end test existed to confirm that a computation can flow
 correctly through all layers: from formula → binary protocol → symbolic verifier →
@@ -41,7 +41,7 @@ A gravitational acceleration computation was chosen because:
 
 ### 1.2. Research Question
 
-Can a classical physics computation pass through the APL-π-φ bridge layer
+Can a classical physics computation pass through the APL-RAG Verifier bridge layer
 (formulas → TCBP → Prolog censor) with full integrity, producing the same
 result at every stage?
 
@@ -130,7 +130,7 @@ playground/
 ├── bridge/
 │   ├── tcbp.py              # TCBP client library
 │   ├── client.py            # High-level numpy API
-│   └── formula_orchestrator.py  # v7 censor bridge
+│   └── formula_orchestrator.py  # the verifier censor bridge
 ```
 
 ### 3.2. Key Code: Gravity Computation
@@ -177,7 +177,7 @@ Frame layout:
 ### 3.4. Key Code: Prolog Censor
 
 ```prolog
-% Simulated censor based on v7's relativity.pl and physics.pl domains
+% Simulated censor based on the verifier's relativity.pl and physics.pl domains
 censor(free_fall(g(G), h(H), r(R), error(E))) :-
     G > 0,              % positive acceleration (mass attraction, not repulsion)
     R > 0,              % positive radius (physical geometry)
@@ -290,7 +290,7 @@ All EXP-001 test points (red) lie well below the 1e-6 tolerance.
 
 3. **TCBP protocol is correctly implemented**: the binary frame structure
    (opcode + length + payload + CRC16) encodes and validates data correctly.
-   CRC16-CCITT matches the v10 Lisp reference implementation (0x29B1).
+   CRC16-CCITT matches the the router Lisp reference implementation (0x29B1).
 
 4. **Prolog censor can verify physics**: the symbolic constraints (g > 0, r > 0,
    inverse-square consistency) successfully validate the computation.
@@ -311,12 +311,12 @@ All EXP-001 test points (red) lie well below the 1e-6 tolerance.
 | §25 Symbolic Verification | test_gravity.py: simulate_prolog_censor | ✓ |
 | §27 Observer Effect / QIR | formulas.py: born_probability, qprp_interference | ✓ |
 | TCBP binary protocol | bridge/tcbp.py, bridge/client.py | ✓ |
-| v7 Integration | bridge/formula_orchestrator.py | ✓ |
+| the verifier Integration | bridge/formula_orchestrator.py | ✓ |
 
 ### 5.3. Limitations
 
 - The Prolog censor was **simulated in Python**, not run against a live
-  SWI-Prolog process. A real v7 integration would send the `free_fall` fact
+  SWI-Prolog process. A real the verifier integration would send the `free_fall` fact
   via TCBP to the Prolog daemon pool and receive a verified penalty.
 
 - The test uses **mean Earth constants** (G, M, R) rather than local
@@ -331,7 +331,7 @@ All EXP-001 test points (red) lie well below the 1e-6 tolerance.
 ## 6. Conclusion
 
 Experiment EXP-001 successfully demonstrates the first end-to-end flow through
-the APL-π-φ bridge layer. A gravitational acceleration computation was:
+the APL-RAG Verifier bridge layer. A gravitational acceleration computation was:
 
 1. Computed analytically in **formulas.py**
 2. Verified for self-consistency (inverse-square law)
@@ -341,7 +341,7 @@ the APL-π-φ bridge layer. A gravitational acceleration computation was:
 
 The pipeline proves that the architecture described in the RFC can support
 real computations, not just theoretical constructs. The bridge layer
-(formulas.py → TCBP → Prolog) is ready to be connected to live v7 and v10
+(formulas.py → TCBP → Prolog) is ready to be connected to live the verifier and the router
 processes for tensor retrieval workloads.
 
 ---
@@ -351,12 +351,12 @@ processes for tensor retrieval workloads.
 1. Newton, I. *Philosophiæ Naturalis Principia Mathematica* (1687). — Law of
    universal gravitation.
 
-2. APL-π-φ RFC §24.9 — Kahan compensated summation for floating-point
+2. APL-RAG Verifier FP stabilization — Kahan compensated summation for floating-point
    stabilization.
 
-3. APL-π-φ RFC §25 — Symbolic Verification Layer (Lisp + Prolog).
+3. APL-RAG Verifier Symbolic Verification Layer — Symbolic Verification Layer (Lisp + Prolog).
 
-4. APL-π-φ RFC §27 — Quantum Observer Effect and Quantum Probability
+4. APL-RAG Verifier Observer Model — Quantum Observer Effect and Quantum Probability
    Formalism.
 
 5. van Rijsbergen, C.J. *The Geometry of Information Retrieval*. CUP (2004).
@@ -420,7 +420,7 @@ playground/test_gravity.py              ~170    EXP-001 harness
 playground/verify_plots.py              ~560    Visual verification script
 playground/bridge/tcbp.py               84      TCBP protocol
 playground/bridge/client.py             139     Numpy API client
-playground/bridge/formula_orchestrator.py 122   v7 bridge
+playground/bridge/formula_orchestrator.py 122   the verifier bridge
 playground/exp_docs/figures/            8 PNGs  Generated plots
 playground/exp_docs/EXP001_gravity_verification.md  This document
 ```

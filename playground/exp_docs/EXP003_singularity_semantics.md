@@ -1,8 +1,8 @@
-# EXP-003: Division-by-Zero Singularity Classification
+# EXP-003: Typed Handling of Undefined / Singular Mathematical States
 
 > **Date**: 2026-06-11
 > **Status**: COMPLETED — 51/51 tests pass, 8 singularity classes distinguished
-> **Participants**: APL-pi-phi Bridge Layer (exp_singularity.py + TCBP + Prolog censor)
+> **Participants**: APL-RAG Verifier Bridge Layer (exp_singularity.py + TCBP + Prolog censor)
 > **Goal**: Prove the system can translate division-by-zero from a crash into a
 > typed computational state with provenance, distinguishing 8 singularity
 > classes including pole, indeterminate, removable, directional, jump
@@ -54,7 +54,7 @@ acceptable for a verifiable architecture:
   `(x^2-1)/(x-1)` at `x=1` (removable) all produce the same crash in standard
   arithmetic, but have fundamentally different mathematical meanings
 
-The APL-pi-phi architecture needs to know **which kind of singularity** occurred,
+The APL-RAG Verifier architecture needs to know **which kind of singularity** occurred,
 not just that "something went wrong". This enables:
 
 - **Symbolic verification**: censor can allow removable singularities while
@@ -576,13 +576,13 @@ continuation.
 
 ### 5.3. Relationship to RFC
 
-| Concept | Where | How EXP-003 extends |
-|---------|-------|---------------------|
-| §4 APL tensor ops | Scalar operations | safe_div as guarded SCALAR with mode dispatch |
-| §23 Binary protocol | TCBP frame | New opcode 0x0B (SINGULARITY) + provenance payload |
-| §25 Symbolic verification | Prolog censor | Class-aware censor policy (allow removable, reject poles) |
-| §24.9 FP stabilization | Kahan sum | Limit oracle as numerical stability tool |
-| §27 QIR observer effect | NaN propagation | Singularity object replaces silent NaN with typed event |
+| Component | Location | How EXP-003 extends |
+|-----------|----------|---------------------|
+| Vector Operations | Scalar division | safe_div as guarded scalar with mode dispatch |
+| Binary Protocol | TCBP frame | New opcode 0x0B (SINGULARITY) + provenance payload |
+| Symbolic Verification | Censor policy | Class-aware censor policy (allow removable, reject poles) |
+| Numerical Stabilization | Limit analysis | Limit oracle as numerical stability tool |
+| Mathematical States | NaN propagation | Singularity object replaces silent NaN with typed event |
 
 ### 5.4. Limitations
 
@@ -597,7 +597,7 @@ continuation.
   strengthen the removable detection.
 
 - **TCBP opcode 0x0B (SINGULARITY)** is new and not yet registered in the
-  v10 router. Live integration would require updating the v10 Lisp router's
+  the router router. Live integration would require updating the the router Lisp router's
   opcode dispatch table.
 
 - **Only rational/trigonometric expressions tested**: exponential,
@@ -615,7 +615,7 @@ continuation.
 
 ## 6. Conclusion
 
-Experiment EXP-003 demonstrates that the APL-pi-phi architecture can
+Experiment EXP-003 demonstrates that the APL-RAG Verifier architecture can
 translate division-by-zero from an unrecoverable crash into a **typed
 computational event** with:
 
@@ -651,10 +651,10 @@ occurred**, not just that one did.
 
 ## 7. References
 
-1. APL-pi-phi RFC §23 — Binary Protocol (TCBP).
-2. APL-pi-phi RFC §24.9 — Kahan Compensated Summation.
-3. APL-pi-phi RFC §25 — Symbolic Verification Layer (Lisp + Prolog).
-4. APL-pi-phi RFC §27 — Quantum Observer Effect.
+1. APL-RAG Verifier Binary Protocol — Binary Protocol (TCBP).
+2. APL-RAG Verifier FP stabilization — Kahan Compensated Summation.
+3. APL-RAG Verifier Symbolic Verification Layer — Symbolic Verification Layer (Lisp + Prolog).
+4. APL-RAG Verifier Observer Model — Quantum Observer Effect.
 5. IEEE 754-2019 — Standard for Floating-Point Arithmetic.
 6. Hennessy, J. & Patterson, D. "Computer Architecture: A Quantitative
    Approach" (6th ed.). — Exception handling in numeric pipelines.

@@ -2,14 +2,14 @@
 
 > **Дата**: 2026-06-11
 > **Статус**: COMPLETED — 26/26 adversarial rejected, 1/1 valid control accepted
-> **Участники**: APL-π-φ Bridge Layer (formulas.py + TCBP + Prolog censor)
+> **Участники**: APL-RAG Verifier Bridge Layer (formulas.py + TCBP + Prolog censor)
 > **Цель**: Доказать устойчивость pipeline к заведомо некорректным данным
 
 ---
 
 ## Abstract
 
-We present the second end-to-end verification of the APL-π-φ tensor retrieval
+We present the second end-to-end verification of the APL-RAG Verifier tensor retrieval
 architecture — an adversarial stress test. While EXP-001 proved that valid
 computations flow correctly through the pipeline, EXP-002 attempts to **break**
 the pipeline by injecting invalid, unphysical, or corrupted inputs across
@@ -33,7 +33,7 @@ Results:
 
 Any production system must handle not only correct inputs but also
 **adversarial, corrupted, or nonsensical inputs** without producing
-incorrect results. In the APL-π-φ architecture, the bridge layer
+incorrect results. In the APL-RAG Verifier architecture, the bridge layer
 (formulas → TCBP → Prolog) must reject:
 
 - **Physical violations**: negative mass, repulsive gravity, subsurface positions
@@ -47,7 +47,7 @@ integrity guarantees of the RFC architecture (§25 Symbolic Verification Layer).
 
 ### 1.2. Research Question
 
-Can the APL-π-φ bridge layer (formulas → TCBP → Prolog censor)
+Can the APL-RAG Verifier bridge layer (formulas → TCBP → Prolog censor)
 correctly reject **every** invalid input while still accepting a valid
 control input?
 
@@ -170,7 +170,7 @@ playground/
 ├── bridge/
 │   ├── tcbp.py                # TCBP client library
 │   ├── client.py              # High-level numpy API
-│   └── formula_orchestrator.py  # v7 censor bridge
+│   └── formula_orchestrator.py  # the verifier censor bridge
 └── exp_docs/
     ├── figures/               # Generated plots (8 PNGs)
     ├── EXP001_gravity_verification.md
@@ -425,13 +425,13 @@ layers must agree before a PASS verdict is emitted.
 
 ### 5.4. Relationship to RFC
 
-| RFC Section | EXP-002 Coverage |
+| Component | EXP-002 Coverage |
 |---|---|
-| §25 Symbolic Verification Layer | Censor rules (g>0, h≥0, finite), censor gate |
-| §24.9 FP stabilization | Kahan sum guard in acceleration_safe |
-| §23 Binary Protocol (TCBP) | CRC validation (3 modes), length checks (5 modes) |
-| §4 APL tensor ops | acceleration_safe as guarded SCALAR operation |
-| §27 Quantum Observer Effect | NaN/Inf propagation, forced NaN path |
+| Symbolic Verification Layer | Censor rules (g>0, h≥0, finite), censor gate |
+| FP stabilization | Kahan sum guard in acceleration_safe |
+| Binary Protocol | CRC validation (3 modes), length checks (5 modes) |
+| Core Operations | acceleration_safe as guarded scalar operation |
+| Error Propagation | NaN/Inf propagation, forced NaN path |
 
 ### 5.5. Limitations
 
@@ -455,7 +455,7 @@ layers must agree before a PASS verdict is emitted.
   retrieval workloads may have additional failure modes (dimension
   overflow, type mismatches, index-out-of-bounds).
 
-- **Kahan sum check** in computation guard duplicates RFC §24.9 but is
+- **Kahan sum check** in computation guard duplicates FP stabilization but is
   not required for adversarial detection — it is retained for consistency
   with EXP-001 and the RFC.
 
@@ -463,7 +463,7 @@ layers must agree before a PASS verdict is emitted.
 
 ## 6. Conclusion
 
-Experiment EXP-002 demonstrates that the APL-π-φ bridge layer correctly
+Experiment EXP-002 demonstrates that the APL-RAG Verifier bridge layer correctly
 rejects all 26 adversarial inputs while accepting the single valid
 control. The defense-in-depth architecture (computation guard → TCBP
 integrity with 3 CRC + 5 length modes → Prolog censor with protocol
@@ -493,10 +493,10 @@ adversarial inputs** (EXP-002).
 
 ## 7. References
 
-1. APL-π-φ RFC §23 — Binary Protocol (TCBP).
-2. APL-π-φ RFC §24.9 — Kahan Compensated Summation.
-3. APL-π-φ RFC §25 — Symbolic Verification Layer (Lisp + Prolog).
-4. APL-π-φ RFC §27 — Quantum Observer Effect.
+1. APL-RAG Verifier Binary Protocol — Binary Protocol (TCBP).
+2. APL-RAG Verifier FP stabilization — Kahan Compensated Summation.
+3. APL-RAG Verifier Symbolic Verification Layer — Symbolic Verification Layer (Lisp + Prolog).
+4. APL-RAG Verifier Observer Model — Quantum Observer Effect.
 5. Hoare, C.A.R. "Proof of correctness of data representations."
    *Acta Informatica* 1.4 (1972): 271-281.
 6. Needham, R.M. & Schroeder, M.D. "Using encryption for authentication
@@ -741,7 +741,7 @@ playground/test_adversarial.py          352     EXP-002 harness
 playground/verify_plots.py              ~560    Visual verification script
 playground/bridge/tcbp.py               84      TCBP protocol
 playground/bridge/client.py             139     Numpy API client
-playground/bridge/formula_orchestrator.py 122   v7 bridge
+playground/bridge/formula_orchestrator.py 122   the verifier bridge
 playground/exp_docs/figures/            8 PNGs  Generated plots
 playground/exp_docs/EXP002_adversarial_verification.md   This document
 ```
