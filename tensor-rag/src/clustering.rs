@@ -174,6 +174,32 @@ fn compute_brute_force_knn(data: &[Array1<f32>], k: usize) -> (Array2<u32>, Arra
     let mut indices = Array2::zeros((n, k));
     let mut dists = Array2::zeros((n, k));
 
+    // Try GPU execution first
+    if let Some(rt) = tokio::runtime::Handle::try_current().ok() {
+        let vectors: Vec<Vec<f32>> = data.iter().map(|v| v.to_vec()).collect();
+        // Since we are inside a sync context, we use block_in_place or block_on if possible, or spawn a task
+        let gpu_res = tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                if let Some(gpu) = crate::gpu::GpuContext::new().await {
+                    gpu.knn_search(&vectors, k)
+                } else {
+                    None
+                }
+            })
+        });
+
+        if let Some((gpu_indices, gpu_dists)) = gpu_res {
+            for i in 0..n {
+                for idx in 0..k {
+                    indices[[i, idx]] = gpu_indices[i][idx];
+                    dists[[i, idx]] = gpu_dists[i][idx];
+                }
+            }
+            return (indices, dists);
+        }
+    }
+
+    // CPU Fallback
     for i in 0..n {
         let mut pairs: Vec<(usize, f32)> = data
             .iter()

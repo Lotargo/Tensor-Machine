@@ -240,6 +240,84 @@ fn tiled_colbert_maxsim_main(
         result[doc_idx] = doc_score;
     }
 }
+
+// GPU kNN Search shader
+@group(0) @binding(10) var<storage, read> knn_vectors: array<f32>;
+@group(0) @binding(11) var<storage, read_write> knn_indices: array<u32>;
+@group(0) @binding(12) var<storage, read_write> knn_dists: array<f32>;
+
+struct KnnParams {
+    n: u32,
+    dim: u32,
+    k: u32,
+}
+@group(0) @binding(13) var<uniform> knn_params: KnnParams;
+
+@compute @workgroup_size(64)
+fn knn_search_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let i = global_id.x;
+    let n = knn_params.n;
+    if (i >= n) {
+        return;
+    }
+
+    let dim = knn_params.dim;
+    let k = knn_params.k;
+
+    // We want to find the top k closest vectors (excluding ourselves, i == j)
+    // We will do a local selection sort on a local array of size K (max 32 elements).
+    // Note: K is usually small (e.g. 15 for UMAP).
+    var local_indices: array<u32, 32>;
+    var local_dists: array<f32, 32>;
+
+    for (var idx = 0u; idx < k; idx = idx + 1u) {
+        local_indices[idx] = 0u;
+        local_dists[idx] = 1e10; // start with max distance
+    }
+
+    for (var j = 0u; j < n; j = j + 1u) {
+        if (i == j) {
+            continue;
+        }
+
+        // Calculate Euclidean distance between vector i and vector j
+        var d2 = 0.0;
+        let offset_i = i * dim;
+        let offset_j = j * dim;
+        for (var d = 0u; d < dim; d = d + 1u) {
+            let diff = knn_vectors[offset_i + d] - knn_vectors[offset_j + d];
+            d2 = d2 + diff * diff;
+        }
+        let dist = sqrt(d2);
+
+        // Insertion into local sorted array
+        if (dist < local_dists[k - 1u]) {
+            local_dists[k - 1u] = dist;
+            local_indices[k - 1u] = j;
+
+            // Simple bubble down to keep local arrays sorted
+            var curr = k - 1u;
+            while (curr > 0u && local_dists[curr] < local_dists[curr - 1u]) {
+                let temp_d = local_dists[curr];
+                local_dists[curr] = local_dists[curr - 1u];
+                local_dists[curr - 1u] = temp_d;
+
+                let temp_idx = local_indices[curr];
+                local_indices[curr] = local_indices[curr - 1u];
+                local_indices[curr - 1u] = temp_idx;
+
+                curr = curr - 1u;
+            }
+        }
+    }
+
+    // Write back to global memory
+    let offset_out = i * k;
+    for (var idx = 0u; idx < k; idx = idx + 1u) {
+        knn_indices[offset_out + idx] = local_indices[idx];
+        knn_dists[offset_out + idx] = local_dists[idx];
+    }
+}
 "#;
 
 #[repr(C)]
@@ -856,6 +934,166 @@ impl GpuContext {
         )?;
         Some(bytemuck::cast_slice(&result).to_vec())
     }
+
+    pub fn knn_search(&self, vectors: &[Vec<f32>], k: usize) -> Option<(Vec<Vec<u32>>, Vec<Vec<f32>>)> {
+        let n = vectors.len();
+        if n == 0 {
+            return Some((vec![], vec![]));
+        }
+        let dim = vectors[0].len();
+        if dim == 0 {
+            return Some((vec![vec![]; n], vec![vec![]; n]));
+        }
+
+        let flat_vectors: Vec<f32> = vectors.iter().flatten().copied().collect();
+        let size_vectors = (flat_vectors.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let size_indices = (n * k * std::mem::size_of::<u32>()) as wgpu::BufferAddress;
+        let size_dists = (n * k * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+
+        let buffer_vectors = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("knn_buffer_vectors"),
+            size: size_vectors,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let buffer_indices = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("knn_buffer_indices"),
+            size: size_indices,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let buffer_dists = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("knn_buffer_dists"),
+            size: size_dists,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct KnnParams {
+            n: u32,
+            dim: u32,
+            k: u32,
+            _padding: u32,
+        }
+
+        let params = KnnParams {
+            n: n as u32,
+            dim: dim as u32,
+            k: k as u32,
+            _padding: 0,
+        };
+
+        let buffer_params = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("knn_buffer_params"),
+            size: std::mem::size_of::<KnnParams>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.queue.write_buffer(&buffer_vectors, 0, bytemuck::cast_slice(&flat_vectors));
+        self.queue.write_buffer(&buffer_params, 0, bytemuck::bytes_of(&params));
+
+        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("kNN Pipeline"),
+            layout: None,
+            module: &self.shader,
+            entry_point: Some("knn_search_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("kNN Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: buffer_vectors.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: buffer_indices.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: buffer_dists.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: buffer_params.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&compute_pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            let workgroup_count = (n as u32 + 63) / 64;
+            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+
+        let staging_buffer_indices = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_knn_indices"),
+            size: size_indices,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_buffer_dists = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_knn_dists"),
+            size: size_dists,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(&buffer_indices, 0, &staging_buffer_indices, 0, size_indices);
+        encoder.copy_buffer_to_buffer(&buffer_dists, 0, &staging_buffer_dists, 0, size_dists);
+        self.queue.submit(Some(encoder.finish()));
+
+        let (sender1, receiver1) = std::sync::mpsc::channel();
+        let slice_indices = staging_buffer_indices.slice(..);
+        slice_indices.map_async(wgpu::MapMode::Read, move |v| { sender1.send(v).unwrap(); });
+
+        let (sender2, receiver2) = std::sync::mpsc::channel();
+        let slice_dists = staging_buffer_dists.slice(..);
+        slice_dists.map_async(wgpu::MapMode::Read, move |v| { sender2.send(v).unwrap(); });
+
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver1.recv().ok()?.ok()?;
+        receiver2.recv().ok()?.ok()?;
+
+        let mapped_indices = slice_indices.get_mapped_range();
+        let out_indices: &[u32] = bytemuck::cast_slice(&mapped_indices);
+        let mut final_indices = Vec::with_capacity(n);
+        for chunk in out_indices.chunks_exact(k) {
+            final_indices.push(chunk.to_vec());
+        }
+        drop(mapped_indices);
+        staging_buffer_indices.unmap();
+
+        let mapped_dists = slice_dists.get_mapped_range();
+        let out_dists: &[f32] = bytemuck::cast_slice(&mapped_dists);
+        let mut final_dists = Vec::with_capacity(n);
+        for chunk in out_dists.chunks_exact(k) {
+            final_dists.push(chunk.to_vec());
+        }
+        drop(mapped_dists);
+        staging_buffer_dists.unmap();
+
+        Some((final_indices, final_dists))
+    }
 }
 
 #[cfg(test)]
@@ -1003,6 +1241,28 @@ mod tests {
                 for i in 0..num_docs {
                     assert!((result[i] - cpu_results[i]).abs() < 1e-4);
                 }
+            }
+        });
+    }
+
+    #[test]
+    fn test_gpu_knn_search() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Some(gpu) = GpuContext::new().await {
+                let vectors = vec![
+                    vec![1.0, 0.0, 0.0],
+                    vec![1.1, 0.0, 0.0],
+                    vec![0.0, 1.0, 0.0],
+                    vec![0.0, 1.0, 0.1],
+                ];
+                let (indices, dists) = gpu.knn_search(&vectors, 2).unwrap();
+                assert_eq!(indices.len(), 4);
+                assert_eq!(dists.len(), 4);
+
+                // For item 0 (1.0, 0.0, 0.0), closest should be item 1 (1.1, 0.0, 0.0)
+                assert_eq!(indices[0][0], 1);
+                assert!((dists[0][0] - 0.1).abs() < 1e-4);
             }
         });
     }
