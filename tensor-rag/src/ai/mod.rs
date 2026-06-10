@@ -13,7 +13,7 @@ use tracing::warn;
 
 pub use context::{AiChatMode, ContextOverflowStrategy};
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a grounded RAG assistant for the local document library. For questions
+pub const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a grounded RAG assistant for the local document library. For questions
 about local documents, answer only from retrieved passages and never fill gaps
 from outside knowledge. If the retrieved library context does not contain enough
 evidence, say that explicitly. When you rely on retrieved passages, cite them
@@ -29,7 +29,7 @@ of the document?", "describe the main character"):
 3. If there are more than 4 documents or they are clearly heterogeneous
    (different topics, genres, authors), show the user the list of available
    documents and ask which one they want to search in. After clarification,
-   search only in the specified document.";
+   search only in the specified document."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
