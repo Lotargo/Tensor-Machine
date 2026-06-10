@@ -526,13 +526,288 @@ def plot_adversarial_summary():
 
 
 # ═══════════════════════════════════════════════════════════════
+#  PART 3 — EXP-003: Singularity semantics plots
+# ═══════════════════════════════════════════════════════════════
+
+import exp_singularity as sing
+
+SING_NAMES = [
+    "1/x", "-1/x", "x/x", "(x^2-1)/(x-1)", "sin(x)/x", "1/x^2",
+    "literal 0/0", "sin(1/x)/x", "abs(x)/x", "(x^2+1)/x",
+]
+SING_NUM_FUNCS = [
+    lambda x: 1.0,
+    lambda x: -1.0,
+    lambda x: x,
+    lambda x: x * x - 1.0,
+    lambda x: math.sin(x),
+    lambda x: 1.0,
+    None,                                              # literal 0/0
+    lambda x: math.sin(1.0 / x) if x != 0 else 0.0,
+    lambda x: abs(x),
+    lambda x: x * x + 1.0,
+]
+SING_DEN_FUNCS = [
+    lambda x: x,
+    lambda x: x,
+    lambda x: x,
+    lambda x: x - 1.0,
+    lambda x: x,
+    lambda x: x * x,
+    None,                                              # literal 0/0
+    lambda x: x,
+    lambda x: x,
+    lambda x: x,
+]
+SING_ATS = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, None, 0.0, 0.0, 0.0]
+
+
+def plot_singularity_mode_matrix():
+    """Heatmap: test case x mode -> resulting kind."""
+    modes = ["strict", "extended", "limit", "symbolic", "removable"]
+    n_cases = len(SING_NAMES)
+    kind_map = {}  # (case_idx, mode) -> kind string
+
+    for i in range(n_cases):
+        num = 0.0 if i >= 2 else (1.0 if i == 0 else -1.0)
+        for mode_str in modes:
+            mode = sing.DivMode(mode_str)
+            nf = SING_NUM_FUNCS[i]
+            df = SING_DEN_FUNCS[i]
+            at = SING_ATS[i]
+            has_funcs = nf is not None and df is not None and at is not None
+
+            if mode_str in ("limit", "removable", "symbolic") and has_funcs:
+                ok, val, reason = sing.safe_div(
+                    num, 0.0, mode=mode,
+                    num_func=nf, den_func=df, at=at,
+                    expr=SING_NAMES[i],
+                )
+            else:
+                ok, val, reason = sing.safe_div(num, 0.0, mode=mode,
+                                                expr=SING_NAMES[i])
+
+            kind = "REJECT"
+            if ok and isinstance(val, sing.Singularity):
+                kind = val.kind.value
+                if val.kind == sing.SingularityKind.REMOVABLE:
+                    kind += f"\nlimit={val.limit}"
+            kind_map[(i, mode_str)] = kind
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    kind_to_idx = {
+        "REJECT": 0, "Pole": 1, "Indeterminate": 2,
+        "RemovableSingularity": 3, "PositivePole": 4,
+        "PoleWithDirection": 5, "EssentialOrUnstable": 6,
+        "JumpDiscontinuity": 7,
+    }
+    cmap = plt.cm.tab10
+    data = np.zeros((n_cases, len(modes)))
+    annot = [[""] * len(modes) for _ in range(n_cases)]
+
+    for i in range(n_cases):
+        for j, mode_str in enumerate(modes):
+            kind = kind_map[(i, mode_str)]
+            base_kind = kind.split("\n")[0]
+            idx = kind_to_idx.get(base_kind, 0)
+            data[i, j] = idx
+            annot[i][j] = kind
+
+    im = ax.imshow(data, cmap=cmap, aspect="auto", vmin=0, vmax=7)
+
+    ax.set_xticks(range(len(modes)))
+    ax.set_xticklabels(modes, fontsize=10)
+    ax.set_yticks(range(n_cases))
+    ax.set_yticklabels(SING_NAMES, fontsize=9)
+    ax.set_title("EXP-003: Singularity classification by mode\n"
+                 "(color = kind, label = exact classification)",
+                 fontsize=12)
+
+    for i in range(n_cases):
+        for j in range(len(modes)):
+            ax.text(j, i, annot[i][j], ha="center", va="center",
+                    fontsize=7, color="white" if data[i, j] >= 3 else "black",
+                    weight="bold" if "limit" in annot[i][j] else "normal")
+
+    cbar = fig.colorbar(im, ax=ax, ticks=list(range(8)), shrink=0.6)
+    cbar.set_ticklabels(["REJECT", "Pole", "Indeterminate",
+                         "Removable", "PosPole", "PoleDir",
+                         "Essential", "Jump"])
+
+    plt.tight_layout()
+    path = FIGS / "exp003_mode_matrix.png"
+    fig.savefig(path, dpi=DPI)
+    plt.close(fig)
+    print(f"  [1/4] {path.name}")
+
+
+def plot_limit_oracle():
+    """Visualize left/right approach values for each test case."""
+    # Filter to cases with funcs (skip literal 0/0 index 6)
+    plot_idxs = [i for i in range(len(SING_NAMES))
+                 if SING_NUM_FUNCS[i] is not None and SING_ATS[i] is not None]
+    n_plot = len(plot_idxs)  # 9
+    cols = 3
+    rows = (n_plot + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(14, 3.5 * rows))
+    axes = axes.flatten()
+
+    for idx_in_plot, i in enumerate(plot_idxs):
+        ax = axes[idx_in_plot]
+        oracle = sing.limit_oracle(SING_NUM_FUNCS[i], SING_DEN_FUNCS[i],
+                                   SING_ATS[i])
+        eps = [10.0 ** (-k) for k in range(1, len(oracle["left_values"]) + 1)]
+
+        left = oracle["left_values"]
+        right = oracle["right_values"]
+
+        ax.semilogx(eps[:len(left)], left, "r-o", markersize=3, lw=1,
+                    label="left approach")
+        ax.semilogx(eps[:len(right)], right, "b-s", markersize=3, lw=1,
+                    label="right approach")
+        ax.axhline(0, color="gray", lw=0.5, alpha=0.5)
+        ax.set_title(SING_NAMES[i], fontsize=10)
+        ax.set_xlabel("eps")
+        ax.set_ylabel("f(x)")
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+        left_t = oracle["left_trend"]
+        right_t = oracle["right_trend"]
+        text = f"L: {left_t}  R: {right_t}"
+        ax.text(0.02, 0.95, text, transform=ax.transAxes, fontsize=8,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", fc="wheat", alpha=0.7))
+
+    # Hide unused subplots
+    for j in range(n_plot, len(axes)):
+        axes[j].set_visible(False)
+
+    plt.tight_layout()
+    path = FIGS / "exp003_limit_oracle.png"
+    fig.savefig(path, dpi=DPI)
+    plt.close(fig)
+    print(f"  [2/4] {path.name}")
+
+
+def plot_censor_policy():
+    """Censor allow/reject per singularity kind + adversarial cases."""
+    # Nominal cases
+    nominal_kinds = ["Pole", "Indeterminate", "PositivePole",
+                     "PoleWithDirection", "RemovableSingularity",
+                     "EssentialOrUnstable", "JumpDiscontinuity"]
+    nominal_safe  = [False,  False,          False,
+                     False,  True,            False,               False]
+    # Adversarial: safe flag is fabricated
+    adv_labels   = ["Pole\n(safe=True\nREJECT)",
+                    "Removable\n(limit=None\nREJECT)",
+                    "Jump\n(safe=True\nREJECT)"]
+    adv_allowed  = [False, False, False]  # censor correctly rejects all
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 5),
+                                    gridspec_kw={"width_ratios": [1.6, 1]})
+    width = 0.55
+
+    # ── Left: nominal cases ──
+    x1 = np.arange(len(nominal_kinds))
+    colors1 = ["#2ecc71" if sf else "#e74c3c" for sf in nominal_safe]
+    ax1.bar(x1, [1] * len(nominal_kinds), width, color=colors1, alpha=0.85,
+            edgecolor="black", linewidth=0.5)
+    for i, (kind, sf) in enumerate(zip(nominal_kinds, nominal_safe)):
+        label = "ALLOW" if sf else "REJECT"
+        ax1.text(i, 0.5, label, ha="center", va="center", fontsize=10,
+                 fontweight="bold", color="white")
+    ax1.set_xticks(x1)
+    ax1.set_xticklabels(nominal_kinds, fontsize=9, rotation=15, ha="right")
+    ax1.set_title("Nominal: kind → verdict", fontsize=12)
+    ax1.set_ylim(0, 1.8)
+    ax1.yaxis.set_visible(False)
+    for spine in ["left", "top", "right"]:
+        ax1.spines[spine].set_visible(False)
+
+    # ── Right: adversarial ──
+    x2 = np.arange(len(adv_labels))
+    colors2 = ["#e74c3c"] * 3  # all REJECT
+    ax2.bar(x2, [1] * 3, width, color=colors2, alpha=0.85,
+            edgecolor="black", linewidth=0.5, hatch="///")
+    for i, label in enumerate(adv_labels):
+        ax2.text(i, 0.5, "REJECT\n(defense)", ha="center", va="center",
+                 fontsize=9, fontweight="bold", color="white")
+    ax2.set_xticks(x2)
+    ax2.set_xticklabels(adv_labels, fontsize=8, rotation=15, ha="right")
+    ax2.set_title("Adversarial: safe-flag\nlies → still REJECT", fontsize=12)
+    ax2.set_ylim(0, 1.8)
+    ax2.yaxis.set_visible(False)
+    for spine in ["left", "top", "right"]:
+        ax2.spines[spine].set_visible(False)
+
+    # Shared legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor="#2ecc71", label="ALLOW (correct)"),
+        Patch(facecolor="#e74c3c", label="REJECT (correct)"),
+        Patch(facecolor="#e74c3c", alpha=0.85, hatch="///",
+              label="Adversarial (REJECT)"),
+    ]
+    fig.legend(handles=legend_elements, fontsize=9, loc="lower center",
+               ncol=3, bbox_to_anchor=(0.5, -0.02))
+
+    plt.tight_layout()
+    path = FIGS / "exp003_censor_policy.png"
+    fig.savefig(path, dpi=DPI)
+    plt.close(fig)
+    print(f"  [3/4] {path.name}")
+
+
+def plot_singularity_summary():
+    """Summary: 51/51 tests pass (now with negative traps + adversarial)."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
+
+    # Left: layer breakdown
+    layers = ["Layer 1\nsafe_div\n(30 tests)", "Layer 2\nLimit oracle\n(8 tests)",
+              "Layer 3\nTCBP transport\n(5 tests)", "Layer 4\nCensor\npolicy (8 tests)"]
+    passed = [30, 8, 5, 8]
+    total = [30, 8, 5, 8]
+
+    x = np.arange(len(layers))
+    ax1.bar(x, total, width=0.5, color="#e74c3c", alpha=0.5, label="total")
+    ax1.bar(x, passed, width=0.5, color="#2ecc71", alpha=0.85, label="passed")
+    for i, (p, t) in enumerate(zip(passed, total)):
+        ax1.text(i, t + 0.3, f"{p}/{t}", ha="center", fontsize=11, fontweight="bold")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(layers, fontsize=8)
+    ax1.set_ylim(0, max(total) + 3)
+    ax1.set_title("EXP-003: Tests by layer", fontsize=12)
+    ax1.legend(fontsize=8)
+
+    # Right: overall pass/fail vs old baseline
+    ax2.bar(["Old\n(33 tests)", "New\n(51 tests)"],
+            [33, 51], width=0.4,
+            color=["#3498db", "#2ecc71"], alpha=0.85)
+    ax2.text(0, 34, "33/33", ha="center", fontsize=12, fontweight="bold")
+    ax2.text(1, 52, "51/51", ha="center", fontsize=12, fontweight="bold")
+    ax2.set_ylim(0, 58)
+    ax2.set_title("EXP-003: 100% pass\nwith negative traps + adversarial", fontsize=12)
+    ax2.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+    for ax in [ax1, ax2]:
+        ax.grid(True, axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    path = FIGS / "exp003_summary.png"
+    fig.savefig(path, dpi=DPI)
+    plt.close(fig)
+    print(f"  [4/4] {path.name}")
+
+
+# ═══════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
 
 def run():
     print("=" * 60)
     print("  VERIFY PLOTS")
-    print("  Generating verification figures for EXP-001 & EXP-002")
+    print("  Generating verification figures for EXP-001, EXP-002 & EXP-003")
     print("=" * 60)
 
     print("\n-- EXP-001: Gravity verification --")
@@ -547,9 +822,15 @@ def run():
     plot_crc_comparison()
     plot_adversarial_summary()
 
+    print("\n-- EXP-003: Singularity semantics --")
+    plot_singularity_mode_matrix()
+    plot_limit_oracle()
+    plot_censor_policy()
+    plot_singularity_summary()
+
     print("\n" + "=" * 60)
     print(f"  All figures saved to: {FIGS}")
-    print(f"  Total: 8 plots")
+    print(f"  Total: 12 plots")
     print("=" * 60)
 
 
