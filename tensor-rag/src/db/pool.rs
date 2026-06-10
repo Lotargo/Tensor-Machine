@@ -192,6 +192,53 @@ impl DbPools {
             .execute(&pool)
             .await;
 
+        // Create entities table for spatial representation of named entities
+        let _ = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS entities (
+                id BIGSERIAL PRIMARY KEY,
+                doc_uuid TEXT NOT NULL,
+                text TEXT NOT NULL,
+                cluster_id INTEGER,
+                cluster_distance REAL,
+                layout_hint JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(doc_uuid, text)
+            );",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_entities_doc_uuid ON entities(doc_uuid);",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_entities_text ON entities(doc_uuid, text);",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_entities_cluster ON entities(doc_uuid, cluster_id);",
+        )
+        .execute(&pool)
+        .await;
+
+        // Create chunk_entities junction table
+        let _ = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS chunk_entities (
+                chunk_id BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                entity_id BIGINT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                PRIMARY KEY (chunk_id, entity_id)
+            );",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity ON chunk_entities(entity_id);",
+        )
+        .execute(&pool)
+        .await;
+
         self.postgres = Some(pool);
         Ok(())
     }
@@ -205,13 +252,22 @@ impl DbPools {
         let client = Qdrant::from_url(url).build()?;
         let collection = crate::config::get_qdrant_collection();
         let anchors_collection = crate::config::get_qdrant_anchors_collection();
+        let entities_collection = crate::config::get_qdrant_entities_collection();
+
+        let qdrant_timeout = std::time::Duration::from_secs(10);
 
         if node_id == "default" {
             // Create main collection
-            if client.collection_info(&collection).await.is_err() {
+            let check = tokio::time::timeout(
+                qdrant_timeout,
+                client.collection_info(&collection),
+            )
+            .await;
+            if check.is_err() || check.unwrap().is_err() {
                 tracing::info!("Creating Qdrant collection '{}'...", collection);
-                let _ = client
-                    .create_collection(qdrant_client::qdrant::CreateCollection {
+                let _ = tokio::time::timeout(
+                    qdrant_timeout,
+                    client.create_collection(qdrant_client::qdrant::CreateCollection {
                         collection_name: collection.clone(),
                         vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
                             config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
@@ -223,18 +279,25 @@ impl DbPools {
                             )),
                         }),
                         ..Default::default()
-                    })
-                    .await;
+                    }),
+                )
+                .await;
             }
 
             // Create anchors collection
-            if client.collection_info(&anchors_collection).await.is_err() {
+            let check = tokio::time::timeout(
+                qdrant_timeout,
+                client.collection_info(&anchors_collection),
+            )
+            .await;
+            if check.is_err() || check.unwrap().is_err() {
                 tracing::info!(
                     "Creating Qdrant anchors collection '{}'...",
                     anchors_collection
                 );
-                let _ = client
-                    .create_collection(qdrant_client::qdrant::CreateCollection {
+                let _ = tokio::time::timeout(
+                    qdrant_timeout,
+                    client.create_collection(qdrant_client::qdrant::CreateCollection {
                         collection_name: anchors_collection.clone(),
                         vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
                             config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
@@ -246,8 +309,39 @@ impl DbPools {
                             )),
                         }),
                         ..Default::default()
-                    })
-                    .await;
+                    }),
+                )
+                .await;
+            }
+
+            // Create entities collection
+            let check = tokio::time::timeout(
+                qdrant_timeout,
+                client.collection_info(&entities_collection),
+            )
+            .await;
+            if check.is_err() || check.unwrap().is_err() {
+                tracing::info!(
+                    "Creating Qdrant entities collection '{}'...",
+                    entities_collection
+                );
+                let _ = tokio::time::timeout(
+                    qdrant_timeout,
+                    client.create_collection(qdrant_client::qdrant::CreateCollection {
+                        collection_name: entities_collection.clone(),
+                        vectors_config: Some(qdrant_client::qdrant::VectorsConfig {
+                            config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
+                                qdrant_client::qdrant::VectorParams {
+                                    size: crate::config::get_embedding_dim() as u64,
+                                    distance: qdrant_client::qdrant::Distance::Cosine.into(),
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                        ..Default::default()
+                    }),
+                )
+                .await;
             }
         }
 
@@ -622,6 +716,15 @@ impl DbPools {
         super::search::search_entity_candidate_ids(self, query_entities, doc_uuid, limit).await
     }
 
+    pub async fn search_entity_vector_candidates(
+        &self,
+        query_vector: &ndarray::Array1<f32>,
+        doc_uuid: Option<&str>,
+        limit: usize,
+    ) -> Vec<usize> {
+        super::search::search_entity_vector_candidates(self, query_vector, doc_uuid, limit).await
+    }
+
     // Metadata operations
     pub async fn update_document_metadata(
         &self,
@@ -718,6 +821,50 @@ impl DbPools {
         edge_type: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, String> {
         super::edges::fetch_edges_by_doc_uuid(self, doc_uuid, edge_type).await
+    }
+
+    // Entity operations
+    pub async fn upsert_entities(
+        &self,
+        doc_uuid: &str,
+        entity_texts: &[String],
+    ) -> Result<std::collections::HashMap<String, i64>, String> {
+        super::entities::upsert_entities(self, doc_uuid, entity_texts).await
+    }
+
+    pub async fn link_chunk_entities(
+        &self,
+        chunk_id: i64,
+        entity_ids: &[i64],
+    ) -> Result<(), String> {
+        super::entities::link_chunk_entities(self, chunk_id, entity_ids).await
+    }
+
+    pub async fn embed_and_store_entities(
+        &self,
+        doc_uuid: &str,
+        entities: &[(i64, String)],
+    ) -> Result<(), String> {
+        super::entities::embed_and_store_entities(self, doc_uuid, entities).await
+    }
+
+    pub async fn update_entity_layout(
+        &self,
+        doc_uuid: &str,
+        layout_points: &[(i64, i32, f32, [f32; 3])],
+    ) -> Result<(), String> {
+        super::entities::update_entity_layout(self, doc_uuid, layout_points).await
+    }
+
+    pub async fn delete_document_entities(&self, doc_uuid: &str) -> Result<(), String> {
+        super::entities::delete_document_entities(self, doc_uuid).await
+    }
+
+    pub async fn fetch_document_entities(
+        &self,
+        doc_uuid: &str,
+    ) -> Result<Vec<super::entities::EntityRecord>, String> {
+        super::entities::fetch_document_entities(self, doc_uuid).await
     }
 }
 

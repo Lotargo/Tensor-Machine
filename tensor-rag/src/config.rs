@@ -181,6 +181,16 @@ pub fn get_qdrant_anchors_collection() -> String {
         .clone()
 }
 
+pub fn get_qdrant_entities_collection() -> String {
+    static QDRANT_ENTITIES: OnceLock<String> = OnceLock::new();
+    QDRANT_ENTITIES
+        .get_or_init(|| {
+            std::env::var("QDRANT_ENTITIES_COLLECTION")
+                .unwrap_or_else(|_| "entities".to_string())
+        })
+        .clone()
+}
+
 pub fn get_qdrant_upsert_wait() -> bool {
     static QDRANT_UPSERT_WAIT: OnceLock<bool> = OnceLock::new();
     *QDRANT_UPSERT_WAIT.get_or_init(|| get_bool_env("QDRANT_UPSERT_WAIT", false))

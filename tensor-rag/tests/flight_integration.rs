@@ -1,3 +1,5 @@
+#![cfg(feature = "integration")]
+
 use arrow::array::{Float32Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;

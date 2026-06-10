@@ -8,6 +8,76 @@ use super::{
     AiConfig, ChatDoneEvent, ChatSource, extract_message_content, parse_search_sources, send_sse,
 };
 
+/// Parse DSML tool call tokens from content text.
+/// DeepSeek models may output: <｜DSML｜tool_calls><｜DSML｜invoke name="search_text">...
+fn parse_dsml_tool_calls(content: &str) -> Vec<ToolCall> {
+    let mut calls = Vec::new();
+    let mut pos = 0;
+    while let Some(invoke_start) = content[pos..].find("<｜DSML｜invoke name=\"") {
+        let absolute_start = pos + invoke_start;
+        let name_start = absolute_start + "<｜DSML｜invoke name=\"".len();
+        let Some(name_end) = content[name_start..].find('"') else {
+            break;
+        };
+        let tool_name = &content[name_start..name_start + name_end];
+
+        // Find the closing </｜DSML｜invoke> or </｜DSML｜parameter> blocks to extract parameters
+        let params_start = name_start + name_end + 1;
+        let mut args = serde_json::Map::new();
+
+        // Parse parameters: <｜DSML｜parameter name="param_name" string="true">value</｜DSML｜parameter>
+        let mut param_pos = params_start;
+        while let Some(param_start) = content[param_pos..].find("<｜DSML｜parameter name=\"") {
+            let p_abs = param_pos + param_start + "<｜DSML｜parameter name=\"".len();
+            let Some(p_name_end) = content[p_abs..].find('"') else {
+                break;
+            };
+            let param_name = &content[p_abs..p_abs + p_name_end];
+
+            // Check if string="true"
+            let after_name = p_abs + p_name_end + 1;
+            let is_string = content[after_name..].starts_with(" string=\"true\">");
+
+            // Find the value start
+            let value_start = if is_string {
+                after_name + " string=\"true\">".len()
+            } else {
+                content[after_name..].find('>').map(|i| after_name + i + 1).unwrap_or(0)
+            };
+
+            // Find closing tag
+            let closing_tag = "</｜DSML｜parameter>";
+            let Some(value_end) = content[value_start..].find(closing_tag) else {
+                break;
+            };
+            let raw_value = content[value_start..value_start + value_end].trim();
+
+            let json_value = if is_string {
+                serde_json::Value::String(raw_value.to_string())
+            } else {
+                serde_json::from_str(raw_value).unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()))
+            };
+            args.insert(param_name.to_string(), json_value);
+
+            param_pos = value_start + value_end + closing_tag.len();
+        }
+
+        calls.push(ToolCall {
+            id: format!("dsml-{}", calls.len()),
+            name: tool_name.to_string(),
+            arguments: serde_json::Value::Object(args),
+        });
+
+        // Move past this invoke block
+        if let Some(end) = content[param_pos..].find("</｜DSML｜invoke>") {
+            pos = param_pos + end + "</｜DSML｜invoke>".len();
+        } else {
+            break;
+        }
+    }
+    calls
+}
+
 pub async fn run_agent_completion(
     db_pools: &crate::db::DbPools,
     config: &AiConfig,
@@ -35,7 +105,7 @@ pub async fn run_agent_completion(
             let payload =
                 super::request_chat_payload(config, &messages, Some(tool_definitions()), false)
                     .await?;
-            let message = payload
+            let mut message = payload
                 .get("choices")
                 .and_then(|value| value.get(0))
                 .and_then(|value| value.get("message"))
@@ -45,11 +115,51 @@ pub async fn run_agent_completion(
                 })?;
 
             let tool_calls = extract_tool_calls(&message);
+            let tool_calls = if tool_calls.is_empty() {
+                // Try parsing DSML format from content (DeepSeek models)
+                if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                    parse_dsml_tool_calls(content)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                tool_calls
+            };
             if tool_calls.is_empty() {
                 let content = extract_message_content(&payload).ok_or_else(|| {
                     "AI provider response does not contain an assistant message.".to_string()
                 })?;
                 return Ok((content, collected_sources));
+            }
+
+            // If we parsed DSML, inject tool_calls into message for proper format
+            if message.get("tool_calls").is_none() && !tool_calls.is_empty() {
+                let tc_json: Vec<serde_json::Value> = tool_calls
+                    .iter()
+                    .map(|tc| {
+                        json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments.to_string()
+                            }
+                        })
+                    })
+                    .collect();
+                message["tool_calls"] = json!(tc_json);
+                // Strip DSML from content
+                if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                    if content.contains("<｜DSML｜") {
+                        let cleaned = content
+                            .split("<｜DSML｜")
+                            .next()
+                            .unwrap_or(content)
+                            .trim()
+                            .to_string();
+                        message["content"] = json!(cleaned);
+                    }
+                }
             }
 
             messages.push(message);
@@ -122,7 +232,7 @@ pub async fn stream_agent_completion(
             let payload =
                 super::request_chat_payload(config, &messages, Some(tool_definitions()), false)
                     .await?;
-            let message = payload
+            let mut message = payload
                 .get("choices")
                 .and_then(|value| value.get(0))
                 .and_then(|value| value.get("message"))
@@ -132,8 +242,47 @@ pub async fn stream_agent_completion(
                 })?;
 
             let tool_calls = extract_tool_calls(&message);
+            let tool_calls = if tool_calls.is_empty() {
+                // Try parsing DSML format from content (DeepSeek models)
+                if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                    parse_dsml_tool_calls(content)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                tool_calls
+            };
             if tool_calls.is_empty() {
                 break;
+            }
+
+            // If we parsed DSML, inject tool_calls into message for proper format
+            if message.get("tool_calls").is_none() && !tool_calls.is_empty() {
+                let tc_json: Vec<serde_json::Value> = tool_calls
+                    .iter()
+                    .map(|tc| {
+                        json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments.to_string()
+                            }
+                        })
+                    })
+                    .collect();
+                message["tool_calls"] = json!(tc_json);
+                if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                    if content.contains("<｜DSML｜") {
+                        let cleaned = content
+                            .split("<｜DSML｜")
+                            .next()
+                            .unwrap_or(content)
+                            .trim()
+                            .to_string();
+                        message["content"] = json!(cleaned);
+                    }
+                }
             }
 
             messages.push(message);

@@ -1,3 +1,5 @@
+#![cfg(feature = "integration")]
+
 #[tokio::test]
 async fn test_qdrant_debug() {
     dotenvy::dotenv().ok();

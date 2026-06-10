@@ -1,3 +1,5 @@
+#![cfg(feature = "integration")]
+
 use sqlx::Row;
 use std::env;
 

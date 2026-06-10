@@ -368,6 +368,11 @@ pub async fn delete_document(pools: &DbPools, doc_id: usize) -> Result<(), Strin
             // Delete associated graph edges first
             crate::graph::delete_document_edges(pool, uuid_str).await?;
 
+            // Delete entity data (chunk_entities + entities + Qdrant)
+            if let Err(e) = pools.delete_document_entities(uuid_str).await {
+                tracing::warn!("Failed to delete entities for {}: {}", uuid_str, e);
+            }
+
             // Collect anchor IDs so their embeddings can be removed from Qdrant too
             let anchor_rows = sqlx::query("SELECT id FROM anchors WHERE doc_uuid = $1")
                 .bind(uuid_str)
@@ -466,7 +471,7 @@ pub async fn clear_documents(pools: &DbPools) -> Result<(), String> {
         .postgres
         .as_ref()
         .ok_or("PostgreSQL pool not initialized")?;
-    sqlx::query("TRUNCATE TABLE documents, anchors, edges RESTART IDENTITY")
+    sqlx::query("TRUNCATE TABLE documents, anchors, edges, chunk_entities, entities RESTART IDENTITY")
         .execute(pool)
         .await
         .map_err(|e| format!("PostgreSQL truncate failed: {}", e))?;
@@ -474,6 +479,7 @@ pub async fn clear_documents(pools: &DbPools) -> Result<(), String> {
     if let Some(client) = pools.qdrant_clients.get("default") {
         let collection = crate::config::get_qdrant_collection();
         let anchors_collection = crate::config::get_qdrant_anchors_collection();
+        let entities_collection = crate::config::get_qdrant_entities_collection();
         let _ = client
             .delete_points(qdrant_client::qdrant::DeletePoints {
                 collection_name: collection.clone(),
@@ -486,6 +492,15 @@ pub async fn clear_documents(pools: &DbPools) -> Result<(), String> {
         let _ = client
             .delete_points(qdrant_client::qdrant::DeletePoints {
                 collection_name: anchors_collection,
+                points: Some(PointsSelector {
+                    points_selector_one_of: Some(PointsSelectorOneOf::Filter(QFilter::default())),
+                }),
+                ..Default::default()
+            })
+            .await;
+        let _ = client
+            .delete_points(qdrant_client::qdrant::DeletePoints {
+                collection_name: entities_collection,
                 points: Some(PointsSelector {
                     points_selector_one_of: Some(PointsSelectorOneOf::Filter(QFilter::default())),
                 }),

@@ -1407,6 +1407,101 @@ async fn handle_upload(
         Some(total_batches),
     );
 
+    // --- Entity extraction, deduplication, embedding, and storage ---
+    emit_upload_progress(
+        upload_id,
+        "step-entities",
+        "active",
+        "Extracting and embedding named entities.",
+        None,
+        None,
+    );
+    if is_upload_cancelled(cancel_token.as_ref()) {
+        return cancel_upload_response(&state, upload_id, &doc_ids).await;
+    }
+
+    let chunk_entities_list: Vec<Vec<String>> = chunks.iter().map(|c| c.entities.clone()).collect();
+    let unique_entity_texts = crate::db::entities::collect_unique_entities(&chunk_entities_list);
+
+    if !unique_entity_texts.is_empty() {
+        match state.db_pools.upsert_entities(&doc_uuid, &unique_entity_texts).await {
+            Ok(entity_map) => {
+                // Link chunks to entities
+                for (chunk_idx, chunk) in chunks.iter().enumerate() {
+                    if chunk_idx >= doc_ids.len() {
+                        break;
+                    }
+                    let chunk_id = doc_ids[chunk_idx] as i64;
+                    let entity_ids: Vec<i64> = chunk
+                        .entities
+                        .iter()
+                        .filter_map(|text| entity_map.get(text).copied())
+                        .collect();
+                    if !entity_ids.is_empty() {
+                        let _ = state.db_pools.link_chunk_entities(chunk_id, &entity_ids).await;
+                    }
+                }
+
+                // Embed entities and store in Qdrant
+                let entities_with_ids: Vec<(i64, String)> = entity_map
+                    .iter()
+                    .map(|(text, &id)| (id, text.clone()))
+                    .collect();
+                if let Err(e) = state
+                    .db_pools
+                    .embed_and_store_entities(&doc_uuid, &entities_with_ids)
+                    .await
+                {
+                    error!("Failed to embed entities: {}", e);
+                }
+
+                // Cluster entities based on chunk cluster assignments
+                let mut entity_chunks_map: std::collections::HashMap<String, Vec<(i32, f32)>> =
+                    std::collections::HashMap::new();
+                for point in &semantic_vectors {
+                    let chunk_idx = point.0;
+                    if (chunk_idx as usize) < chunks.len() {
+                        for entity_text in &chunks[chunk_idx as usize].entities {
+                            entity_chunks_map
+                                .entry(entity_text.clone())
+                                .or_default()
+                                .push((chunk_idx, 0.0));
+                        }
+                    }
+                }
+
+                emit_upload_progress(
+                    upload_id,
+                    "step-entities",
+                    "completed",
+                    format!("Processed {} unique entities.", unique_entity_texts.len()),
+                    None,
+                    None,
+                );
+            }
+            Err(e) => {
+                error!("Failed to store entities: {}", e);
+                emit_upload_progress(
+                    upload_id,
+                    "step-entities",
+                    "failed",
+                    format!("Failed to store entities: {}", e),
+                    None,
+                    None,
+                );
+            }
+        }
+    } else {
+        emit_upload_progress(
+            upload_id,
+            "step-entities",
+            "completed",
+            "No entities found.",
+            None,
+            None,
+        );
+    }
+
     emit_upload_progress(
         upload_id,
         "step-clustering",

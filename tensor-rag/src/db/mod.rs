@@ -6,6 +6,7 @@ pub mod search;
 pub mod metadata;
 pub mod anchors;
 pub mod edges;
+pub mod entities;
 pub mod helpers;
 
 pub use circuit_breaker::{CircuitBreaker, CB_CLOSED, CB_OPEN, CB_HALF_OPEN};

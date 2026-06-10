@@ -1113,3 +1113,86 @@ pub async fn search_entity_candidate_ids(
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored.into_iter().take(limit).map(|(id, _)| id).collect()
 }
+
+/// Search for entities using Qdrant vector similarity, then return chunk IDs
+/// that are linked to the matching entities.
+pub async fn search_entity_vector_candidates(
+    pools: &DbPools,
+    query_vector: &ndarray::Array1<f32>,
+    doc_uuid: Option<&str>,
+    limit: usize,
+) -> Vec<usize> {
+    let Some(pool) = &pools.postgres else {
+        return Vec::new();
+    };
+    let Some(client) = pools.qdrant_clients.get("default") else {
+        return Vec::new();
+    };
+    let entities_collection = crate::config::get_qdrant_entities_collection();
+
+    // Search for similar entities in Qdrant
+    let search_limit = (limit * 3).max(20) as u64;
+    let search_result = client
+        .search_points(qdrant_client::qdrant::SearchPoints {
+            collection_name: entities_collection,
+            vector: query_vector.to_vec(),
+            limit: search_limit,
+            with_payload: Some(true.into()),
+            ..Default::default()
+        })
+        .await;
+
+    let Ok(response) = search_result else {
+        return Vec::new();
+    };
+
+    // Extract entity IDs from Qdrant results
+    let entity_ids: Vec<i64> = response
+        .result
+        .iter()
+        .filter_map(|point| {
+            let id = match &point.id {
+                Some(qdrant_client::qdrant::PointId {
+                    point_id_options: Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)),
+                }) => *n as i64,
+                _ => return None,
+            };
+            // Filter by doc_uuid if specified
+            if let Some(uuid) = doc_uuid {
+                if let Some(qdrant_client::qdrant::Value {
+                    kind: Some(qdrant_client::qdrant::value::Kind::StringValue(p_uuid)),
+                }) = point.payload.get("doc_uuid")
+                {
+                    if p_uuid != uuid {
+                        return None;
+                    }
+                }
+            }
+            Some(id)
+        })
+        .collect();
+
+    if entity_ids.is_empty() {
+        return Vec::new();
+    }
+
+    // Get chunk IDs linked to these entities
+    let rows = sqlx::query(
+        "SELECT DISTINCT chunk_id FROM chunk_entities WHERE entity_id = ANY($1)",
+    )
+    .bind(&entity_ids)
+    .fetch_all(pool)
+    .await;
+
+    let Ok(rows) = rows else {
+        return Vec::new();
+    };
+
+    rows.iter()
+        .filter_map(|row| {
+            let chunk_id: i64 = row.try_get("chunk_id").ok()?;
+            Some(chunk_id as usize)
+        })
+        .take(limit)
+        .collect()
+}

@@ -222,6 +222,8 @@ pub fn execute_program<'a>(
                                 }
                             })
                         });
+
+                        // Text-based entity search (existing)
                         let entity_ids = db_pools
                             .search_entity_candidate_ids(
                                 &query_entities,
@@ -230,10 +232,27 @@ pub fn execute_program<'a>(
                             )
                             .await;
 
-                        if !entity_ids.is_empty() {
+                        // Vector-based entity search (new)
+                        let vector_entity_ids = db_pools
+                            .search_entity_vector_candidates(
+                                &query_vec,
+                                doc_uuid_filter.as_deref(),
+                                fallback_limit,
+                            )
+                            .await;
+
+                        // Merge entity IDs from both searches
+                        let mut all_entity_ids = entity_ids;
+                        for id in vector_entity_ids {
+                            if !all_entity_ids.contains(&id) {
+                                all_entity_ids.push(id);
+                            }
+                        }
+
+                        if !all_entity_ids.is_empty() {
                             if let Some(client) = db_pools.qdrant_clients.get("default") {
                                 let collection = crate::config::get_qdrant_collection();
-                                let point_ids: Vec<qdrant_client::qdrant::PointId> = entity_ids
+                                let point_ids: Vec<qdrant_client::qdrant::PointId> = all_entity_ids
                                     .iter()
                                     .filter(|id| !ids.contains(id))
                                     .map(|&id| qdrant_client::qdrant::PointId {
@@ -290,7 +309,7 @@ pub fn execute_program<'a>(
                                 }
                             }
 
-                            for id in entity_ids {
+                            for id in all_entity_ids {
                                 if !ids.contains(&id) {
                                     ids.push(id);
                                     vectors.push(ndarray::Array1::zeros(
@@ -337,10 +356,43 @@ pub fn execute_program<'a>(
                         .ok_or("Not Int64Array")?;
                     let real_ids: Vec<usize> =
                         id_arr.iter().map(|v| v.unwrap_or(0) as usize).collect();
+
+                    // Try vector-based entity search first if we have a query vector
+                    let vector_scores = if vm.query_vector.len() > 0 {
+                        let entity_chunk_ids = db_pools
+                            .search_entity_vector_candidates(&vm.query_vector, None, real_ids.len())
+                            .await;
+                        if !entity_chunk_ids.is_empty() {
+                            // Boost candidates found via entity vector similarity
+                            real_ids
+                                .iter()
+                                .map(|&id| {
+                                    if entity_chunk_ids.contains(&id) {
+                                        0.3 // Entity vector match boost
+                                    } else {
+                                        0.0
+                                    }
+                                })
+                                .collect::<Vec<f32>>()
+                        } else {
+                            vec![0.0; real_ids.len()]
+                        }
+                    } else {
+                        vec![0.0; real_ids.len()]
+                    };
+
+                    // Also use text-based entity scoring as fallback/supplement
                     let query_entities = crate::entity::extract_query_entities(query);
-                    let scores = db_pools
+                    let text_scores = db_pools
                         .fetch_entity_scores(&real_ids, &query_entities)
                         .await;
+
+                    // Combine scores
+                    let scores: Vec<f32> = vector_scores
+                        .iter()
+                        .zip(text_scores.iter())
+                        .map(|(v, t)| v.max(*t))
+                        .collect();
 
                     vm.stack.push(crate::vm::Value::ArrowArray(Arc::new(
                         arrow::array::Float32Array::from(scores),
