@@ -233,3 +233,10 @@ pub fn get_mistral_base_url() -> String {
         })
         .clone()
 }
+
+pub fn get_exact_semantic_layout_limit() -> usize {
+    static EXACT_SEMANTIC_LAYOUT_LIMIT: OnceLock<usize> = OnceLock::new();
+    *EXACT_SEMANTIC_LAYOUT_LIMIT.get_or_init(|| get_usize_env("EXACT_SEMANTIC_LAYOUT_LIMIT", 2500))
+}
+
+

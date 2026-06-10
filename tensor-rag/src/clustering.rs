@@ -2,7 +2,8 @@ use ndarray::{Array1, Array2};
 use rand::SeedableRng;
 use std::collections::HashMap;
 
-const EXACT_SEMANTIC_LAYOUT_LIMIT: usize = 2_500;
+// exact semantic layout limit is now loaded dynamically from config
+
 
 #[derive(Debug, Clone)]
 pub struct ClusterAssignment {
@@ -393,7 +394,7 @@ pub fn build_semantic_cluster_layout(
         .iter()
         .map(|(_, vector)| vector.clone())
         .collect::<Vec<_>>();
-    if vectors.len() > EXACT_SEMANTIC_LAYOUT_LIMIT {
+    if vectors.len() > crate::config::get_exact_semantic_layout_limit() {
         return build_coarse_semantic_cluster_layout(&chunk_indexes, &vectors);
     }
 
@@ -490,9 +491,9 @@ fn build_coarse_semantic_cluster_layout(
 
 fn layout_bucket(layout_hint: [f32; 3]) -> (i32, i32, i32) {
     (
-        (layout_hint[0] * 4.0).round() as i32,
-        (layout_hint[1] * 4.0).round() as i32,
-        (layout_hint[2] * 4.0).round() as i32,
+        (layout_hint[0] * 150.0).round() as i32,
+        (layout_hint[1] * 150.0).round() as i32,
+        (layout_hint[2] * 150.0).round() as i32,
     )
 }
 
@@ -701,5 +702,23 @@ mod tests {
         let reducer = UmapReducer::default();
         let reduced = reducer.reduce(&vectors);
         assert_eq!(reduced.len(), 1);
+    }
+
+    #[test]
+    fn coarse_clustering_assigns_multiple_clusters_with_scaling() {
+        let vectors = vec![
+            vec![0.03, 0.015, -0.012, 0.1],
+            vec![0.03, 0.015, -0.012, 0.2],
+            vec![0.03, 0.015, -0.012, 0.3],
+            vec![0.03, 0.015, -0.012, 0.4],
+            vec![-0.03, -0.015, 0.012, 0.1],
+            vec![-0.03, -0.015, 0.012, 0.2],
+            vec![-0.03, -0.015, 0.012, 0.3],
+            vec![-0.03, -0.015, 0.012, 0.4],
+        ];
+        let chunk_indexes = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        let layout = super::build_coarse_semantic_cluster_layout(&chunk_indexes, &vectors);
+        let cluster_ids = layout.points.iter().map(|p| p.cluster_id).collect::<std::collections::HashSet<_>>();
+        assert!(cluster_ids.len() >= 2);
     }
 }

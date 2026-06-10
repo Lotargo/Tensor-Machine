@@ -53,13 +53,29 @@ pub fn execute_program<'a>(
                     vm.query_vector = query_vec.clone();
 
                     let mut updated_filters = filters.clone().unwrap_or_default();
-                    let chapter_filter = extract_chapter_id(query);
-                    if let Some(ref chap) = chapter_filter {
-                        updated_filters.push(crate::ir::Filter {
-                            field: "chapter_id".to_string(),
-                            operator: "==".to_string(),
-                            value: serde_json::Value::String(chap.clone()),
-                        });
+                    let mut chapter_filter = extract_chapter_id(query);
+                    if chapter_filter.is_none() {
+                        if let Some(f_list) = filters {
+                            chapter_filter = f_list.iter().find_map(|f| {
+                                if f.field == "chapter_id" && (f.operator == "==" || f.operator == "=") {
+                                    f.value.as_str().map(ToString::to_string)
+                                } else {
+                                    None
+                                }
+                            });
+                        }
+                    }
+                    let has_explicit_chapter_filter = filters.as_ref().map_or(false, |f_list| {
+                        f_list.iter().any(|f| f.field == "chapter_id")
+                    });
+                    if !has_explicit_chapter_filter {
+                        if let Some(ref chap) = chapter_filter {
+                            updated_filters.push(crate::ir::Filter {
+                                field: "chapter_id".to_string(),
+                                operator: "==".to_string(),
+                                value: serde_json::Value::String(chap.clone()),
+                            });
+                        }
                     }
                     let filters_opt = if !updated_filters.is_empty() {
                         Some(updated_filters)
@@ -585,7 +601,7 @@ pub fn execute_program<'a>(
                         let ids_i64: Vec<i64> =
                             main_result.indices.iter().map(|&x| x as i64).collect();
                         let rows =
-                            sqlx::query("SELECT id, metadata FROM documents WHERE id = ANY($1)")
+                            sqlx::query("SELECT id, doc_uuid, chapter_id, chunk_index, chunk_level, metadata FROM documents WHERE id = ANY($1)")
                                 .bind(&ids_i64[..])
                                 .fetch_all(pool)
                                 .await
@@ -593,28 +609,39 @@ pub fn execute_program<'a>(
                                     format!("Failed to fetch metadata for filtering: {}", e)
                                 })?;
 
-                        let mut metadata_map = std::collections::HashMap::new();
+                        let mut doc_data_map = std::collections::HashMap::new();
                         for r in rows {
                             let id: i64 = r.try_get("id").unwrap_or(-1);
+                            let doc_uuid: String = r.try_get("doc_uuid").unwrap_or_default();
+                            let chapter_id: String = r.try_get("chapter_id").unwrap_or_default();
+                            let chunk_index: i32 = r.try_get("chunk_index").unwrap_or(0);
+                            let chunk_level: String = r.try_get("chunk_level").unwrap_or_default();
                             let metadata_val: serde_json::Value =
                                 r.try_get("metadata").unwrap_or(serde_json::json!({}));
-                            metadata_map.insert(id, metadata_val);
+                            doc_data_map.insert(id, (doc_uuid, chapter_id, chunk_index, chunk_level, metadata_val));
                         }
 
                         for (i, &doc_id) in main_result.indices.iter().enumerate() {
-                            let doc_metadata = metadata_map
-                                .get(&(doc_id as i64))
-                                .cloned()
-                                .unwrap_or(serde_json::json!({}));
+                            let doc_data = doc_data_map.get(&(doc_id as i64));
+                            if doc_data.is_none() {
+                                continue;
+                            }
+                            let (doc_uuid, chapter_id, chunk_index, chunk_level, doc_metadata) = doc_data.unwrap();
 
                             let matches_all = filters.iter().all(|f| {
-                                let val = match doc_metadata.get(&f.field) {
-                                    Some(v) => v,
-                                    None => return false,
+                                let val = match f.field.as_str() {
+                                    "doc_uuid" => serde_json::Value::String(doc_uuid.clone()),
+                                    "chapter_id" => serde_json::Value::String(chapter_id.clone()),
+                                    "chunk_index" => serde_json::Value::Number(serde_json::Number::from(*chunk_index)),
+                                    "chunk_level" => serde_json::Value::String(chunk_level.clone()),
+                                    _ => match doc_metadata.get(&f.field) {
+                                        Some(v) => v.clone(),
+                                        None => return false,
+                                    }
                                 };
                                 match f.operator.as_str() {
-                                    "==" | "=" => val == &f.value,
-                                    "!=" => val != &f.value,
+                                    "==" | "=" => val == f.value,
+                                    "!=" => val != f.value,
                                     ">=" => {
                                         if let (Some(v_num), Some(f_num)) =
                                             (val.as_f64(), f.value.as_f64())
@@ -653,7 +680,7 @@ pub fn execute_program<'a>(
                                     }
                                     "in" => {
                                         if let Some(arr) = f.value.as_array() {
-                                            arr.contains(val)
+                                            arr.contains(&val)
                                         } else {
                                             false
                                         }

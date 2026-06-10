@@ -298,6 +298,9 @@ impl Planner {
                         });
                     }
                 }
+                let mut vm_filters = request.metadata_filters.clone().unwrap_or_default();
+                vm_filters.extend(filters.clone());
+
                 let filters_opt = if filters.is_empty() {
                     None
                 } else {
@@ -377,12 +380,10 @@ impl Planner {
                         }
                     }
 
-                    if let Some(ref meta_filters) = request.metadata_filters {
-                        if !meta_filters.is_empty() {
-                            program.push(OpCode::FilterByMetadata {
-                                filters: meta_filters.clone(),
-                            });
-                        }
+                    if !vm_filters.is_empty() {
+                        program.push(OpCode::FilterByMetadata {
+                            filters: vm_filters.clone(),
+                        });
                     }
 
                     program.push(OpCode::RetrieveAnchors {
@@ -407,30 +408,11 @@ impl Planner {
                     program.push(OpCode::ComputeSemantic);
 
                     match strategy {
-                        RerankStrategy::SemanticOnly => {
-                            if let Some(ref meta_filters) = request.metadata_filters {
-                                if !meta_filters.is_empty() {
-                                    program.push(OpCode::FilterByMetadata {
-                                        filters: meta_filters.clone(),
-                                    });
-                                }
-                            }
-                            program.push(OpCode::TopK(final_top_k));
-                            program.push(OpCode::Emit);
-                        }
+                        RerankStrategy::SemanticOnly => {}
                         RerankStrategy::Bm25Only => {
                             program.push(OpCode::RetrievePostgres {
                                 query: request.query.clone(),
                             });
-                            if let Some(ref meta_filters) = request.metadata_filters {
-                                if !meta_filters.is_empty() {
-                                    program.push(OpCode::FilterByMetadata {
-                                        filters: meta_filters.clone(),
-                                    });
-                                }
-                            }
-                            program.push(OpCode::TopK(final_top_k));
-                            program.push(OpCode::Emit);
                         }
                         RerankStrategy::Hybrid {
                             semantic_weight,
@@ -442,42 +424,15 @@ impl Planner {
                             program.push(OpCode::LoadConst(semantic_weight));
                             program.push(OpCode::LoadConst(bm25_weight));
                             program.push(OpCode::Fusion);
-                            if let Some(ref meta_filters) = request.metadata_filters {
-                                if !meta_filters.is_empty() {
-                                    program.push(OpCode::FilterByMetadata {
-                                        filters: meta_filters.clone(),
-                                    });
-                                }
-                            }
-                            program.push(OpCode::TopK(final_top_k));
-                            program.push(OpCode::Emit);
                         }
                         RerankStrategy::Mmr { diversity } => {
                             program.push(OpCode::Mmr(diversity));
-                            if let Some(ref meta_filters) = request.metadata_filters {
-                                if !meta_filters.is_empty() {
-                                    program.push(OpCode::FilterByMetadata {
-                                        filters: meta_filters.clone(),
-                                    });
-                                }
-                            }
-                            program.push(OpCode::TopK(final_top_k));
-                            program.push(OpCode::Emit);
                         }
                         RerankStrategy::Rrf { k } => {
                             program.push(OpCode::RetrievePostgres {
                                 query: request.query.clone(),
                             });
                             program.push(OpCode::Rrf(k));
-                            if let Some(ref meta_filters) = request.metadata_filters {
-                                if !meta_filters.is_empty() {
-                                    program.push(OpCode::FilterByMetadata {
-                                        filters: meta_filters.clone(),
-                                    });
-                                }
-                            }
-                            program.push(OpCode::TopK(final_top_k));
-                            program.push(OpCode::Emit);
                         }
                         RerankStrategy::Rsf {
                             dense_weight,
@@ -498,29 +453,19 @@ impl Planner {
                                 ),
                                 request.query.clone(),
                             ));
-                            if let Some(ref meta_filters) = request.metadata_filters {
-                                if !meta_filters.is_empty() {
-                                    program.push(OpCode::FilterByMetadata {
-                                        filters: meta_filters.clone(),
-                                    });
-                                }
-                            }
-                            program.push(OpCode::TopK(final_top_k));
-                            program.push(OpCode::Emit);
                         }
                         RerankStrategy::Dynamic { name, args } => {
                             program.push(OpCode::CallDynamic(name, args));
-                            if let Some(ref meta_filters) = request.metadata_filters {
-                                if !meta_filters.is_empty() {
-                                    program.push(OpCode::FilterByMetadata {
-                                        filters: meta_filters.clone(),
-                                    });
-                                }
-                            }
-                            program.push(OpCode::TopK(final_top_k));
-                            program.push(OpCode::Emit);
                         }
                     }
+
+                    if !vm_filters.is_empty() {
+                        program.push(OpCode::FilterByMetadata {
+                            filters: vm_filters.clone(),
+                        });
+                    }
+                    program.push(OpCode::TopK(final_top_k));
+                    program.push(OpCode::Emit);
                 }
             }
             AstNode::MultiHop { query, hops } => {

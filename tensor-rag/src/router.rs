@@ -385,6 +385,15 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
         options: &[],
     },
     SettingDescriptor {
+        key: "EXACT_SEMANTIC_LAYOUT_LIMIT",
+        label: "Semantic Layout Limit",
+        description: "Maximum chunks to run exact UMAP/HDBSCAN layout before falling back to coarse prefix projection.",
+        category: "vector",
+        field_type: "number",
+        placeholder: "2500",
+        options: &[],
+    },
+    SettingDescriptor {
         key: "MCP_RATE_LIMIT",
         label: "MCP Rate Limit",
         description: "Token bucket capacity for MCP requests.",
@@ -1291,23 +1300,38 @@ async fn handle_upload(
                 .map(|(item, vector)| (item.chunk_index, vector.to_vec())),
         );
 
+        let uploaded_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
         let documents: Vec<crate::db::EnrichedDocumentInsert<'_>> = batch
             .iter()
             .zip(vectors.into_iter())
-            .map(|(item, vector)| crate::db::EnrichedDocumentInsert {
-                text: &item.text,
-                vector,
-                filename: &filename,
-                doc_uuid: &doc_uuid,
-                chapter_id: &item.chapter_id,
-                chunk_index: item.chunk_index,
-                chunk_level: item.level.as_str(),
-                parent_chunk_index: item.parent_chunk_index,
-                macro_index: item.macro_index,
-                medium_index: item.medium_index,
-                header_chain: &item.header_chain,
-                zone_keywords: &item.zone_keywords,
-                entities: &item.entities,
+            .map(|(item, vector)| {
+                let word_count = item.text.split_whitespace().count();
+                let token_count = crate::chunker::count_tokens(&item.text);
+                let metadata = serde_json::json!({
+                    "uploaded_at": uploaded_at,
+                    "word_count": word_count,
+                    "token_count": token_count,
+                });
+                crate::db::EnrichedDocumentInsert {
+                    text: &item.text,
+                    vector,
+                    filename: &filename,
+                    doc_uuid: &doc_uuid,
+                    chapter_id: &item.chapter_id,
+                    chunk_index: item.chunk_index,
+                    chunk_level: item.level.as_str(),
+                    parent_chunk_index: item.parent_chunk_index,
+                    macro_index: item.macro_index,
+                    medium_index: item.medium_index,
+                    header_chain: &item.header_chain,
+                    zone_keywords: &item.zone_keywords,
+                    entities: &item.entities,
+                    metadata,
+                }
             })
             .collect();
 

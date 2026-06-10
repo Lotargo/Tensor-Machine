@@ -334,7 +334,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "search_text",
-                "description": "Search the local RAG document library for relevant passages.",
+                "description": "Search the local RAG document library for relevant passages. Use filters for specific chapter/section constraints.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -349,6 +349,25 @@ fn tool_definitions() -> Vec<serde_json::Value> {
                         "doc_uuid": {
                             "type": "string",
                             "description": "Optional document UUID to restrict the search scope."
+                        },
+                        "filters": {
+                            "type": "array",
+                            "description": "Metadata filters to apply to search. For chapter search: first get metadata to inspect exact chapter_id values, then pass a filter such as [{\"field\": \"chapter_id\", \"operator\": \"==\", \"value\": \"27\"}].",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "field": {
+                                        "type": "string",
+                                        "enum": ["chapter_id", "doc_uuid", "chunk_level", "chunk_index"]
+                                    },
+                                    "operator": {
+                                        "type": "string",
+                                        "enum": ["==", "!=", ">", ">=", "<", "<=", "in"]
+                                    },
+                                    "value": {}
+                                },
+                                "required": ["field", "operator", "value"]
+                            }
                         }
                     },
                     "required": ["query"]

@@ -46,4 +46,5 @@ pub struct EnrichedDocumentInsert<'a> {
     pub header_chain: &'a [String],
     pub zone_keywords: &'a [String],
     pub entities: &'a [String],
+    pub metadata: serde_json::Value,
 }

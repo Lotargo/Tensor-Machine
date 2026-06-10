@@ -143,6 +143,11 @@ fn agent_instruction(
         "1. Call list_documents to get the available documents.".to_string(),
         "2. If the list has 2-4 documents, call search_text for each document separately using the document title or id as a scope, then combine results.".to_string(),
         "3. If the list has more than 4 documents or they are clearly unrelated, present the list to the user and ask which document to search in.".to_string(),
+        "For questions asking about a specific chapter, section, or part (e.g., \"what happened in chapter 27?\" or \"explain section 2.3\"):".to_string(),
+        "1. Call get_document_metadata for the document to get the list of anchors (each anchor has \"name\" and \"text_preview\").".to_string(),
+        "2. Find the anchor matching the requested chapter/section text (e.g., \"Глава 27\" or \"2.3\").".to_string(),
+        "3. Use the matching chapter number/identifier (e.g. \"27\" or \"2.3\") to construct a filter for search_text.".to_string(),
+        "4. Call search_text with filters parameter (e.g., filters=[{\"field\": \"chapter_id\", \"operator\": \"==\", \"value\": \"27\"}]).".to_string(),
     ];
 
     if scope_to_selected_document {

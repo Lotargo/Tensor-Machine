@@ -118,7 +118,7 @@ pub fn structured_heading_terms(query: &str) -> Vec<String> {
 pub fn extract_chapter_id(query: &str) -> Option<String> {
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)(?:Chapter|Part|Р“Р»Р°РІР°|Р§Р°СЃС‚СЊ)\s+((?:\d+|\b[IVXLCDM]+\b|[a-zA-Z\p{Cyrillic}]+))",
+            r"(?i)(?:Chapter|Part|Глава|Часть)\s+((?:\d+|\b[IVXLCDM]+\b|[a-zA-Z\p{Cyrillic}]+))",
         )
         .unwrap()
     });
@@ -220,6 +220,12 @@ mod tests {
             extract_chapter_id("show Chapter five"),
             Some("5".to_string())
         );
+    }
+
+    #[test]
+    fn extract_chapter_id_russian() {
+        assert_eq!(extract_chapter_id("Глава 27"), Some("27".to_string()));
+        assert_eq!(extract_chapter_id("Часть вторая"), Some("2".to_string()));
     }
 
     #[test]

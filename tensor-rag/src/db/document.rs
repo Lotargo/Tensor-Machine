@@ -70,6 +70,7 @@ pub async fn insert_document(
             header_chain: &[],
             zone_keywords: &[],
             entities: &[],
+            metadata: serde_json::json!({}),
         }],
     )
     .await?;
@@ -111,6 +112,7 @@ pub async fn insert_document_enriched(
             header_chain,
             zone_keywords,
             entities,
+            metadata: serde_json::json!({}),
         }],
     )
     .await?;
@@ -204,7 +206,7 @@ pub async fn insert_documents_enriched_batch(
         "INSERT INTO documents (
             text, bm25_score, filename, doc_uuid, chapter_id, chunk_index,
             chunk_level, parent_chunk_index, macro_index, medium_index,
-            header_chain, zone_keywords, entities
+            header_chain, zone_keywords, entities, metadata
         ) ",
     );
     builder.push_values(
@@ -226,7 +228,8 @@ pub async fn insert_documents_enriched_batch(
                 .push_bind(document.medium_index)
                 .push_bind(header_chain)
                 .push_bind(zone_keywords)
-                .push_bind(entities);
+                .push_bind(entities)
+                .push_bind(&document.metadata);
         },
     );
     builder.push(" RETURNING id");
