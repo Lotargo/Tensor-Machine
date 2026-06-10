@@ -6,3 +6,5 @@ doc_for_tests*
 scripts/
 server*.log
 server*.txt
+__pycache__/
+*.pyc
