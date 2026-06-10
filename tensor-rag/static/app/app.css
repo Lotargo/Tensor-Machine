@@ -729,6 +729,33 @@
     background: var(--bg-card-strong);
 }
 
+.chat-model-info {
+    font-size: 11px;
+    color: var(--text-tertiary, #888);
+    margin-top: 4px;
+    padding-left: 4px;
+    user-select: none;
+}
+
+.model-custom-wrap input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    font-size: 13px;
+    outline: none;
+    background: var(--bg-card);
+    color: var(--text-primary);
+}
+
+.settings-input-row:has(.model-select) {
+    flex-wrap: wrap;
+}
+
+.settings-input-row:has(.model-select) .model-select {
+    flex: 1 1 100%;
+}
+
 .chat-sources {
     width: 100%;
 }

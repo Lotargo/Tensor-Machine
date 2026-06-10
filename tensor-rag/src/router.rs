@@ -69,6 +69,7 @@ const AI_PROVIDER_OPTIONS: &[(&str, &str)] = &[
     ("openai", "OpenAI"),
     ("gemini", "Gemini"),
     ("openrouter", "OpenRouter"),
+    ("zen", "Zen"),
     ("local", "Ollama / LM Studio"),
     ("custom", "Custom OpenAI-compatible"),
 ];
@@ -594,6 +595,7 @@ pub fn mcp_router(state: Arc<AppState>) -> Router {
             "/upload",
             post(handle_upload).layer(DefaultBodyLimit::max(crate::config::get_upload_max_bytes())),
         )
+        .route("/zen/models", get(handle_zen_models))
         .route("/clear", post(handle_clear_database))
         .with_state(state)
 }
@@ -815,6 +817,26 @@ async fn handle_restart_server(
         "status": "success",
         "message": "Restart initiated."
     })))
+}
+
+async fn handle_zen_models() -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let resp = client
+        .get("https://opencode.ai/zen/v1/models")
+        .send()
+        .await
+        .map_err(|_| axum::http::StatusCode::BAD_GATEWAY)?;
+
+    let payload: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|_| axum::http::StatusCode::BAD_GATEWAY)?;
+
+    Ok(Json(payload))
 }
 
 fn upload_progress_channel(upload_id: &str) -> broadcast::Sender<UploadProgressEvent> {

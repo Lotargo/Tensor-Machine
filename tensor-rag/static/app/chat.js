@@ -5,6 +5,15 @@ let activeStreamController = null;
 let pendingStreamingFrame = null;
 let pendingStreamingSnapshot = null;
 
+const PROVIDER_DISPLAY_NAMES = {
+    openai: 'OpenAI',
+    gemini: 'Gemini',
+    openrouter: 'OpenRouter',
+    zen: 'Zen',
+    local: 'Ollama / LM Studio',
+    custom: 'Custom',
+};
+
 export function initChat() {
     document.getElementById('send-chat-btn').addEventListener('click', () => sendChatMessage('sidebar'));
     document.getElementById('send-chat-modal-btn').addEventListener('click', () => sendChatMessage('modal'));
@@ -97,6 +106,9 @@ function renderMessagesInto(container) {
         const wrapper = document.createElement('div');
         wrapper.className = 'chat-message';
         wrapper.dataset.role = message.role;
+        if (message.role === 'assistant' && message.model) {
+            wrapper.dataset.model = message.model;
+        }
         if (message.loading) wrapper.classList.add('chat-loading');
 
         if (message.role === 'system') {
@@ -126,6 +138,15 @@ function renderMessagesInto(container) {
                 ? renderAssistantContent(message.content)
                 : escapeHtml(message.content).replaceAll('\n', '<br>');
             wrapper.appendChild(bubble);
+        }
+
+        if (message.role === 'assistant' && message.model) {
+            const modelDiv = document.createElement('div');
+            modelDiv.className = 'chat-model-info';
+            const providerKey = message.provider || '';
+            const providerName = PROVIDER_DISPLAY_NAMES[providerKey] || providerKey;
+            modelDiv.textContent = providerName ? `${providerName} / ${message.model}` : message.model;
+            wrapper.appendChild(modelDiv);
         }
 
         if (message.sources?.length && !message.loading && !message.thinking) {
@@ -328,6 +349,7 @@ async function consumeSseResponse(response, outbound, userText) {
     let accumulated = '';
     let collectedSources = [];
     let toolEvents = [];
+    let doneReceived = false;
 
     while (true) {
         const { value, done } = await reader.read();
@@ -384,7 +406,9 @@ async function consumeSseResponse(response, outbound, userText) {
                     toolEvents,
                 });
             } else if (parsed.event === 'done') {
+                doneReceived = true;
                 collectedSources = parsed.data.sources || collectedSources;
+                const modelInfo = parsed.data.model ? { model: parsed.data.model, provider: parsed.data.provider } : {};
                 queueStreamingAssistantUpdate(outbound, userText, {
                     content: accumulated,
                     loading: false,
@@ -392,6 +416,7 @@ async function consumeSseResponse(response, outbound, userText) {
                     thinkingLabel: '',
                     sources: collectedSources,
                     toolEvents,
+                    ...modelInfo,
                 }, true);
             } else if (parsed.event === 'error') {
                 throw new Error(parsed.data.message || 'Streaming failed');
@@ -399,14 +424,16 @@ async function consumeSseResponse(response, outbound, userText) {
         }
     }
 
-    queueStreamingAssistantUpdate(outbound, userText, {
-        content: accumulated,
-        loading: false,
-        thinking: false,
-        thinkingLabel: '',
-        sources: collectedSources,
-        toolEvents,
-    }, true);
+    if (!doneReceived) {
+        queueStreamingAssistantUpdate(outbound, userText, {
+            content: accumulated,
+            loading: false,
+            thinking: false,
+            thinkingLabel: '',
+            sources: collectedSources,
+            toolEvents,
+        }, true);
+    }
 }
 
 function parseSseFrame(frame) {

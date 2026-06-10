@@ -100,10 +100,11 @@ pub fn ai_defaults_for_provider(provider: &str) -> (&'static str, &'static str) 
             "https://generativelanguage.googleapis.com/v1beta/openai",
             "gemini-3.5-flash",
         ),
-        "openrouter" => ("https://openrouter.ai/api/v1", "openai/gpt-4.1-mini"),
-        "local" => ("http://localhost:11434/v1", "llama3.1"),
+        "openrouter" => ("https://openrouter.ai/api/v1", ""),
+        "zen" => ("https://opencode.ai/zen/v1", "big-pickle"),
+        "local" => ("http://localhost:11434/v1", ""),
         "custom" => ("", ""),
-        _ => ("https://api.openai.com/v1", "gpt-4.1-mini"),
+        _ => ("https://api.openai.com/v1", "gpt-5.5"),
     }
 }
 

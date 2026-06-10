@@ -14,11 +14,18 @@ import {
 import { fetchDocuments } from './library.js';
 
 const PROVIDER_DEFAULTS = {
-    openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini' },
+    openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.5' },
     gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.5-flash' },
-    openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4.1-mini' },
-    local: { baseUrl: 'http://localhost:11434/v1', model: 'llama3.1' },
+    openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: '' },
+    zen: { baseUrl: 'https://opencode.ai/zen/v1', model: 'big-pickle' },
+    local: { baseUrl: 'http://localhost:11434/v1', model: '' },
     custom: { baseUrl: '', model: '' },
+};
+
+const PROVIDER_MODELS = {
+    gemini: ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview'],
+    openai: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+    zen: ['big-pickle', 'mimo-v2.5-free', 'deepseek-v4-flash-free', 'nemotron-3-ultra-free'],
 };
 
 let aiAutosaveTimer = null;
@@ -75,6 +82,7 @@ function renderAiSettings() {
     const aiSettings = state.settings.filter((setting) => setting.category === 'ai');
     form.innerHTML = '';
     aiSettings.forEach((setting) => form.appendChild(createSettingField(setting, 'ai')));
+    setupModelSelector(form);
     bindProviderPresetBehavior(form);
     bindAiAutosave(form);
     setAiSaveState('idle');
@@ -177,20 +185,168 @@ function createSettingField(setting, section) {
     return wrapper;
 }
 
+const PROVIDER_APIKEYS_STORAGE = 'tensor-rag:provider-api-keys';
+
+function loadProviderApiKeys() {
+    try {
+        return JSON.parse(localStorage.getItem(PROVIDER_APIKEYS_STORAGE)) || {};
+    } catch {
+        return {};
+    }
+}
+
+function saveProviderApiKey(provider, apiKey) {
+    const keys = loadProviderApiKeys();
+    if (apiKey) {
+        keys[provider] = apiKey;
+    } else {
+        delete keys[provider];
+    }
+    localStorage.setItem(PROVIDER_APIKEYS_STORAGE, JSON.stringify(keys));
+}
+
 function bindProviderPresetBehavior(form) {
     const providerSelect = form.querySelector('[data-key="AI_PROVIDER"]');
     const baseUrlInput = form.querySelector('[data-key="AI_BASE_URL"]');
     const modelInput = form.querySelector('[data-key="AI_MODEL"]');
+    const apiKeyInput = form.querySelector('[data-key="AI_API_KEY"]');
     if (!providerSelect || !baseUrlInput || !modelInput) return;
+
+    if (apiKeyInput) {
+        const currentProvider = providerSelect.value;
+        const storedKeys = loadProviderApiKeys();
+        if (storedKeys[currentProvider]) {
+            apiKeyInput.value = storedKeys[currentProvider];
+        }
+    }
+
+    let previousProvider = providerSelect.value;
 
     providerSelect.addEventListener('change', () => {
         const defaults = PROVIDER_DEFAULTS[providerSelect.value] || PROVIDER_DEFAULTS.openai;
         if (!baseUrlInput.value || Object.values(PROVIDER_DEFAULTS).some((item) => item.baseUrl === baseUrlInput.value)) {
             baseUrlInput.value = defaults.baseUrl;
         }
-        if (!modelInput.value || Object.values(PROVIDER_DEFAULTS).some((item) => item.model === modelInput.value)) {
-            modelInput.value = defaults.model;
+
+        if (apiKeyInput && previousProvider !== providerSelect.value) {
+            saveProviderApiKey(previousProvider, apiKeyInput.value);
+            const storedKeys = loadProviderApiKeys();
+            apiKeyInput.value = storedKeys[providerSelect.value] || '';
+            apiKeyInput.dispatchEvent(new Event('input', { bubbles: true }));
         }
+
+        previousProvider = providerSelect.value;
+    });
+}
+
+function setupModelSelector(form) {
+    const providerSelect = form.querySelector('[data-key="AI_PROVIDER"]');
+    const modelInput = form.querySelector('[data-key="AI_MODEL"]');
+    if (!providerSelect || !modelInput) return;
+
+    const modelField = modelInput.closest('.settings-field');
+    if (!modelField) return;
+
+    function rebuildModelWidget() {
+        const provider = providerSelect.value;
+        const models = PROVIDER_MODELS[provider];
+        const inputRow = modelField.querySelector('.settings-input-row');
+        const currentModel = modelInput.value;
+
+        const existingSelect = inputRow.querySelector('.model-select');
+        const existingCustomWrap = inputRow.querySelector('.model-custom-wrap');
+        if (existingSelect) existingSelect.remove();
+        if (existingCustomWrap) existingCustomWrap.remove();
+
+        if (models && models.length) {
+            modelInput.style.display = 'none';
+
+            const select = document.createElement('select');
+            select.id = modelInput.id;
+            select.className = 'model-select';
+
+            models.forEach((m) => {
+                const opt = document.createElement('option');
+                opt.value = m;
+                opt.textContent = m;
+                select.appendChild(opt);
+            });
+
+            const customOpt = document.createElement('option');
+            customOpt.value = '__custom__';
+            customOpt.textContent = 'Custom...';
+            select.appendChild(customOpt);
+
+            const isCustom = !models.includes(currentModel);
+            if (isCustom) {
+                select.value = '__custom__';
+            } else {
+                select.value = currentModel;
+            }
+
+            inputRow.insertBefore(select, modelInput);
+
+            let customWrap = inputRow.querySelector('.model-custom-wrap');
+            if (!customWrap) {
+                customWrap = document.createElement('div');
+                customWrap.className = 'model-custom-wrap';
+                customWrap.style.width = '100%';
+                customWrap.style.display = 'none';
+                const customInput = document.createElement('input');
+                customInput.type = 'text';
+                customInput.placeholder = 'Enter model identifier';
+                customInput.style.width = '100%';
+                customInput.style.marginTop = '6px';
+                customWrap.appendChild(customInput);
+                inputRow.insertBefore(customWrap, modelInput.nextSibling);
+            }
+
+            if (isCustom) {
+                customWrap.style.display = 'block';
+                customWrap.querySelector('input').value = currentModel;
+            }
+
+            select.addEventListener('change', () => {
+                if (select.value === '__custom__') {
+                    customWrap.style.display = 'block';
+                    modelInput.value = customWrap.querySelector('input').value;
+                } else {
+                    customWrap.style.display = 'none';
+                    modelInput.value = select.value;
+                }
+                modelInput.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+
+            customWrap.querySelector('input').addEventListener('input', (e) => {
+                modelInput.value = e.target.value;
+                modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+
+            if (select.value !== '__custom__') {
+                modelInput.value = select.value;
+            }
+        } else {
+            modelInput.style.display = '';
+        }
+    }
+
+    rebuildModelWidget();
+    providerSelect.addEventListener('change', () => {
+        const defaults = PROVIDER_DEFAULTS[providerSelect.value] || PROVIDER_DEFAULTS.openai;
+        const models = PROVIDER_MODELS[providerSelect.value];
+
+        if (models && models.length) {
+            const currentVal = modelInput.value;
+            if (!currentVal || models.includes(currentVal) || Object.values(PROVIDER_DEFAULTS).some((d) => d.model === currentVal)) {
+                modelInput.value = defaults.model || models[0];
+            }
+        } else {
+            if (!modelInput.value || Object.values(PROVIDER_DEFAULTS).some((d) => d.model === modelInput.value)) {
+                modelInput.value = defaults.model || '';
+            }
+        }
+
+        rebuildModelWidget();
     });
 }
 
@@ -225,7 +381,10 @@ async function saveAiSettingsSilently() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ values: collectValues('ai') }),
         });
-        await loadSettings();
+        const data = await fetchJson('/settings');
+        state.settings = data.settings || [];
+        state.collectionHealth = data.collection_health || null;
+        document.dispatchEvent(new CustomEvent('tensor-rag:settings-loaded'));
         setAiSaveState('saved');
     } catch (_error) {
         setAiSaveState('error');
