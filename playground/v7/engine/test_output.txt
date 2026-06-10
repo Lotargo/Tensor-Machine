@@ -1,0 +1,48 @@
+﻿swipl.exe : Warning: f:/ъхщё/agi-lite/v7/engine/regression.pl:60:
+строка:1 знак:44
++ ... v7\engine"; & "C:\Program Files\swipl\bin\swipl.exe" -q -s test_debug ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning: f:/ъхщ...gression.pl:60::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Warning:    Redefined static procedure ast_size/2
+Warning:    Previously defined at f:/ъхщё/agi-lite/v7/engine/quantum.pl:40
+Warning: f:/ъхщё/agi-lite/v7/engine/regression.pl:70:
+Warning:    Redefined static procedure map_ast_size/2
+Warning:    Previously defined at f:/ъхщё/agi-lite/v7/engine/quantum.pl:50
+Warning: f:/ъхщё/agi-lite/v7/engine/rules.pl:75:
+Warning:    Redefined static procedure ast_size/2
+Warning:    Previously defined at f:/ъхщё/agi-lite/v7/engine/quantum.pl:40
+Warning: f:/ъхщё/agi-lite/v7/engine/rules.pl:85:
+Warning:    Redefined static procedure map_ast_size/2
+Warning:    Previously defined at f:/ъхщё/agi-lite/v7/engine/quantum.pl:50
+=== Debug: Synthesis Censor Tests (all 3-qubit) ===
+
+--- Test 1: Pure identity (H┬╖H on each qubit) ---
+  Fidelity=0.750000, Trace=8.000000, Penalty=1258.500008
+
+--- Test 2: HHH ---
+  Fidelity=0.088388, Trace=0.000000, Penalty=915.611653
+
+--- Test 3: CNOT(q1,q2) on 3 qubits ---
+  Fidelity=0.500000, Trace=4.000000, Penalty=510.500005
+
+--- Test 4: CNOT(q1,q3) (non-adjacent) on 3 qubits ---
+  Fidelity=0.750000, Trace=4.000000, Penalty=260.500008
+
+--- Test 5: Known Toffoli ---
+  Fidelity=0.500000, Trace=4.000000, Penalty=521.000004
+
+--- Test 6: CNOT chain (should be fidelity 0.75 range) ---
+  CNOT*2: Fidelity=0.250000, Trace=2.000000, Penalty=762.500003
+
+========================================================
+SUMMARY:
+  Identity:            F=0.750000  Tr=8.000000  P=1258.500008
+  HHH:                 F=0.088388  Tr=0.000000  P=915.611653
+  CNOT(q1,q2):        F=0.500000  Tr=4.000000  P=510.500005
+  CNOT(q1,q3):        F=0.750000  Tr=4.000000  P=260.500008
+  Known Toffoli:      F=0.500000  Tr=4.000000  P=521.000004
+  CNOT chain:         F=0.250000  Tr=2.000000  P=762.500003
+========================================================
+=== Done ===

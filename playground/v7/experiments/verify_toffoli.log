@@ -1,0 +1,15 @@
+Reading: /app/v7/experiments/toffoli_results.log
+
+Found 2 candidate ASTs.
+
+Ast #1: fidelity = 0.75000000  [UNITARY]
+Ast #2: fidelity = 0.75000000  [UNITARY]
+
+============================================================
+Best fidelity: 0.75000000
+Best AST: (SEQ (H Q1) (SEQ (H Q1) (CNOT Q2 Q3)))
+============================================================
+Identity baseline fidelity: 0.75000000 (expected 0.75)
+Perfect Toffoli fidelity:  1.00000000 (expect 1.0)
+
+[FAIL] Poor fidelity (0.7500) -- search needs improvement

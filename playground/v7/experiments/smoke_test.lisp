@@ -1,0 +1,7 @@
+(require :asdf)
+(make-package :cognitive-engine-noauto)
+(load "v7/engine/engine.lisp")
+(in-package :cognitive-engine)
+(format t "=== Smoke Test: 5 iterations, 2 threads ===~%")
+(run-engine-parallel '(seq (h q1) (seq (h q2) (h q3))) :synthesis 5 2)
+(format t "=== Smoke Test Done ===~%")

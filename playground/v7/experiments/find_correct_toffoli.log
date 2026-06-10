@@ -1,0 +1,14 @@
+[Maslov] F=0.500000 diff=1.000000 T-count=7
+[AMM2013] F=0.500000 diff=1.000000 T-count=7
+[NC_a] F=0.500000 diff=1.000000 T-count=7
+[NC_b] F=0.461940 diff=1.000000 T-count=6
+[With_S] F=0.461940 diff=1.000000 T-count=6
+[Alt_TD_T] F=0.500000 diff=1.000000 T-count=7
+[Qiskit_6CNOT] F=1.000000 diff=0.000000 T-count=7
+[NoEndH] F=0.000000 diff=1.707107 T-count=7
+[SDG_T_TDG] F=0.426777 diff=1.000000 T-count=5
+
+--- With X instead of H on q3 ---
+
+--- Build Toffoli manually ---
+Manual Toffoli matches target: True

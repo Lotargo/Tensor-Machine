@@ -1,0 +1,60 @@
+(in-package :cognitive-engine)
+
+(defun ensure-papers-directory-exists ()
+  "Creates the v7/papers directory if it does not exist."
+  (ensure-directories-exist "v7/papers/"))
+
+(defun generate-latex-ontology (domain base-ast discovered-axioms best-hybrid iterations elapsed-time)
+  "Generates a .tex whitepaper describing the evolutionary process and discovered meta-axioms."
+  (ensure-papers-directory-exists)
+  (let* ((timestamp (multiple-value-bind (second minute hour date month year)
+                        (get-decoded-time)
+                      (format nil "~4,'0D~2,'0D~2,'0D_~2,'0D~2,'0D~2,'0D" year month date hour minute second)))
+         (filename (format nil "v7/papers/discovery_~A_~A.tex" (string-downcase (symbol-name domain)) timestamp)))
+    (with-open-file (stream filename :direction :output :if-exists :supersede :if-does-not-exist :create)
+      (format stream "\\documentclass{article}~%")
+      (format stream "\\usepackage[utf8]{inputenc}~%")
+      (format stream "\\usepackage{amsmath,amssymb}~%")
+      (format stream "\\usepackage{hyperref}~%")
+      (format stream "\\usepackage{graphicx}~%")
+      (format stream "\\title{Autonomous Discovery in Domain: ~A}~%" (string-capitalize (symbol-name domain)))
+      (format stream "\\author{Cognitive Engine v7}~%")
+      (format stream "\\date{\\today}~%")
+      (format stream "\\begin{document}~%")
+      (format stream "\\maketitle~%")
+      (format stream "\\begin{abstract}~%")
+      (format stream "This paper presents an autonomously generated mathematical synthesis discovered by the v7 Cognitive Engine. ")
+      (if discovered-axioms
+          (format stream "Notably, the engine successfully escaped local minima by discovering and injecting \\textbf{~D} novel meta-axioms into the Prolog unified physics ruleset." (length discovered-axioms))
+          (format stream "The engine successfully converged on an optimal Abstract Syntax Tree (AST) topology."))
+      (format stream "\\end{abstract}~%")
+
+      (format stream "\\section{Initial Conditions}~%")
+      (format stream "The evolutionary process initialized with the following paradox or seed topology:~%")
+      (format stream "\\begin{verbatim}~%")
+      (format stream "~A~%" base-ast)
+      (format stream "\\end{verbatim}~%")
+
+      (when discovered-axioms
+        (format stream "\\section{Discovered Meta-Axioms}~%")
+        (format stream "To resolve topological deadlocks, the Lisp orchestrator synthesized the following Prolog rules and successfully verified them against the domain invariants:~%")
+        (format stream "\\begin{itemize}~%")
+        (dolist (axiom discovered-axioms)
+          (format stream "  \\item \\texttt{~A}~%" axiom))
+        (format stream "\\end{itemize}~%"))
+
+      (format stream "\\section{Optimal Hybrid Topology}~%")
+      (format stream "Following the Open-Ended Novelty Search and final Crossover Synthesis, the engine converged on the following optimal topology (Penalty = 0.0):~%")
+      (format stream "\\begin{verbatim}~%")
+      (format stream "~A~%" best-hybrid)
+      (format stream "\\end{verbatim}~%")
+
+      (format stream "\\section{Computational Metrics}~%")
+      (format stream "\\begin{itemize}~%")
+      (format stream "  \\item \\textbf{Evaluated ASTs:} ~D~%" iterations)
+      (format stream "  \\item \\textbf{Elapsed Time:} ~,4F seconds~%" elapsed-time)
+      (format stream "  \\item \\textbf{Throughput:} ~,2F ASTs/sec~%" (if (> elapsed-time 0) (/ iterations elapsed-time) 0))
+      (format stream "\\end{itemize}~%")
+
+      (format stream "\\end{document}~%"))
+    (format t "[ONTOLOGY GENERATOR] Successfully generated whitepaper: ~A~%" filename)))

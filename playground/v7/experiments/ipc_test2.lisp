@@ -1,0 +1,27 @@
+(require :asdf)
+(load "v7/engine/engine.lisp")
+(in-package :cognitive-engine)
+
+(format t "Test 1: lisp-to-prolog~%")
+(format t "  t op: ~A~%" (lisp-to-prolog '(t q1)))
+(format t "  seq:  ~A~%" (lisp-to-prolog '(seq (h q1) (seq (h q2) (h q3)))))
+(format t "  cnot: ~A~%" (lisp-to-prolog '(cnot q1 q2)))
+(finish-output)
+
+(format t "~%Test 2: Daemon IPC~%")
+(finish-output)
+(let ((proc (uiop:launch-program (list "swipl" "-q" "-s" "v7/engine/daemon.pl")
+                                  :input :stream
+                                  :output :stream))
+      (proc-cell (list nil)))
+  (setf (car proc-cell) proc)
+  (let ((penalty (check-with-prolog '(seq (h q1) (seq (h q2) (h q3))) :synthesis proc-cell)))
+    (format t "  3xH penalty = ~F~%" penalty))
+  (finish-output)
+  (let ((penalty (check-with-prolog '(t q1) :synthesis proc-cell)))
+    (format t "  t(q1) penalty = ~F~%" penalty))
+  (finish-output)
+  (uiop:terminate-process proc :urgent t))
+
+(format t "Done.~%")
+(finish-output)

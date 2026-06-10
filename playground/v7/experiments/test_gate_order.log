@@ -1,0 +1,27 @@
+=== CNOT verification on 2 qubits ===
+  v1 |00> -> |00> OK
+  v1 |01> -> |01> OK
+  v1 |10> -> |11> OK
+  v1 |11> -> |10> OK
+  v1 all correct: True
+  v2 |00> -> |00> OK
+  v2 |01> -> |11> FAIL expected |{expected:02b}>
+  v2 |10> -> |10> FAIL expected |{expected:02b}>
+  v2 |11> -> |01> FAIL expected |{expected:02b}>
+  v2 all correct: False
+
+Toffoli with v1: F=0.500000 diff=1.000000
+  |110> -> |101>
+  |111> -> |100>
+  |100> -> |110>
+  |101> -> |111>
+
+Toffoli with v2: F=0.461940 diff=1.000000
+  |110> -> |010>
+  |111> -> |011>
+  |100> -> |100>
+  |101> -> |101>
+
+=== Gate order: left-multiply vs right-multiply ===
+  Ug @ U (left-mul): F=0.500000 diff=1.000000
+  U @ Ug (right-mul): F=0.500000 diff=1.000000

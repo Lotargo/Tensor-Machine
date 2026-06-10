@@ -1,0 +1,9 @@
+--- V7 AST Physics Simulator ---
+Initial pure state: (1.0, 0.0)
+After Hadamard (Superposition): (0.7071067811865475, 0.7071067811865475)
+Quantum mapped scalar velocity (v): 0.4999999999999999
+Lorentz Factor (Gamma) applied to Quantum State: 1.1547005383792515
+Von Neumann Entropy of state: 0.6931471805599454
+
+--- Conclusion ---
+The AST successfully constructed an Isomorphism between Quantum Amplitudes and Relativistic Velocity, using the Lorentz factor to scale the Thermodynamic Entropy (Delta_S). This mathematically models how quantum states behave near an Event Horizon.

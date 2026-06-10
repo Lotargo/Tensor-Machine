@@ -1,0 +1,28 @@
+=== Quick Anti-Identity Test ===
+Domain: synthesis, Target: Toffoli (CCNOT)
+Iterations: 1000, Threads: 4
+
+=== Starting Parallel Cognitive Engine v7 ===
+Domain: SYNTHESIS
+Base AST: (SEQ (H Q1) (SEQ (H Q2) (H Q3)))
+Threads: 4
+
+==================================================
+      v7 ENGINE PERFORMANCE DASHBOARD
+==================================================
+Total Elapsed Time    : 3.7572 seconds
+Logical CPU Cores     : 4
+Total ASTs Evaluated  : 4000
+Throughput (AST/sec)  : 1064.64
+Avg Latency per AST   : 0.9393 ms
+==================================================
+
+Found valid hypotheses from Islands:
+  (SEQ (T Q1)
+   (SEQ (SEQ (SEQ (SDG Q2) (H Q3)) (SEQ (T Q3) (S Q2))) (SEQ (H Q3) (T Q2))))
+Ultimate Hybrids:
+  (SEQ (T Q1)
+   (SEQ (SEQ (SEQ (SDG Q2) (H Q3)) (SEQ (T Q3) (S Q2))) (SEQ (H Q3) (T Q2))))
+[ONTOLOGY GENERATOR] Successfully generated whitepaper: v7/papers/discovery_synthesis_20260602_122452.tex
+
+=== Done ===
