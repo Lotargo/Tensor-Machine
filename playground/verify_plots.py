@@ -10,6 +10,7 @@ verify_plots.py — Верификационные графики для EXP-001
 Требования: numpy, matplotlib (>=3.5)
 """
 
+import csv
 import math
 import struct
 import sys
@@ -801,13 +802,67 @@ def plot_singularity_summary():
 
 
 # ═══════════════════════════════════════════════════════════════
+#  PART 4 — EXP-004: SAT/3-SAT solver plots
+# ═══════════════════════════════════════════════════════════════
+
+import exp004_sat_challenge as sat
+
+CSV_PATH = FIGS.parent / "results_exp004.csv"
+
+
+def _load_exp004_results() -> list[sat.SatResult]:
+    """Rebuild SatResult list from EXP-004 CSV."""
+    results = []
+    with open(CSV_PATH, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            m = sat.SolverMetrics(
+                wall_time_ns=int(row.get("wall_time_ns", 0) or 0),
+                cpu_time_ns=int(row.get("cpu_time_ns", 0) or 0),
+                peak_memory_kb=int(row.get("peak_memory_kb", 0) or 0),
+                decisions=int(row.get("decisions", 0) or 0),
+                propagations=int(row.get("propagations", 0) or 0),
+                conflicts=int(row.get("conflicts", 0) or 0),
+                backtracks=int(row.get("backtracks", 0) or 0),
+                restarts=int(row.get("restarts", 0) or 0),
+                nodes_visited=int(row.get("nodes_visited", 0) or 0),
+            )
+            r = sat.SatResult(
+                instance_id=row.get("instance_id", ""),
+                sha256=row.get("sha256", ""),
+                n_vars=int(row.get("n_vars", 0) or 0),
+                n_clauses=int(row.get("n_clauses", 0) or 0),
+                clause_var_ratio=float(row.get("clause_var_ratio", 0.0) or 0.0),
+                source=row.get("source", ""),
+                solver_name=row.get("solver_name", "unknown"),
+                timeout_ms=int(row.get("timeout_ms", 5000) or 5000),
+                verdict=sat.Verdict(row.get("verdict", "")),
+                metrics=m,
+                error=row.get("error", "") or "",
+                verification_wall_time_ns=int(row.get("verification_wall_time_ns", 0) or 0),
+                oracle_wall_time_ns=int(row.get("oracle_wall_time_ns", 0) or 0),
+            )
+            results.append(r)
+    return results
+
+
+def plot_exp004():
+    """Generate all 4 EXP-004 plots using the solver's own plotting code."""
+    results = _load_exp004_results()
+    sat.plot_time_vs_n(results)
+    sat.plot_success_by_layer(results)
+    sat.plot_nodes_vs_time(results)
+    sat.plot_verdict_matrix(results)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
 
 def run():
     print("=" * 60)
     print("  VERIFY PLOTS")
-    print("  Generating verification figures for EXP-001, EXP-002 & EXP-003")
+    print("  Generating verification figures for EXP-001/002/003 & EXP-004")
     print("=" * 60)
 
     print("\n-- EXP-001: Gravity verification --")
@@ -828,9 +883,12 @@ def run():
     plot_censor_policy()
     plot_singularity_summary()
 
+    print("\n-- EXP-004: SAT/3-SAT solver --")
+    plot_exp004()
+
     print("\n" + "=" * 60)
     print(f"  All figures saved to: {FIGS}")
-    print(f"  Total: 12 plots")
+    print(f"  Total: 16 plots")
     print("=" * 60)
 
 

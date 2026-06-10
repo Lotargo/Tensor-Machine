@@ -1,0 +1,40 @@
+# EXP-004-alpha Artifact Manifest
+# Created: 2026-06-10T20:08:13.008563+00:00
+# OS: Windows Native & Linux (WSL / Ubuntu)
+# Python Version (Windows): Python 3.14.5
+# Python Version (WSL): Python 3.12.3
+# CPU logical cores: 12
+# Default BF Workers limit: 4
+# ============================================================
+
+726dafcb749cdaf8b57e7390f927baf7c18cb33a273d4e7bca07e44c4035b2a1  exp004_sat_challenge.py
+88c4f7da6c8c0b3e4fbf616b39ce10c0803780bce798b0efa7a760868cadb854  exp_docs/EXP004_sat_challenge.md
+a939b4f89cf3d509949e6244bdb922af9744ee5ea81b6afb504d749d6376d71a  exp_docs/README_RUN.md
+3e59ab073772115e3a03eff1d81c45cb4cd01a09cd2d06f47e809623de3a1708  exp_docs/figures/exp004_nodes_vs_time.png
+23614ab2eb6d2019f8eeb380bc197595a01714c211805ed034759d15aa2ed0a1  exp_docs/figures/exp004_success_by_layer.png
+5fb6a648b9a591adb54ae271652d116c016c03fe6ec4216c729315de2f57723e  exp_docs/figures/exp004_time_vs_n.png
+2498ecbfb9e308647ecab944f5b80e5d4a96ba6c6b225de9200c9928c563dd70  exp_docs/figures/exp004_verdict_matrix.png
+851efc3d023d94d019b3b2b06b5d4580d8a2a5f54abf25d4db42d3fc7c9b3631  exp_docs/instances/L4_n20_sat_seed7.cnf
+b80034602a314852c0a5fa294d9ccc3f4071f79f794a96648df0b78c478567c1  exp_docs/instances/L4_n24_sat_seed13.cnf
+a19ef1bf00392bdc66a13d6e5b8ac10e162a4092be8a72db00c94039064856aa  exp_docs/instances/L4_n30_sat_seed99.cnf
+2dd9de6cba87d84f05d875208b74e1c595697e97cfc9d398fc73a736a78cf03b  exp_docs/instances/L4_php4.cnf
+87b1157217d104a04127d23655e3fa6f3e97e7a4ea54edc5b04eee8df3b2b1e5  exp_docs/instances/L4_php6.cnf
+a641548a1ac0060c3216544558364e5b8e8efe495cf8c7480ac0ee9f4e73fe72  exp_docs/instances/layer2_n10_seed123.cnf
+011f65aa04a66ed16ec8e3086058e2e7b4711d36c0344149df6d653b86284d4d  exp_docs/instances/layer2_n10_seed42.cnf
+f82ae30396311f6edcbf06dc9d75c59255378412459d7f36c5b12937fe79cd46  exp_docs/instances/layer2_n12_seed123.cnf
+1206cd9bb8058fa70e67d7d5512afa176d72ab71e16a02b39c4f7aeb5b36119c  exp_docs/instances/layer2_n12_seed42.cnf
+acddb1c0b5f71227cd498ab6deb4c2adb32a0c6be13622627bf73a12d82a617b  exp_docs/instances/layer2_n14_seed123.cnf
+3a6b90f9eac7c8751afedb97b8a10b42e2adfd3a1f3037659748ad92134682cb  exp_docs/instances/layer2_n14_seed42.cnf
+f08151c9c3abfdd37468452a3fb43853c3ad48759210ed16b5b543c115a01532  exp_docs/instances/layer2_n16_seed123.cnf
+0e5099a11e6474a024ab9767ed33b94a5dc204f98a0631f49270655b84427338  exp_docs/instances/layer2_n16_seed42.cnf
+7a9a8ad02911a8d3db903ed66b1a520f932f8e28e23d8713c7e4b3bcb64b2c26  exp_docs/instances/layer2_n8_seed123.cnf
+33f2fc7ef8382459250cb4fa9c1df2d6487e482f4fa653a344866309482ceca9  exp_docs/instances/layer2_n8_seed42.cnf
+384079724e1347e840b2d75aad63ffcffdfa9fbbcaf609b2eec8e60fd962fa12  exp_docs/instances/layer3_n20_seed42.cnf
+96fbf91bce646b801c9bb276a6909670a354603021524482e1ab3f55121a7d73  exp_docs/instances/layer3_n50_seed42.cnf
+f1d9bfd5123b9c1b2b384c11d8a94b45e3ab9d11f844d09a48596c18cb97f2ba  exp_docs/results_exp004.csv
+307d6f2c0fb5d25517ec2a3e00f46287124020d1e31c00390bb4cc1f36e460ba  exp_docs/results_exp004.jsonl
+cc2428634ba2e9c3d258b3c98d9de57feeadda844845b44703d4ab0d0f32a242  exp_docs/walkthrough_patches.md
+f044cbc6eb7f6e9e44d9da60547caba882c2cddfd63ac6b224993a60e24884ae  pip_freeze_windows.txt
+c2624315a9ea6de79561bd19a70c09d5bb589c7003938bd662dbe3ae34ff3495  pip_freeze_wsl.txt
+7149ccf9fcae12c35a72580232428ac127431b303d1d46cca5ca1458dda4d8cd  requirements.txt
+247e40225d1096257e9bc0b21370ba2982bc21310246ec60ed206b9f80676f85  test_exp004_safety.py
