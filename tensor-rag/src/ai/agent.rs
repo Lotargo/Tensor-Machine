@@ -2,6 +2,8 @@ use crate::mcp::{
     GetDocumentMetadataTool, HelpTool, ListDocumentsTool, ReadDocumentTool, SearchTextTool,
     ToolHandler,
 };
+use once_cell::sync::Lazy;
+use regex::{Captures, Regex};
 use serde_json::json;
 
 use super::{
@@ -11,55 +13,53 @@ use super::{
 /// Parse DSML tool call tokens from content text.
 /// DeepSeek models may output: <｜DSML｜tool_calls><｜DSML｜invoke name="search_text">...
 fn parse_dsml_tool_calls(content: &str) -> Vec<ToolCall> {
-    let mut calls = Vec::new();
-    let mut pos = 0;
-    while let Some(invoke_start) = content[pos..].find("<｜DSML｜invoke name=\"") {
-        let absolute_start = pos + invoke_start;
-        let name_start = absolute_start + "<｜DSML｜invoke name=\"".len();
-        let Some(name_end) = content[name_start..].find('"') else {
-            break;
-        };
-        let tool_name = &content[name_start..name_start + name_end];
+    static INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?s)<DSML:invoke\s+[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</DSML:invoke>"#)
+            .expect("valid DSML invoke regex")
+    });
+    static PARAM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?s)<DSML:parameter\s+([^>]*)>(.*?)</DSML:parameter>"#)
+            .expect("valid DSML parameter regex")
+    });
 
-        // Find the closing </｜DSML｜invoke> or </｜DSML｜parameter> blocks to extract parameters
-        let params_start = name_start + name_end + 1;
+    let content = canonicalize_dsml_markup(content);
+    let mut calls = Vec::new();
+    for invoke in INVOKE_RE.captures_iter(&content) {
+        let tool_name = invoke
+            .get(1)
+            .map(|value| value.as_str().trim())
+            .unwrap_or_default();
+        if tool_name.is_empty() {
+            continue;
+        }
+
+        let body = invoke
+            .get(2)
+            .map(|value| value.as_str())
+            .unwrap_or_default();
         let mut args = serde_json::Map::new();
 
-        // Parse parameters: <｜DSML｜parameter name="param_name" string="true">value</｜DSML｜parameter>
-        let mut param_pos = params_start;
-        while let Some(param_start) = content[param_pos..].find("<｜DSML｜parameter name=\"") {
-            let p_abs = param_pos + param_start + "<｜DSML｜parameter name=\"".len();
-            let Some(p_name_end) = content[p_abs..].find('"') else {
-                break;
+        for parameter in PARAM_RE.captures_iter(body) {
+            let attrs = parameter
+                .get(1)
+                .map(|value| value.as_str())
+                .unwrap_or_default();
+            let Some(param_name) = dsml_attr(attrs, "name") else {
+                continue;
             };
-            let param_name = &content[p_abs..p_abs + p_name_end];
-
-            // Check if string="true"
-            let after_name = p_abs + p_name_end + 1;
-            let is_string = content[after_name..].starts_with(" string=\"true\">");
-
-            // Find the value start
-            let value_start = if is_string {
-                after_name + " string=\"true\">".len()
-            } else {
-                content[after_name..].find('>').map(|i| after_name + i + 1).unwrap_or(0)
-            };
-
-            // Find closing tag
-            let closing_tag = "</｜DSML｜parameter>";
-            let Some(value_end) = content[value_start..].find(closing_tag) else {
-                break;
-            };
-            let raw_value = content[value_start..value_start + value_end].trim();
+            let raw_value = parameter
+                .get(2)
+                .map(|value| value.as_str().trim())
+                .unwrap_or_default();
+            let is_string = dsml_attr(attrs, "string").as_deref() == Some("true");
 
             let json_value = if is_string {
                 serde_json::Value::String(raw_value.to_string())
             } else {
-                serde_json::from_str(raw_value).unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()))
+                serde_json::from_str(raw_value)
+                    .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()))
             };
-            args.insert(param_name.to_string(), json_value);
-
-            param_pos = value_start + value_end + closing_tag.len();
+            args.insert(param_name, json_value);
         }
 
         calls.push(ToolCall {
@@ -67,15 +67,70 @@ fn parse_dsml_tool_calls(content: &str) -> Vec<ToolCall> {
             name: tool_name.to_string(),
             arguments: serde_json::Value::Object(args),
         });
-
-        // Move past this invoke block
-        if let Some(end) = content[param_pos..].find("</｜DSML｜invoke>") {
-            pos = param_pos + end + "</｜DSML｜invoke>".len();
-        } else {
-            break;
-        }
     }
     calls
+}
+
+fn canonicalize_dsml_markup(content: &str) -> String {
+    static DSML_TAG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"<\s*(/?)\s*[|｜]\s*DSML\s*[|｜]\s*(?:[|｜]\s*)?([^>]*)>"#)
+            .expect("valid DSML tag regex")
+    });
+
+    DSML_TAG_RE
+        .replace_all(content, |caps: &Captures| {
+            let slash = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let body = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
+            format!("<{}DSML:{}>", slash, body)
+        })
+        .into_owned()
+}
+
+fn contains_dsml_markup(content: &str) -> bool {
+    content.contains("<｜DSML｜") || content.contains("<|DSML|") || content.contains("< | DSML |")
+}
+
+fn strip_dsml_tool_markup(content: &str) -> String {
+    static INVOKE_BLOCK_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?s)<DSML:invoke\b[^>]*>.*?</DSML:invoke>"#).expect("valid DSML block regex")
+    });
+    static TOOL_CALLS_TAG_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?s)</?DSML:tool_calls[^>]*>"#).expect("valid DSML tool_calls regex")
+    });
+
+    let canonical = canonicalize_dsml_markup(content);
+    let without_invokes = INVOKE_BLOCK_RE.replace_all(&canonical, "");
+    TOOL_CALLS_TAG_RE
+        .replace_all(&without_invokes, "")
+        .trim()
+        .to_string()
+}
+
+fn sanitize_final_answer(content: String) -> String {
+    if !contains_dsml_markup(&content) {
+        return content;
+    }
+
+    let cleaned = strip_dsml_tool_markup(&content);
+    if cleaned.is_empty() {
+        "The model returned tool-call markup instead of a final answer; the raw tool call was suppressed. Please retry the question.".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn dsml_attr(attrs: &str, name: &str) -> Option<String> {
+    static ATTR_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"([A-Za-z0-9_-]+)\s*=\s*"([^"]*)""#).expect("valid attr regex"));
+
+    ATTR_RE.captures_iter(attrs).find_map(|capture| {
+        let attr_name = capture.get(1)?.as_str();
+        if attr_name == name {
+            capture.get(2).map(|value| value.as_str().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 pub async fn run_agent_completion(
@@ -114,26 +169,28 @@ pub async fn run_agent_completion(
                     "AI provider response does not contain an assistant message.".to_string()
                 })?;
 
-            let tool_calls = extract_tool_calls(&message);
-            let tool_calls = if tool_calls.is_empty() {
+            let native_tool_calls = extract_tool_calls(&message);
+            let (tool_calls, parsed_dsml_tool_calls) = if native_tool_calls.is_empty() {
                 // Try parsing DSML format from content (DeepSeek models)
                 if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                    parse_dsml_tool_calls(content)
+                    let parsed = parse_dsml_tool_calls(content);
+                    let parsed_dsml = !parsed.is_empty();
+                    (parsed, parsed_dsml)
                 } else {
-                    Vec::new()
+                    (Vec::new(), false)
                 }
             } else {
-                tool_calls
+                (native_tool_calls, false)
             };
             if tool_calls.is_empty() {
                 let content = extract_message_content(&payload).ok_or_else(|| {
                     "AI provider response does not contain an assistant message.".to_string()
                 })?;
-                return Ok((content, collected_sources));
+                return Ok((sanitize_final_answer(content), collected_sources));
             }
 
             // If we parsed DSML, inject tool_calls into message for proper format
-            if message.get("tool_calls").is_none() && !tool_calls.is_empty() {
+            if parsed_dsml_tool_calls {
                 let tc_json: Vec<serde_json::Value> = tool_calls
                     .iter()
                     .map(|tc| {
@@ -148,17 +205,8 @@ pub async fn run_agent_completion(
                     })
                     .collect();
                 message["tool_calls"] = json!(tc_json);
-                // Strip DSML from content
                 if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                    if content.contains("<｜DSML｜") {
-                        let cleaned = content
-                            .split("<｜DSML｜")
-                            .next()
-                            .unwrap_or(content)
-                            .trim()
-                            .to_string();
-                        message["content"] = json!(cleaned);
-                    }
+                    message["content"] = json!(strip_dsml_tool_markup(content));
                 }
             }
 
@@ -241,23 +289,25 @@ pub async fn stream_agent_completion(
                     "AI provider response does not contain an assistant message.".to_string()
                 })?;
 
-            let tool_calls = extract_tool_calls(&message);
-            let tool_calls = if tool_calls.is_empty() {
+            let native_tool_calls = extract_tool_calls(&message);
+            let (tool_calls, parsed_dsml_tool_calls) = if native_tool_calls.is_empty() {
                 // Try parsing DSML format from content (DeepSeek models)
                 if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                    parse_dsml_tool_calls(content)
+                    let parsed = parse_dsml_tool_calls(content);
+                    let parsed_dsml = !parsed.is_empty();
+                    (parsed, parsed_dsml)
                 } else {
-                    Vec::new()
+                    (Vec::new(), false)
                 }
             } else {
-                tool_calls
+                (native_tool_calls, false)
             };
             if tool_calls.is_empty() {
                 break;
             }
 
             // If we parsed DSML, inject tool_calls into message for proper format
-            if message.get("tool_calls").is_none() && !tool_calls.is_empty() {
+            if parsed_dsml_tool_calls {
                 let tc_json: Vec<serde_json::Value> = tool_calls
                     .iter()
                     .map(|tc| {
@@ -273,15 +323,7 @@ pub async fn stream_agent_completion(
                     .collect();
                 message["tool_calls"] = json!(tc_json);
                 if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                    if content.contains("<｜DSML｜") {
-                        let cleaned = content
-                            .split("<｜DSML｜")
-                            .next()
-                            .unwrap_or(content)
-                            .trim()
-                            .to_string();
-                        message["content"] = json!(cleaned);
-                    }
+                    message["content"] = json!(strip_dsml_tool_markup(content));
                 }
             }
 
@@ -322,7 +364,13 @@ pub async fn stream_agent_completion(
         }
     }
 
-    super::request_completion_stream_from_messages(config, &messages, tx).await?;
+    let content = super::request_completion_from_messages(config, &messages).await?;
+    send_sse(
+        tx,
+        "token",
+        &json!({ "delta": sanitize_final_answer(content) }),
+    )
+    .await?;
     Ok(ChatDoneEvent {
         provider: config.provider.clone(),
         model: config.model.clone(),
@@ -608,4 +656,46 @@ fn dedupe_sources(sources: Vec<ChatSource>) -> Vec<ChatSource> {
     }
 
     deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_fullwidth_dsml_tool_call() {
+        let content = r#"<｜DSML｜tool_calls><｜DSML｜invoke name="search_text"><｜DSML｜parameter name="doc_uuid" string="true">73ebd244-f30c-447f-9784-0096c2c1f2b3</｜DSML｜parameter><｜DSML｜parameter name="query" string="true">Глава 23</｜DSML｜parameter><｜DSML｜parameter name="final_top_k" string="false">5</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"#;
+
+        let calls = parse_dsml_tool_calls(content);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "search_text");
+        assert_eq!(calls[0].arguments["query"], "Глава 23");
+        assert_eq!(calls[0].arguments["final_top_k"], 5);
+    }
+
+    #[test]
+    fn parses_ascii_spaced_dsml_tool_call() {
+        let content = r#"< | DSML | | tool_calls>
+< | DSML | | invoke name="search_text">
+< | DSML | | parameter name="query" string="true">Глава 23</ | DSML | | parameter>
+< | DSML | | parameter name="final_top_k" string="false">5</ | DSML | | parameter>
+</ | DSML | | invoke>
+</ | DSML | | tool_calls>"#;
+
+        let calls = parse_dsml_tool_calls(content);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "search_text");
+        assert_eq!(calls[0].arguments["query"], "Глава 23");
+        assert_eq!(calls[0].arguments["final_top_k"], 5);
+    }
+
+    #[test]
+    fn strips_dsml_from_assistant_content() {
+        let content = r#"Сейчас поищу.
+<｜DSML｜tool_calls><｜DSML｜invoke name="search_text"><｜DSML｜parameter name="query" string="true">test</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"#;
+
+        assert_eq!(strip_dsml_tool_markup(content), "Сейчас поищу.");
+    }
 }

@@ -146,8 +146,8 @@ pub fn load_ai_config(settings: &HashMap<String, String>) -> Result<AiConfig, St
         .max(1024);
     let agent_max_tool_rounds = get_setting(settings, "AI_AGENT_MAX_TOOL_ROUNDS")
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4)
-        .clamp(1, 12);
+        .unwrap_or(8)
+        .clamp(1, 24);
     let request_timeout_secs = get_setting(settings, "AI_REQUEST_TIMEOUT_SECS")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(120)

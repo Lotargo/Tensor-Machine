@@ -234,10 +234,10 @@ const EDITABLE_SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         key: "AI_AGENT_MAX_TOOL_ROUNDS",
         label: "Agent Tool Rounds",
-        description: "Maximum number of MCP tool-calling rounds in agent mode before the model must answer.",
+        description: "Maximum number of MCP tool-calling rounds in agent mode before the model must answer. Higher values help complex and multi-hop searches.",
         category: "ai",
         field_type: "number",
-        placeholder: "4",
+        placeholder: "8",
         options: &[],
     },
     SettingDescriptor {
