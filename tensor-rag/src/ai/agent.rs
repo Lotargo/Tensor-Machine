@@ -231,11 +231,17 @@ pub async fn run_agent_completion(
                     scope_to_selected_document,
                 )
                 .await?;
+                assign_global_source_indices(&mut tool_sources, collected_sources.len());
+                let tool_content = if tool_sources.is_empty() {
+                    tool_response
+                } else {
+                    build_numbered_tool_sources_context(&tool_sources)
+                };
                 collected_sources.append(&mut tool_sources);
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": tool_response
+                    "content": tool_content
                 }));
             }
         }
@@ -346,7 +352,10 @@ pub async fn stream_agent_completion(
                     scope_to_selected_document,
                 )
                 .await?;
+                let tool_content;
                 if !tool_sources.is_empty() {
+                    assign_global_source_indices(&mut tool_sources, collected_sources.len());
+                    tool_content = build_numbered_tool_sources_context(&tool_sources);
                     collected_sources.append(&mut tool_sources);
                     send_sse(
                         tx,
@@ -354,11 +363,13 @@ pub async fn stream_agent_completion(
                         &serde_json::to_value(&collected_sources).map_err(|e| e.to_string())?,
                     )
                     .await?;
+                } else {
+                    tool_content = tool_response;
                 }
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": tool_response
+                    "content": tool_content
                 }));
             }
         }
@@ -424,11 +435,13 @@ async fn preflight_search(
     let bytes = search_tool.handle(args, db_pools, None).await?;
     let text = String::from_utf8_lossy(&bytes).to_string();
     let mut sources = parse_search_sources(&text)?;
+    assign_global_source_indices(&mut sources, collected_sources.len());
+    let preflight_context = build_preflight_sources_context(&sources, &text);
     collected_sources.append(&mut sources);
 
     messages.push(json!({
         "role": "system",
-        "content": build_preflight_sources_context(&text)
+        "content": preflight_context
     }));
 
     Ok(())
@@ -445,10 +458,17 @@ fn latest_user_message(messages: &[serde_json::Value]) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn build_preflight_sources_context(search_response_json: &str) -> String {
+fn build_preflight_sources_context(sources: &[ChatSource], search_response_json: &str) -> String {
+    if sources.is_empty() {
+        return format!(
+            "Mandatory local RAG search was executed before answering, but it returned no visible sources. If the local library context is insufficient, say so explicitly.\n\nRaw search_text response:\n{}",
+            search_response_json
+        );
+    }
+
     format!(
-        "Mandatory local RAG search was executed before answering. Use only the retrieved local-library passages below as evidence for document questions. If they do not contain enough evidence, say that the local library context is insufficient and do not answer from pretrained knowledge.\n\nRaw search_text response:\n{}",
-        search_response_json
+        "Mandatory local RAG search was executed before answering. Use only the globally numbered local-library sources below as evidence for document questions. Cite the exact global source IDs shown here, e.g. [2] or [3]. Do not restart numbering for later searches. If these sources do not contain enough evidence, say that the local library context is insufficient and do not answer from pretrained knowledge.\n\n{}",
+        build_numbered_sources_context(sources)
     )
 }
 
@@ -641,6 +661,35 @@ fn human_tool_label(name: &str) -> &'static str {
     }
 }
 
+fn assign_global_source_indices(sources: &mut [ChatSource], existing_count: usize) {
+    for (offset, source) in sources.iter_mut().enumerate() {
+        source.index = existing_count + offset + 1;
+    }
+}
+
+fn build_numbered_tool_sources_context(sources: &[ChatSource]) -> String {
+    format!(
+        "search_text returned the following globally numbered sources. Cite these exact global source IDs in the final answer; do not renumber this search from [1].\n\n{}",
+        build_numbered_sources_context(sources)
+    )
+}
+
+fn build_numbered_sources_context(sources: &[ChatSource]) -> String {
+    sources
+        .iter()
+        .map(|source| {
+            let mut parts = vec![format!("[{}] {}", source.index, source.title)];
+            if let Some(context) = source.context.as_ref().filter(|value| !value.trim().is_empty())
+            {
+                parts.push(format!("Context: {}", context.trim()));
+            }
+            parts.push(source.excerpt.trim().to_string());
+            parts.join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn dedupe_sources(sources: Vec<ChatSource>) -> Vec<ChatSource> {
     let mut seen = std::collections::HashSet::new();
     let mut deduped = Vec::new();
@@ -648,10 +697,7 @@ fn dedupe_sources(sources: Vec<ChatSource>) -> Vec<ChatSource> {
     for source in sources {
         let key = format!("{}::{}", source.title, source.excerpt);
         if seen.insert(key) {
-            deduped.push(ChatSource {
-                index: deduped.len() + 1,
-                ..source
-            });
+            deduped.push(source);
         }
     }
 
@@ -697,5 +743,55 @@ mod tests {
 <｜DSML｜tool_calls><｜DSML｜invoke name="search_text"><｜DSML｜parameter name="query" string="true">test</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"#;
 
         assert_eq!(strip_dsml_tool_markup(content), "Сейчас поищу.");
+    }
+
+    #[test]
+    fn assigns_global_source_indices_across_searches() {
+        let mut first_search = vec![
+            test_source(1, "doc", "first"),
+            test_source(2, "doc", "second"),
+        ];
+        let mut second_search = vec![
+            test_source(1, "doc", "third"),
+            test_source(2, "doc", "fourth"),
+        ];
+
+        assign_global_source_indices(&mut first_search, 0);
+        assign_global_source_indices(&mut second_search, first_search.len());
+
+        assert_eq!(first_search[0].index, 1);
+        assert_eq!(first_search[1].index, 2);
+        assert_eq!(second_search[0].index, 3);
+        assert_eq!(second_search[1].index, 4);
+
+        let context = build_numbered_tool_sources_context(&second_search);
+        assert!(context.contains("[3] doc"));
+        assert!(context.contains("[4] doc"));
+        assert!(context.contains("do not renumber"));
+    }
+
+    #[test]
+    fn dedupe_sources_preserves_assigned_indices() {
+        let sources = vec![
+            test_source(1, "doc", "same"),
+            test_source(2, "doc", "same"),
+            test_source(3, "doc", "different"),
+        ];
+
+        let deduped = dedupe_sources(sources);
+
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].index, 1);
+        assert_eq!(deduped[1].index, 3);
+    }
+
+    fn test_source(index: usize, title: &str, excerpt: &str) -> ChatSource {
+        ChatSource {
+            index,
+            title: title.to_string(),
+            context: None,
+            excerpt: excerpt.to_string(),
+            score: None,
+        }
     }
 }
