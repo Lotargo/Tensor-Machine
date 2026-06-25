@@ -1970,7 +1970,7 @@ async fn handle_get_document_details(
 
     // 1. Fetch chunks
     let chunk_rows = sqlx::query(
-        "SELECT id, text, chunk_index, chunk_level, parent_chunk_index, macro_index, medium_index,
+        "SELECT id, text, chapter_id, chunk_index, chunk_level, parent_chunk_index, macro_index, medium_index,
                 header_chain, zone_keywords, entities, cluster_id, cluster_distance, layout_hint,
                 clustering_algorithm, clustering_projection
          FROM documents
@@ -1995,6 +1995,7 @@ async fn handle_get_document_details(
     for r in chunk_rows {
         let id: i64 = r.try_get("id").unwrap_or(0);
         let text: String = r.try_get("text").unwrap_or_default();
+        let chapter_id: String = r.try_get("chapter_id").unwrap_or_default();
         let chunk_index: i32 = r.try_get("chunk_index").unwrap_or(0);
         let chunk_level: String = r.try_get("chunk_level").unwrap_or_default();
         let parent_chunk_index: Option<i32> = r.try_get("parent_chunk_index").ok();
@@ -2033,6 +2034,7 @@ async fn handle_get_document_details(
         chunks.push(serde_json::json!({
             "id": id,
             "text": text,
+            "chapter_id": chapter_id,
             "chunk_index": chunk_index,
             "chunk_level": chunk_level,
             "parent_chunk_index": parent_chunk_index,

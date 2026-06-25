@@ -176,7 +176,7 @@ impl Default for HierarchicalChunker {
 
 impl HierarchicalChunker {
     pub fn chunk(&self, text: &str, filename: &str) -> Vec<HierarchicalChunkItem> {
-        let cleaned = clean_markdown(&crate::normalizer::normalize_text(text));
+        let cleaned = clean_markdown(&normalize_document_layout(text));
         let spans = segments_to_spans(&cleaned);
         let macros = assemble_level(
             &spans,
@@ -548,23 +548,27 @@ pub fn is_meaningless(text: &str) -> bool {
     !trimmed.chars().any(|c| c.is_alphanumeric())
 }
 
+fn normalize_document_layout(text: &str) -> String {
+    static HYPHEN_JOIN_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(\p{L})-\s*\n\s*(\p{L})").unwrap());
+    HYPHEN_JOIN_RE.replace_all(text.trim(), "$1$2").into_owned()
+}
+
 fn segments_to_spans(text: &str) -> Vec<TextSpan> {
     let mut spans = Vec::new();
-    for paragraph in text.split("\n\n") {
+    let mut paragraph_lines: Vec<String> = Vec::new();
+
+    let flush_paragraph = |spans: &mut Vec<TextSpan>, paragraph_lines: &mut Vec<String>| {
+        if paragraph_lines.is_empty() {
+            return;
+        }
+        let paragraph = paragraph_lines.join("\n");
+        paragraph_lines.clear();
         let paragraph = paragraph.trim();
         if paragraph.is_empty() {
-            continue;
+            return;
         }
-        if is_implicit_header(paragraph) {
-            spans.push(TextSpan {
-                text: paragraph.to_string(),
-                is_header: true,
-                is_new_paragraph: true,
-                tokens: count_tokens(paragraph).max(1),
-                page_number: 0,
-            });
-            continue;
-        }
+
         if is_markdown_table(paragraph) {
             spans.push(TextSpan {
                 text: paragraph.to_string(),
@@ -573,8 +577,9 @@ fn segments_to_spans(text: &str) -> Vec<TextSpan> {
                 tokens: count_tokens(paragraph).max(1),
                 page_number: 0,
             });
-            continue;
+            return;
         }
+
         for (idx, sentence) in segment_sentences(paragraph).into_iter().enumerate() {
             spans.push(TextSpan {
                 tokens: count_tokens(&sentence).max(1),
@@ -584,7 +589,30 @@ fn segments_to_spans(text: &str) -> Vec<TextSpan> {
                 page_number: 0,
             });
         }
+    };
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            flush_paragraph(&mut spans, &mut paragraph_lines);
+            continue;
+        }
+
+        if is_implicit_header(trimmed) {
+            flush_paragraph(&mut spans, &mut paragraph_lines);
+            spans.push(TextSpan {
+                text: trimmed.to_string(),
+                is_header: true,
+                is_new_paragraph: true,
+                tokens: count_tokens(trimmed).max(1),
+                page_number: 0,
+            });
+        } else {
+            paragraph_lines.push(trimmed.to_string());
+        }
     }
+
+    flush_paragraph(&mut spans, &mut paragraph_lines);
     spans
 }
 
@@ -603,7 +631,12 @@ fn assemble_level(
 
     for span in spans {
         if span.is_header {
-            if !buffer.is_empty() && tokens >= target_tokens / 3 {
+            let extracted_chapter = extract_chapter_from_header(&span.text);
+            if !buffer.is_empty() && extracted_chapter.is_some() {
+                emit_hierarchical_chunk(&mut chunks, &buffer, &chapter_id, &current_headers, level);
+                buffer.clear();
+                tokens = 0;
+            } else if !buffer.is_empty() && tokens >= target_tokens / 3 {
                 emit_hierarchical_chunk(&mut chunks, &buffer, &chapter_id, &current_headers, level);
                 trim_overlap(&mut buffer, &mut tokens, overlap_tokens);
             }
@@ -611,7 +644,7 @@ fn assemble_level(
             header_stack.retain(|(existing, _)| *existing < level_num);
             header_stack.push((level_num, strip_header_marker(&span.text)));
             current_headers = header_stack.iter().map(|(_, h)| h.clone()).collect();
-            if let Some(extracted) = extract_chapter_from_header(&span.text) {
+            if let Some(extracted) = extracted_chapter {
                 chapter_id = extracted;
             }
         }
@@ -849,6 +882,36 @@ mod hierarchical_tests {
             chunks
                 .iter()
                 .any(|c| c.embedding_text.contains("File: alice.md"))
+        );
+    }
+
+    #[test]
+    fn hierarchical_chunker_detects_single_newline_chapter_headers() {
+        let text = "Конец предыдущей главы.\n## ГЛАВА 27\nУтро началось в Блоке-7. Герой проснулся.\n## ГЛАВА 28\nСледующая глава началась позже.";
+        let chunker = HierarchicalChunker {
+            macro_tokens: 64,
+            macro_overlap: 8,
+            medium_tokens: 24,
+            medium_overlap: 4,
+            micro_tokens: 10,
+            micro_overlap: 2,
+        };
+
+        let chunks = chunker.chunk(text, "book.md");
+
+        assert!(chunks.iter().any(|c| c.chapter_id == "27"));
+        assert!(chunks.iter().any(|c| c.chapter_id == "28"));
+        assert!(
+            chunks
+                .iter()
+                .filter(|c| c.chapter_id == "27")
+                .all(|c| c.header_chain.iter().any(|h| h.contains("ГЛАВА 27")))
+        );
+        assert!(
+            chunks
+                .iter()
+                .filter(|c| c.chapter_id == "27")
+                .all(|c| !c.text.contains("Конец предыдущей главы."))
         );
     }
 }
