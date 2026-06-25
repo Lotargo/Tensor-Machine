@@ -159,6 +159,9 @@ pub mod flight;
 pub mod gpu;
 pub mod graph;
 pub mod metrics;
+pub mod parser;
+#[allow(non_snake_case)]
+pub mod parser_protocol_generated;
 #[allow(non_snake_case)]
 pub mod result_generated;
 pub mod router;

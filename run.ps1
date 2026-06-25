@@ -10,6 +10,38 @@ $banner = @"
                                                      Low-Latency RAG Engine
 "@
 
+function Initialize-Flatc {
+    if ($env:FLATC -and (Test-Path $env:FLATC)) {
+        return
+    }
+
+    $resolver = Join-Path $PSScriptRoot "tools\flatc\resolve_flatc.ps1"
+    if (-not (Test-Path $resolver)) {
+        Write-Host "flatc resolver not found at $resolver" -ForegroundColor Red
+        exit 1
+    }
+
+    $env:FLATC = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolver).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $env:FLATC) {
+        Write-Host "Failed to resolve flatc." -ForegroundColor Red
+        exit 1
+    }
+}
+
+function Generate-Flatbuffers {
+    $generator = Join-Path $PSScriptRoot "tools\flatc\generate_flatbuffers.ps1"
+    if (-not (Test-Path $generator)) {
+        Write-Host "FlatBuffers generator not found at $generator" -ForegroundColor Red
+        exit 1
+    }
+
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $generator
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FlatBuffers generation failed." -ForegroundColor Red
+        exit 1
+    }
+}
+
 function Show-Menu {
     Clear-Host
     Write-Host $banner -ForegroundColor Cyan
@@ -22,6 +54,8 @@ function Show-Menu {
     Write-Host "Enter your choice [1-4]: " -NoNewline -ForegroundColor White
 }
 
+Initialize-Flatc
+
 $running = $true
 while ($running) {
     Show-Menu
@@ -31,6 +65,8 @@ while ($running) {
         "1" {
             Clear-Host
             Write-Host "=== Starting Project Build ===" -ForegroundColor Cyan
+            Write-Host "=== Generating FlatBuffers Bindings ===" -ForegroundColor Cyan
+            Generate-Flatbuffers
             cargo build --manifest-path tensor-rag/Cargo.toml --ignore-rust-version
             Write-Host "`nPress [Enter] to return to menu..." -ForegroundColor DarkGray
             Read-Host

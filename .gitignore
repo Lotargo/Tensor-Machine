@@ -8,3 +8,4 @@ server*.log
 server*.txt
 __pycache__/
 *.pyc
+tools/flatc/.cache/

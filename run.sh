@@ -15,6 +15,33 @@ BANNER="${CYAN}  _______                               __  ___           __  _
 /_/  \___/_/ /_/____/\____/_/       /_/  /_/\__,_/\___/_/ /_/_/_/ /_/\___/
                                                      Low-Latency RAG Engine${NC}"
 
+init_flatc() {
+  if [ -n "${FLATC:-}" ] && [ -x "$FLATC" ]; then
+    return
+  fi
+
+  local resolver
+  resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/flatc/resolve_flatc.sh"
+  if [ ! -f "$resolver" ]; then
+    echo -e "${RED}flatc resolver not found at $resolver${NC}"
+    exit 1
+  fi
+
+  FLATC="$(bash "$resolver")"
+  export FLATC
+}
+
+generate_flatbuffers() {
+  local generator
+  generator="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/flatc/generate_flatbuffers.sh"
+  if [ ! -f "$generator" ]; then
+    echo -e "${RED}FlatBuffers generator not found at $generator${NC}"
+    exit 1
+  fi
+
+  bash "$generator"
+}
+
 show_menu() {
   clear
   echo -e "$BANNER"
@@ -27,6 +54,8 @@ show_menu() {
   echo -n "Enter your choice [1-4]: "
 }
 
+init_flatc
+
 while true; do
   show_menu
   read -r choice
@@ -35,6 +64,8 @@ while true; do
     1)
       clear
       echo -e "${CYAN}=== Starting Project Build ===${NC}"
+      echo -e "${CYAN}=== Generating FlatBuffers Bindings ===${NC}"
+      generate_flatbuffers
       cargo build --manifest-path tensor-rag/Cargo.toml --ignore-rust-version
       echo -e "\n${GRAY}Press [Enter] to return to menu...${NC}"
       read -r

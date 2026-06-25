@@ -18,7 +18,7 @@ tokio = { version = "1.52.3", features = ["full"] }
 tonic = "0.12.3"
 lexpr = "0.2.7"
 arrow = "53.0.0"
-flatbuffers = "2.0.8"
+flatbuffers = "25.12.19"
 qdrant-client = "1.13.0"
 tokio-util = { version = "0.7.18", features = ["full"] }
 wgpu = "29.0.3"

@@ -52,12 +52,12 @@ Rust owns structure decisions, chunking, metadata, and indexing.
 
 ## Transport
 
-- [ ] Use local TCP for the first implementation.
-- [ ] Use length-prefixed frames: `[u32_le frame_len][flatbuffer_bytes]`.
+- [x] Use local TCP for the first implementation.
+- [x] Use length-prefixed frames: `[u32_le frame_len][flatbuffer_bytes]`.
 - [ ] Keep the Python worker process long-lived.
 - [ ] Do not spawn Python per document.
 - [ ] Send file paths in parse requests instead of embedding whole DOCX/PDF bytes in the message.
-- [ ] Return structured `ParsedDocument` FlatBuffers from Python.
+- [x] Return structured `ParsedDocument` FlatBuffers from Python.
 - [ ] Add per-job timeout.
 - [ ] Add cancellation support.
 - [ ] Add parser worker health check.
@@ -76,61 +76,71 @@ Rationale:
 
 Create a dedicated schema, separate from retrieval result buffers:
 
-- [ ] `parser_protocol.fbs`
-- [ ] `ParseRequest`
-- [ ] `ParseResponse`
-- [ ] `ParsedDocument`
-- [ ] `DocumentBlock`
-- [ ] `TextSpan`
-- [ ] `TableBlock`
-- [ ] `ParserSignal`
-- [ ] `ParserWarning`
-- [ ] `DocumentMetadata`
+- [x] `parser_protocol.fbs`
+- [x] `ParseRequest`
+- [x] `ParseResponse`
+- [x] `ParsedDocument`
+- [x] `DocumentBlock`
+- [x] `TextSpan`
+- [x] `TableBlock`
+- [x] `ParserSignal`
+- [x] `ParserWarning`
+- [x] `DocumentMetadata`
 
 Minimum `ParseRequest` fields:
 
-- [ ] `job_id`
-- [ ] `file_path`
-- [ ] `filename`
-- [ ] `mime_type`
-- [ ] `parser_hints`
-- [ ] `requested_backends`
+- [x] `job_id`
+- [x] `file_path`
+- [x] `filename`
+- [x] `mime_type`
+- [x] `parser_hints`
+- [x] `requested_backends`
 
 Minimum `DocumentBlock` fields:
 
-- [ ] `block_id`
-- [ ] `text`
-- [ ] `kind`
-- [ ] `source_backend`
-- [ ] `page_number`
-- [ ] `order_index`
-- [ ] `style_name`
-- [ ] `heading_level`
-- [ ] `confidence`
-- [ ] `bbox`
-- [ ] `spans`
+- [x] `block_id`
+- [x] `text`
+- [x] `kind`
+- [x] `source_backend`
+- [x] `page_number`
+- [x] `order_index`
+- [x] `style_name`
+- [x] `heading_level`
+- [x] `confidence`
+- [x] `bbox`
+- [x] `spans`
 
 Block kinds:
 
-- [ ] `Paragraph`
-- [ ] `HeadingCandidate`
-- [ ] `Table`
-- [ ] `ListItem`
-- [ ] `Caption`
-- [ ] `PageBreak`
-- [ ] `HeaderFooter`
-- [ ] `Footnote`
-- [ ] `Unknown`
+- [x] `Paragraph`
+- [x] `HeadingCandidate`
+- [x] `Table`
+- [x] `ListItem`
+- [x] `Caption`
+- [x] `PageBreak`
+- [x] `HeaderFooter`
+- [x] `Footnote`
+- [x] `Unknown`
 
 Parser signal kinds:
 
-- [ ] `DocxStyle`
-- [ ] `MarkdownHeading`
-- [ ] `PdfLayout`
-- [ ] `OcrMarkdown`
-- [ ] `LexicalPattern`
-- [ ] `Numbering`
-- [ ] `TableStructure`
+- [x] `DocxStyle`
+- [x] `MarkdownHeading`
+- [x] `PdfLayout`
+- [x] `OcrMarkdown`
+- [x] `LexicalPattern`
+- [x] `Numbering`
+- [x] `TableStructure`
+
+Tooling:
+
+- [x] Pin `flatc` version to `25.12.19`.
+- [x] Vendor official `flatc` release archives for Windows, Linux, and macOS under `tools/flatc/v25.12.19`.
+- [x] Add cross-platform `flatc` resolver scripts.
+- [x] Add cross-platform binding generation scripts.
+- [x] Keep extracted binaries out of git under `tools/flatc/.cache`.
+- [x] Do not use Git LFS for `flatc` archives; every archive is below 3 MB.
+- [ ] Add CI check that generated bindings match `*.fbs`.
 
 ---
 
@@ -166,7 +176,7 @@ Parser signal kinds:
 ## Rust Responsibilities
 
 - [ ] Add `ParserDispatcher`.
-- [ ] Add parser worker client with TCP frame codec.
+- [x] Add parser worker client with TCP frame codec.
 - [ ] Add async parse job state.
 - [ ] Add parser progress events.
 - [ ] Add cancellation path wired into upload cancellation.
@@ -209,12 +219,12 @@ Failure behavior:
 
 ## Tests
 
-- [ ] Unit test FlatBuffers encode/decode for `ParseRequest`.
-- [ ] Unit test FlatBuffers encode/decode for `ParsedDocument`.
-- [ ] TCP frame codec test with multiple back-to-back frames.
-- [ ] Python sidecar smoke test on a small DOCX.
+- [x] Unit test FlatBuffers encode/decode for `ParseRequest`.
+- [x] Unit test FlatBuffers encode/decode for `ParsedDocument`.
+- [x] TCP frame codec test with multiple back-to-back frames.
+- [x] Python sidecar smoke test on a small DOCX.
 - [ ] DOCX heading style regression test.
-- [ ] Regression test for body ALL CAPS text not becoming heading.
+- [x] Regression test for body ALL CAPS text not becoming heading.
 - [ ] Mistral markdown adapter regression test.
 - [ ] Fallback test: DOCX native parser failure -> Mistral OCR.
 - [ ] Timeout test.
@@ -224,13 +234,13 @@ Failure behavior:
 
 ## Migration Steps
 
-- [ ] Define `parser_protocol.fbs`.
-- [ ] Generate Rust FlatBuffers bindings.
-- [ ] Generate Python FlatBuffers bindings.
-- [ ] Implement local TCP frame codec in Rust.
-- [ ] Implement Python sidecar TCP server.
+- [x] Define `parser_protocol.fbs`.
+- [x] Generate Rust FlatBuffers bindings.
+- [x] Generate Python FlatBuffers bindings.
+- [x] Implement local TCP frame codec in Rust.
+- [x] Implement Python sidecar TCP server.
 - [ ] Implement DOCX parser backend in Python.
-- [ ] Add Rust parser client.
+- [x] Add Rust parser client.
 - [ ] Add `ParsedDocument` ingestion path behind a feature/config flag.
 - [ ] Add Mistral OCR adapter into `ParsedDocument`.
 - [ ] Add `StructureResolver`.
@@ -249,4 +259,3 @@ Failure behavior:
 - [ ] Should large extracted tables eventually use Arrow IPC instead of FlatBuffers?
 - [ ] Should parser results be cached by file hash?
 - [ ] Should `ParsedDocument` be persisted for debugging and re-chunking?
-

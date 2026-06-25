@@ -1,0 +1,123 @@
+namespace tensor_rag.parser;
+
+enum BlockKind : byte {
+  Unknown = 0,
+  Paragraph = 1,
+  HeadingCandidate = 2,
+  Table = 3,
+  ListItem = 4,
+  Caption = 5,
+  PageBreak = 6,
+  HeaderFooter = 7,
+  Footnote = 8
+}
+
+enum ParserBackend : byte {
+  Unknown = 0,
+  DocxNative = 1,
+  MistralOcr = 2,
+  PdfNative = 3,
+  PlainText = 4
+}
+
+enum ParserSignalKind : byte {
+  Unknown = 0,
+  DocxStyle = 1,
+  MarkdownHeading = 2,
+  PdfLayout = 3,
+  OcrMarkdown = 4,
+  LexicalPattern = 5,
+  Numbering = 6,
+  TableStructure = 7
+}
+
+table BBox {
+  x:float;
+  y:float;
+  width:float;
+  height:float;
+}
+
+table TextSpan {
+  text:string;
+  style_name:string;
+  bold:bool;
+  italic:bool;
+  font_size:float;
+}
+
+table ParserSignal {
+  kind:ParserSignalKind = Unknown;
+  confidence:float;
+  detail:string;
+}
+
+table TableCell {
+  text:string;
+  row:uint;
+  column:uint;
+  row_span:uint = 1;
+  column_span:uint = 1;
+}
+
+table TableBlock {
+  rows:uint;
+  columns:uint;
+  cells:[TableCell];
+}
+
+table DocumentBlock {
+  block_id:string;
+  text:string;
+  kind:BlockKind = Unknown;
+  source_backend:ParserBackend = Unknown;
+  page_number:uint = 0;
+  order_index:uint = 0;
+  style_name:string;
+  heading_level:uint = 0;
+  confidence:float = 0.0;
+  bbox:BBox;
+  spans:[TextSpan];
+  table:TableBlock;
+  signals:[ParserSignal];
+}
+
+table ParserWarning {
+  code:string;
+  message:string;
+  block_id:string;
+}
+
+table DocumentMetadata {
+  filename:string;
+  mime_type:string;
+  parser_name:string;
+  parser_version:string;
+  source_path:string;
+}
+
+table ParsedDocument {
+  job_id:string;
+  metadata:DocumentMetadata;
+  blocks:[DocumentBlock];
+  warnings:[ParserWarning];
+}
+
+table ParseRequest {
+  job_id:string;
+  file_path:string;
+  filename:string;
+  mime_type:string;
+  parser_hints:[string];
+  requested_backends:[ParserBackend];
+}
+
+table ParseResponse {
+  job_id:string;
+  ok:bool;
+  document:ParsedDocument;
+  error_code:string;
+  error_message:string;
+}
+
+root_type ParseResponse;
