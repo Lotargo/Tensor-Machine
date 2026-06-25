@@ -795,23 +795,7 @@ fn is_implicit_header(text: &str) -> bool {
     if trimmed.starts_with('#') {
         return true;
     }
-    let upper = trimmed.to_uppercase();
-    if [
-        "CHAPTER",
-        "PART",
-        "BOOK",
-        "ГЛАВА",
-        "ЧАСТЬ",
-        "КНИГА",
-        "РАЗДЕЛ",
-    ]
-    .iter()
-    .any(|prefix| upper.starts_with(prefix))
-    {
-        return true;
-    }
-    let letters: Vec<char> = trimmed.chars().filter(|c| c.is_alphabetic()).collect();
-    !letters.is_empty() && trimmed.chars().count() < 100 && letters.iter().all(|c| c.is_uppercase())
+    is_structural_heading_marker(trimmed) || is_standalone_terminal_heading(trimmed)
 }
 
 fn get_header_level(text: &str) -> usize {
@@ -828,6 +812,8 @@ fn get_header_level(text: &str) -> usize {
         || upper.starts_with("КНИГА")
     {
         1
+    } else if is_standalone_terminal_heading(trimmed) {
+        1
     } else {
         2
     }
@@ -835,6 +821,37 @@ fn get_header_level(text: &str) -> usize {
 
 fn strip_header_marker(text: &str) -> String {
     text.trim().trim_start_matches('#').trim().to_string()
+}
+
+fn is_structural_heading_marker(text: &str) -> bool {
+    static STRUCTURAL_HEADING_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?ix)
+            ^\s*
+            (?:
+                (?:chapter|part|book)\s+(?:\d+|[ivxlcdm]+|one|first|two|second|three|third|four|fourth|five|fifth|six|sixth|seven|seventh|eight|eighth|nine|ninth|ten|tenth)
+                |
+                (?:глава|часть|книга|раздел)\s+(?:\d+|[ivxlcdm]+|один|первая|первый|два|вторая|второй|три|третья|третий|четыре|четвертая|четвертый|пять|пятая|пятый|шесть|шестая|шестой|семь|седьмая|седьмой|восемь|восьмая|восьмой|девять|девятая|девятый|десять|десятая|десятый)
+            )
+            \.?
+            (?:\s*[:.-]\s*[\p{L}\p{N}][^\n]{0,80})?
+            \s*$
+            ",
+        )
+        .unwrap()
+    });
+    STRUCTURAL_HEADING_RE.is_match(text)
+}
+
+fn is_standalone_terminal_heading(text: &str) -> bool {
+    let normalized = text
+        .trim()
+        .trim_matches(|c: char| c == '.' || c == ':' || c == '-' || c.is_whitespace())
+        .to_uppercase();
+    matches!(
+        normalized.as_str(),
+        "EPILOGUE" | "EPILOG" | "PROLOGUE" | "PROLOG" | "ЭПИЛОГ" | "ПРОЛОГ"
+    )
 }
 
 fn extract_chapter_from_header(text: &str) -> Option<String> {
@@ -912,6 +929,56 @@ mod hierarchical_tests {
                 .iter()
                 .filter(|c| c.chapter_id == "27")
                 .all(|c| !c.text.contains("Конец предыдущей главы."))
+        );
+    }
+
+    #[test]
+    fn hierarchical_chunker_does_not_promote_body_all_caps_lines() {
+        let text = "# Утро.\n\n## ГЛАВА 1\n\nОн проснулся.\n\nОСНОВНОЙ НОСИТЕЛЬ\n\nПозиция была стабильной.\n\n## ГЛАВА 2\n\nСледующая глава началась позже.";
+        let chunker = HierarchicalChunker {
+            macro_tokens: 64,
+            macro_overlap: 8,
+            medium_tokens: 24,
+            medium_overlap: 4,
+            micro_tokens: 10,
+            micro_overlap: 2,
+        };
+
+        let chunks = chunker.chunk(text, "utro.md");
+
+        assert!(
+            chunks
+                .iter()
+                .filter(|c| c.chapter_id == "1")
+                .filter(|c| c.text.contains("Он проснулся") || c.text.contains("Позиция была"))
+                .any(|c| c.header_chain.iter().any(|h| h == "ГЛАВА 1"))
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|c| !c.header_chain.iter().any(|h| h == "ОСНОВНОЙ НОСИТЕЛЬ"))
+        );
+        assert!(chunks.iter().any(|c| c.chapter_id == "2"));
+    }
+
+    #[test]
+    fn hierarchical_chunker_keeps_epilogue_as_terminal_heading() {
+        let text = "## ГЛАВА 41\n\nФинальная глава.\n\nЭПИЛОГ\n\nПосле всего осталась тишина.";
+        let chunker = HierarchicalChunker {
+            macro_tokens: 64,
+            macro_overlap: 8,
+            medium_tokens: 24,
+            medium_overlap: 4,
+            micro_tokens: 10,
+            micro_overlap: 2,
+        };
+
+        let chunks = chunker.chunk(text, "utro.md");
+
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.header_chain.iter().any(|h| h == "ЭПИЛОГ"))
         );
     }
 }
