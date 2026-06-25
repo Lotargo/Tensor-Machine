@@ -197,7 +197,7 @@ function renderSources(rawSources) {
         }
         card.innerHTML = `
             <strong>${titleHtml}</strong>
-            <p>${escapeHtml(source.excerpt || '')}</p>
+            <div class="chat-source-markdown">${renderSourceExcerpt(source.excerpt || '')}</div>
             <button class="btn btn-ghost chat-source-jump" type="button">
                 <i class="fa-solid fa-up-right-from-square"></i>
                 <span>Найти в viewer</span>
@@ -213,6 +213,68 @@ function renderSources(rawSources) {
     });
     details.appendChild(list);
     return details;
+}
+
+function renderSourceExcerpt(excerpt) {
+    const markdown = formatSourceExcerptAsMarkdown(excerpt);
+    try {
+        return marked.parse(escapeHtml(markdown));
+    } catch (_error) {
+        return escapeHtml(excerpt).replaceAll('\n', '<br>');
+    }
+}
+
+function formatSourceExcerptAsMarkdown(excerpt) {
+    let text = String(excerpt || '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\u00a0/g, ' ')
+        .trim();
+    if (!text) return '';
+
+    text = text
+        .replace(/\n?>>> Context:\s*([^<\n]+?)\s*<<<\n?/g, '\n\n#### $1\n\n')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/([^\n])\s+(#{1,6}\s+(?:ГЛАВА|CHAPTER|ЧАСТЬ|PART)(?=\s))/gi, '$1\n\n$2')
+        .replace(/(^|\n)(#{1,6})\s+/g, '$1$2 ')
+        .replace(/(^|\n)(#{1,3}\s+(?:ГЛАВА|CHAPTER|ЧАСТЬ|PART)\s+(?:\d+|[IVXLCDM]+)\.?)(?:\s+)([^\n])/gi, '$1$2\n\n$3')
+        .replace(/(^|\n)(ГЛАВА|CHAPTER|ЧАСТЬ|PART)\s+([0-9IVXLCDMА-ЯA-Z][^\n]{0,80})/gi, '$1### $2 $3')
+        .replace(/(^|\n)(#{1,3}\s+(?:ГЛАВА|CHAPTER|ЧАСТЬ|PART)\s+(?:\d+|[IVXLCDM]+)\.?)(?:\s+)([^\n])/gi, '$1$2\n\n$3')
+        .replace(/\n{3,}/g, '\n\n');
+
+    const blocks = text.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+    return blocks
+        .flatMap((block) => splitLongSourceBlock(block))
+        .join('\n\n');
+}
+
+function splitLongSourceBlock(block) {
+    if (
+        block.length < 700
+        || /^#{1,6}\s/.test(block)
+        || /^[-*]\s/.test(block)
+        || /^\d+\.\s/.test(block)
+    ) {
+        return [block];
+    }
+
+    const sentences = block.match(/[^.!?…]+[.!?…]+(?:["»”])?|[^.!?…]+$/g);
+    if (!sentences || sentences.length < 4) return [block];
+
+    const paragraphs = [];
+    let current = '';
+    for (const sentence of sentences) {
+        const normalized = sentence.trim();
+        if (!normalized) continue;
+        const next = current ? `${current} ${normalized}` : normalized;
+        if (current && next.length > 520) {
+            paragraphs.push(current);
+            current = normalized;
+        } else {
+            current = next;
+        }
+    }
+    if (current) paragraphs.push(current);
+    return paragraphs;
 }
 
 function getSourceSearchQuery(source) {
