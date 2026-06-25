@@ -4,6 +4,8 @@ Status: design note / implementation candidate
 Date: 2026-06-25  
 Scope: Tensor Machine agent mode, MCP routing, retrieval planning, instruct-embedding projections
 
+Implementation tracking: unchecked items are proposed work, checked items are already present or verified in the current codebase.
+
 ---
 
 ## 1. Purpose
@@ -11,6 +13,15 @@ Scope: Tensor Machine agent mode, MCP routing, retrieval planning, instruct-embe
 This document captures a proposed extension for Tensor Machine: a skill-routed retrieval architecture where RAG is used not only to retrieve factual document chunks, but also to retrieve the best procedural instructions, routing policies, and embedding instructions for the current task.
 
 The goal is to evolve Tensor Machine from a programmable RAG execution engine into a semantic execution planner that can choose how to search, how to reason, which retrieval pattern to apply, and which embedding projection should be used before vector search.
+
+Important boundary:
+
+```text
+Skill routing improves retrieval decisions.
+It does not by itself guarantee correct low-level tool-call protocol behavior.
+```
+
+For OpenAI-compatible models this distinction is often less visible because tool calls are returned in a structured `tool_calls` field. For DeepSeek-like or other partially compatible providers, the model may emit a tool call as plain text or provider-specific markup. That must be handled by the agent orchestration layer with parser, validator, retry, and final-answer guards. Skills can reduce the frequency of bad calls, but the runtime must still treat malformed tool calls as protocol events, not as user-facing answers.
 
 Current Tensor Machine already has several important foundations:
 
@@ -720,6 +731,37 @@ Implement:
 9. Evaluation logs for selected skills and projections.
 ```
 
+### 14.1 Implementation checklist
+
+Core skill routing:
+
+- [ ] Add skill card schema.
+- [ ] Add file-based skill registry.
+- [ ] Add short skill-card retrieval over name, tags, description, and examples.
+- [ ] Add intent classifier with states such as `EXACT_LOOKUP`, `SECTION_LOOKUP`, `VERIFY_CLAIM`, `DIAGNOSE_RAG_FAILURE`, and `SUMMARIZE_DOCUMENTS`.
+- [ ] Add conflict and negative-trigger handling for selected skills.
+- [ ] Select one primary skill and at most a few auxiliary skills.
+- [ ] Load full skill bodies only after selection.
+- [ ] Inject compact active-skill summaries into system context.
+- [ ] Add audit logs for selected skills, scores, reasons, and rejected candidates.
+
+Embedding instruction routing:
+
+- [ ] Add embedding instruction card schema.
+- [ ] Add instruction selector for exact lookup, implementation lookup, evidence lookup, contradiction search, and failure diagnosis.
+- [ ] Build 2-5 query projections from selected instructions.
+- [ ] Run projected dense retrieval against the existing document index.
+- [ ] Fuse projected retrieval with lexical, structural, entity, recency, and cluster signals.
+- [ ] Deduplicate and rerank final candidates before answer generation.
+
+Agent-mode preflight:
+
+- [ ] Replace the current single mandatory preflight search with `skill_preflight`.
+- [ ] Preserve the current mandatory local-library evidence policy.
+- [ ] Keep the preflight compact enough to fit within context limits.
+- [ ] Add structured evidence policy output: strict local evidence, insufficient context, or clarification needed.
+- [ ] Add UI/debug visibility for selected mode, projections, and evidence policy.
+
 Initial module sketch:
 
 ```text
@@ -744,7 +786,199 @@ pub async fn skill_preflight(
 
 ---
 
-## 15. Later Extensions
+## 15. Tool-Call Compatibility Corrections
+
+Skill routing should be implemented together with a stricter tool-call orchestration layer. This is especially important for DeepSeek-like models or any provider that is only partially OpenAI-compatible.
+
+Observed failure mode:
+
+```text
+The model emits a tool call as assistant text instead of returning a structured tool call.
+Example: DSML-like markup appears in the chat UI as the final answer.
+```
+
+This is not primarily a retrieval-quality failure. It is a protocol boundary failure.
+
+### 15.1 Provider-specific tool policy skills
+
+Add compact tool policy skills or prompt snippets for models that need stricter instructions.
+
+Recommended cards:
+
+```text
+tool_policy.openai_tool_calls
+tool_policy.deepseek_dsml_tool_calls
+tool_policy.strict_json_tool_decision
+tool_policy.no_textual_tool_calls
+```
+
+Checklist:
+
+- [ ] Add provider-specific tool policy skill cards.
+- [ ] Add a policy telling models never to print tool calls as user-facing prose.
+- [ ] Add a policy telling models to return either a tool call or a final answer, never both.
+- [ ] Add examples for `search_text`, `get_document_metadata`, `read_document`, and `list_documents`.
+- [ ] Add examples for chapter/section lookup: metadata first, then filtered search.
+- [ ] Keep provider policies short; avoid loading long procedural bodies for every request.
+
+These skills reduce bad behavior but should not be treated as a correctness guarantee.
+
+### 15.2 Structured JSON tool-decision mode
+
+For providers with unreliable native tool calls, use a strict structured decision format instead of free-form assistant text.
+
+Example:
+
+```json
+{
+  "type": "tool_call",
+  "name": "search_text",
+  "arguments": {
+    "query": "Глава 23",
+    "doc_uuid": "73ebd244-f30c-447f-9784-0096c2c1f2b3",
+    "final_top_k": 5
+  }
+}
+```
+
+Final answer example:
+
+```json
+{
+  "type": "final_answer",
+  "answer": "..."
+}
+```
+
+Clarification example:
+
+```json
+{
+  "type": "ask_clarification",
+  "question": "Which document should I search?"
+}
+```
+
+Checklist:
+
+- [ ] Add optional strict JSON tool-decision mode for providers that do not reliably emit native `tool_calls`.
+- [ ] Validate model output against a small schema.
+- [ ] Retry or repair when JSON is invalid.
+- [ ] Reject mixed outputs that contain both final answer text and tool-call intent.
+- [ ] Convert valid JSON tool decisions into the internal `ToolCall` structure.
+- [ ] Keep native OpenAI `tool_calls` as the preferred path for providers that support it correctly.
+
+### 15.3 DSML parser hardening
+
+The current DSML parser should be treated as a compatibility adapter, not as the primary protocol.
+
+Checklist:
+
+- [ ] Accept known DSML marker variants used by DeepSeek-like models.
+- [ ] Tolerate whitespace and minor formatting differences around tags and attributes.
+- [ ] Parse primitive JSON values correctly, including booleans, numbers, arrays, and objects.
+- [ ] Add tests for `search_text`, `get_document_metadata`, `list_documents`, and malformed DSML.
+- [ ] Strip parsed DSML from assistant content before adding the assistant message to history.
+- [ ] Do not show raw DSML to the user.
+
+### 15.4 Final-answer guard
+
+The final completion step must not leak tool-call markup to the UI.
+
+Checklist:
+
+- [ ] Inspect final assistant output for DSML, JSON tool-decision objects, or textual tool-call markers.
+- [ ] If final output contains a valid tool call, execute it or continue the tool loop instead of returning it to the user.
+- [ ] If final output contains an invalid tool call, retry with a protocol correction message.
+- [ ] If retry budget is exhausted, return a controlled protocol error, not raw markup.
+- [ ] Add tests for tool-call leakage after `AI_AGENT_MAX_TOOL_ROUNDS` is exhausted.
+
+### 15.5 Tool-round budget
+
+The default tool-round budget should support multi-hop, section lookup, and evidence-first workflows.
+
+Current concern:
+
+```text
+Simple lookup may need 1-2 model tool rounds.
+Chapter lookup may need list_documents/get_document_metadata/search_text/read_document.
+Multi-hop or failure diagnosis may need more.
+```
+
+Recommended changes:
+
+- Raise the default `AI_AGENT_MAX_TOOL_ROUNDS` from a small value such as `4` to `8`.
+- Raise the hard clamp from `12` to `20` or `24`.
+- Add a separate safeguard for repeated identical tool calls.
+- Add a separate safeguard for total elapsed time and total tool calls.
+- Prefer deterministic preflight execution for common chapter/section lookup paths so every step does not require another LLM round.
+
+Checklist:
+
+- [ ] Raise default tool rounds to a safer value for multi-hop workflows.
+- [ ] Raise the hard maximum while keeping a sane cap.
+- [ ] Detect repeated identical tool calls.
+- [ ] Stop loops with a useful diagnostic message.
+- [ ] Add metrics for number of tool rounds per request.
+- [ ] Add evaluation cases for 1-hop, 2-hop, chapter lookup, and failure diagnosis.
+
+---
+
+## 16. Chapter, Section, and Anchor Lookup Corrections
+
+Skill routing should make structured lookup easier for the model, but the runtime should also support deterministic fallbacks.
+
+Recommended behavior:
+
+```text
+User asks about chapter/section/part
+  -> identify selected document if available
+  -> load metadata/anchors
+  -> match requested heading
+  -> search with doc_uuid and chapter/section filter
+  -> expand to neighboring chunks when needed
+  -> cite evidence or report insufficient local context
+```
+
+Checklist:
+
+- [ ] Add `exact_section_lookup` or `chapter_section_lookup` agent skill.
+- [ ] Add an embedding instruction for structured heading lookup.
+- [ ] Add examples for Russian chapter names such as `Глава 23` and `Часть вторая`.
+- [ ] Verify `get_document_metadata` returns enough anchor fields for the agent to select the right chapter.
+- [ ] Verify `search_text` accepts chapter/section filters in tool schema.
+- [ ] Verify filters apply after fusion/rerank, not only to the dense candidate path.
+- [ ] Add deterministic fallback: if the query clearly names a chapter, infer `chapter_id` before retrieval.
+- [ ] Add neighbor expansion around matched chapter chunks.
+- [ ] Add tests using the current document with known anchors.
+
+---
+
+## 17. Evaluation And Regression Checklist
+
+Evaluate this architecture before treating it as a quality improvement.
+
+Checklist:
+
+- [ ] Measure skill selection accuracy.
+- [ ] Measure wrong skill activation rate.
+- [ ] Measure embedding instruction selection accuracy.
+- [ ] Measure Recall@k before rerank.
+- [ ] Measure MRR or nDCG after rerank.
+- [ ] Measure answer groundedness.
+- [ ] Measure citation support rate.
+- [ ] Measure insufficient-context detection rate.
+- [ ] Measure latency overhead.
+- [ ] Measure average and p95 tool rounds.
+- [ ] Measure malformed tool-call rate by provider/model.
+- [ ] Measure raw tool-call leakage rate in the UI.
+- [ ] Add regression tests for DeepSeek-like DSML output.
+- [ ] Add regression tests for strict JSON tool-decision mode.
+- [ ] Add regression tests for chapter/section lookup.
+
+---
+
+## 18. Later Extensions
 
 After MVP works:
 
@@ -759,7 +993,7 @@ After MVP works:
 
 ---
 
-## 16. Positioning
+## 19. Positioning
 
 Current positioning:
 
@@ -789,7 +1023,7 @@ Embedding Instruction-RAG lets it choose semantic projections before retrieval.
 
 ---
 
-## 17. Summary
+## 20. Summary
 
 The proposed architecture adds procedural memory to Tensor Machine.
 
